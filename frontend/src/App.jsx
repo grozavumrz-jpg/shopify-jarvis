@@ -81,7 +81,18 @@ const I18N = {
     plan_pro_btn: '⚡ ACTIVATE JARVIS PRO ($9.99/mo - 7 DAYS TRIAL)',
     plan_pro_btn_active: 'PRO ACTIVE (7-DAY FREE TRIAL)',
     test_mode_toggle: '🧪 Developer Mock Toggle',
-    copied_toast: 'Copied to clipboard!'
+    copied_toast: 'Copied to clipboard!',
+    aov_label: 'AVG ORDER VALUE (AOV)',
+    aov_sub: 'Target: >$50 per customer',
+    retention_label: 'RETENTION RATE',
+    retention_sub: 'Repeat buyers',
+    unique_buyers_label: 'TOTAL BUYERS (30D)',
+    unique_buyers_sub: 'Unique customer accounts',
+    vip_customer_label: 'TOP VIP CUSTOMER',
+    action_vip_title: '👑 VIP Loyalty & Repeat Purchase Offer',
+    action_vip_desc: 'Identify top spenders and draft an exclusive VIP appreciation reward to trigger high-margin reorders.',
+    action_post_title: '📦 3-Day Post-Delivery Review & Upsell',
+    action_post_desc: 'Automated 3-day post-delivery sequence requesting photo reviews and recommending a complementary item.',
   },
   ro: {
     brand_sub_pro: 'AUTONOMOUS PRO',
@@ -96,7 +107,7 @@ const I18N = {
     tab_actions: '⚡ CAMPANII 1-CLICK',
     tab_plans: '💎 ABONAMENTE',
     health_score_label: 'SCOR SĂNĂTATE',
-    listen_briefing: '🔊 ASCULTĂ BRIEFINGUL VOCAL',
+    listen_briefing: '🔊 ASCULTĂ RAPORTUL VOCAL',
     stop_voice: '⏹️ OPREȘTE VOCEA',
     voice_locked_msg: '🔒 Vocea autonomă Jarvis este disponibilă în Planul Pro.',
     unlock_pro: 'Deblochează ($9.99)',
@@ -109,6 +120,17 @@ const I18N = {
     abandoned_ok: '✅ Niciun coș pierdut',
     new_customers: 'CLIENȚI NOI (24H)',
     customers_sub: 'Bază totală în creștere',
+    aov_label: 'VALOARE MEDIE COMANDĂ (AOV)',
+    aov_sub: 'Țintă: creștere valoare coș',
+    retention_label: 'RATĂ DE RETENȚIE',
+    retention_sub: 'Clienți care revin',
+    unique_buyers_label: 'CUMPĂRĂTORI UNICI (30Z)',
+    unique_buyers_sub: 'Conturi unice cumpărători',
+    vip_customer_label: 'TOP CLIENT VIP',
+    action_vip_title: '👑 Campanie VIP & Fidelizare Clienți',
+    action_vip_desc: 'Identifică cumpărătorii de top și generează un email exclusiv cu discount VIP pentru comenzi repetate.',
+    action_post_title: '📦 Secvență Post-Cumpărare & Review 5⭐',
+    action_post_desc: 'Email trimis la 3 zile după livrare pentru recenzii de 5 stele și vânzare de produse complementare.',
     tactical_plan: '🎯 PLAN TACTIC PENTRU ASTĂZI',
     ai_prioritized: 'PRIORITIZAT AI',
     analyzing_priorities: 'Jarvis analizează prioritățile magazinului...',
@@ -226,22 +248,64 @@ export default function App() {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [chatMessages])
 
+  const audioRef = useRef(null)
+
+  const stopSpeaking = () => {
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current.currentTime = 0
+      audioRef.current = null
+    }
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel()
+    }
+    setIsSpeaking(false)
+  }
+
   // Text-To-Speech Voice Engine (Jarvis Voice)
   const speakText = (text) => {
-    if (!('speechSynthesis' in window) || !voiceEnabled) return
-    window.speechSynthesis.cancel()
+    if (!voiceEnabled || !text) return
+    stopSpeaking()
+    setIsSpeaking(true)
 
-    const utterance = new SpeechSynthesisUtterance(text)
-    utterance.rate = 1.02
+    // Clean markdown and special symbols so speech flows naturally
+    const cleanText = text.replace(/[*#_`~[\]()]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 320)
+
+    // Use native server-side neural TTS for 100% natural, correct pronunciation in Romanian or English
+    const audioUrl = `/api/tts?lang=${encodeURIComponent(lang)}&text=${encodeURIComponent(cleanText)}`
+    const audio = new Audio(audioUrl)
+    audioRef.current = audio
+
+    audio.onended = () => {
+      setIsSpeaking(false)
+      audioRef.current = null
+    }
+
+    audio.onerror = () => {
+      console.warn('Server TTS stream failed, fallback to Web Speech API')
+      fallbackSpeechSynthesis(cleanText)
+    }
+
+    audio.play().catch(() => {
+      fallbackSpeechSynthesis(cleanText)
+    })
+  }
+
+  const fallbackSpeechSynthesis = (cleanText) => {
+    if (!('speechSynthesis' in window)) {
+      setIsSpeaking(false)
+      return
+    }
+    const utterance = new SpeechSynthesisUtterance(cleanText)
+    utterance.rate = 1.0
     utterance.pitch = 0.95
+    utterance.lang = lang === 'ro' ? 'ro-RO' : 'en-US'
 
     const voices = window.speechSynthesis.getVoices()
     if (lang === 'en') {
-      utterance.lang = 'en-US'
       const enVoice = voices.find(v => v.lang.includes('en-GB') || v.lang.includes('en-US'))
       if (enVoice) utterance.voice = enVoice
     } else {
-      utterance.lang = 'ro-RO'
       const roVoice = voices.find(v => v.lang.includes('ro') || v.lang.includes('RO'))
       if (roVoice) utterance.voice = roVoice
     }
@@ -249,7 +313,6 @@ export default function App() {
     utterance.onstart = () => setIsSpeaking(true)
     utterance.onend = () => setIsSpeaking(false)
     utterance.onerror = () => setIsSpeaking(false)
-
     window.speechSynthesis.speak(utterance)
   }
 
@@ -258,7 +321,7 @@ export default function App() {
       setActiveTab('plans')
       return
     }
-    const voiceText = briefing?.voice_script || briefing?.summary || "Systems are online. All protocols nominal."
+    const voiceText = briefing?.voice_script || briefing?.summary || (lang === 'ro' ? "Sistemele sunt online. Toate protocoalele funcționează optim." : "Systems are online. All protocols nominal.")
     speakText(voiceText)
   }
 
@@ -322,6 +385,14 @@ export default function App() {
       prompt = lang === 'ro'
         ? `Fă un audit rapid de conversie pentru produsele mele și sugerează 3 îmbunătățiri directe de titlu și descriere ca să convingă vizitatorii să cumpere din primul minut.`
         : `Conduct a rapid conversion audit on my store catalog. Recommend 3 direct title and description optimizations to boost click-through rate and compel first-time visitors to purchase.`
+    } else if (type === 'vip_reward') {
+      prompt = lang === 'ro'
+        ? `Analizează clienții fideli și top cumpărătorii magazinului. Scrie un email VIP exclusiv de fidelizare și mulțumire, oferindu-le un beneficiu sau discount secret de 15% VIP, făcându-i să se simtă speciali și stimulând o nouă comandă recurentă de valoare mare.`
+        : `Analyze our repeat customers and top spenders. Draft an exclusive VIP loyalty email thanking them, offering a secret 15% VIP incentive, and inspiring a high-margin repeat purchase.`
+    } else if (type === 'post_purchase') {
+      prompt = lang === 'ro'
+        ? `Scrie o secvență automată de email post-cumpărare (trimisă la 3 zile după livrare) pentru clienții noi. Include: mulțumire călduroasă, sfat util de folosire a produsului, cerere prietenoasă de recenzie cu poză de 5 stele și o recomandare atractivă de produs complementar (upsell/cross-sell).`
+        : `Draft an automated 3-day post-delivery email sequence for first-time buyers. Include warm gratitude, a useful product care tip, a 5-star photo review request, and an enticing recommendation for a complementary product.`
     }
 
     try {
@@ -563,6 +634,41 @@ export default function App() {
               </div>
             </div>
 
+            {/* Customer Intelligence & Retention Metrics */}
+            <div className="metrics-row customer-row">
+              <div className="metric-card">
+                <div className="metric-header">{t.aov_label}</div>
+                <div className="metric-value">
+                  {snapshot?.aov || 0} <span className="currency">{snapshot?.currency || 'USD'}</span>
+                </div>
+                <div className="metric-footer highlight-cyan">{t.aov_sub}</div>
+              </div>
+
+              <div className="metric-card">
+                <div className="metric-header">{t.retention_label}</div>
+                <div className="metric-value highlight-cyan">
+                  {snapshot?.returning_rate || 0}%
+                </div>
+                <div className="metric-footer">{snapshot?.repeat_customers || 0} {t.retention_sub}</div>
+              </div>
+
+              <div className="metric-card">
+                <div className="metric-header">{t.unique_buyers_label}</div>
+                <div className="metric-value">{snapshot?.total_unique_customers || 0}</div>
+                <div className="metric-footer">{t.unique_buyers_sub}</div>
+              </div>
+
+              <div className="metric-card">
+                <div className="metric-header">{t.vip_customer_label}</div>
+                <div className="metric-value vip-name">
+                  {snapshot?.vip_customers && snapshot.vip_customers[0] ? snapshot.vip_customers[0].name : '—'}
+                </div>
+                <div className="metric-footer highlight-gold">
+                  {snapshot?.vip_customers && snapshot.vip_customers[0] ? `${snapshot.vip_customers[0].total_spent.toFixed(2)} ${snapshot?.currency}` : (lang === 'ro' ? 'Se acumulează date' : 'Aggregating')}
+                </div>
+              </div>
+            </div>
+
             {/* Tactical Briefing & Daily Action List */}
             <div className="two-columns">
               <div className="hud-card">
@@ -707,6 +813,24 @@ export default function App() {
               <div className="action-badge">CONVERSION AUDIT</div>
               <h3>{t.action_seo_title}</h3>
               <p>{t.action_seo_desc}</p>
+              <button className="action-trigger-btn" disabled={generatingAction}>
+                {generatingAction ? t.action_generating : t.action_trigger}
+              </button>
+            </div>
+
+            <div className="action-card" onClick={() => runQuickAction('vip_reward')}>
+              <div className="action-badge highlight-gold">CUSTOMER RETENTION (VIP)</div>
+              <h3>{t.action_vip_title}</h3>
+              <p>{t.action_vip_desc}</p>
+              <button className="action-trigger-btn" disabled={generatingAction}>
+                {generatingAction ? t.action_generating : t.action_trigger}
+              </button>
+            </div>
+
+            <div className="action-card" onClick={() => runQuickAction('post_purchase')}>
+              <div className="action-badge">LTV & UPSELL</div>
+              <h3>{t.action_post_title}</h3>
+              <p>{t.action_post_desc}</p>
               <button className="action-trigger-btn" disabled={generatingAction}>
                 {generatingAction ? t.action_generating : t.action_trigger}
               </button>
@@ -1202,6 +1326,10 @@ const styles = `
 
 .highlight-green { color: var(--green-glow); }
 .highlight-orange { color: #fb923c; }
+.highlight-cyan { color: var(--cyan-glow); }
+.highlight-gold { color: #f59e0b; font-weight: 700; }
+.vip-name { font-size: 16px !important; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+.customer-row { margin-top: -4px; margin-bottom: 20px; }
 
 .two-columns {
   display: grid;

@@ -5,9 +5,11 @@ from typing import Optional
 
 from fastapi import FastAPI, Request, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, HTMLResponse, FileResponse
+from fastapi.responses import RedirectResponse, HTMLResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+import urllib.parse
+import httpx
 
 import database as db
 from shopify_auth import verify_hmac, build_install_url, exchange_code_for_token
@@ -266,6 +268,37 @@ async def status(shop: str = Query(None)):
             "plan":      record.get("plan") if record else None,
         }
     return {"status": "Jarvis for Shopify API — online ✅"}
+
+
+@app.get("/api/tts")
+async def get_tts(text: str = Query(...), lang: str = Query("ro")):
+    """Returns authentic native Text-To-Speech audio stream for Jarvis."""
+    # Clean text from special characters or markdown
+    clean_text = "".join(ch for ch in text if ch.isalnum() or ch in " .,!?:-")
+    clean_text = clean_text[:350].strip()
+    if not clean_text:
+        clean_text = "Jarvis online"
+        
+    tl = "ro" if lang == "ro" else "en"
+    encoded_text = urllib.parse.quote(clean_text)
+    tts_url = f"https://translate.google.com/translate_tts?ie=UTF-8&q={encoded_text}&tl={tl}&client=tw-ob"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            r = await client.get(tts_url, headers=headers)
+            if r.status_code == 200:
+                return Response(
+                    content=r.content,
+                    media_type="audio/mpeg",
+                    headers={
+                        "Content-Type": "audio/mpeg",
+                        "Cache-Control": "public, max-age=86400",
+                        "Accept-Ranges": "bytes"
+                    }
+                )
+    except Exception as e:
+        print("TTS error:", e)
+    raise HTTPException(500, "TTS audio stream failed")
 
 
 # ── Privacy Policy (Required by Shopify App Store) ───────────────────────────

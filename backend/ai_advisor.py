@@ -34,6 +34,12 @@ class AIAdvisor:
             items = [f"  • {p['name']}: {p['units']} unități" for p in snap["top_products"]]
             top_str = "\nTop produse (30 zile):\n" + "\n".join(items)
 
+        vip_str = ""
+        if snap.get("vip_customers"):
+            v_list = [f"  • {c['name']}: {c['total_spent']:.2f} {snap.get('currency')} ({c['orders_count']} comenzi)" for c in snap["vip_customers"] if c.get("total_spent", 0) > 0]
+            if v_list:
+                vip_str = "\nTop Clienți VIP:\n" + "\n".join(v_list)
+
         return f"""
 Magazin: {snap.get('shop_name')}
 Data: {datetime.now().strftime('%d %B %Y, %H:%M')}
@@ -43,9 +49,13 @@ CIFRE CHEIE:
 • Comenzi (30 zile): {snap.get('orders_30d', 0)}
 • Venit azi: {snap.get('revenue_today', 0)} {snap.get('currency')}
 • Venit (30 zile): {snap.get('revenue_30d', 0)} {snap.get('currency')}
+• Valoare Medie Comandă (AOV): {snap.get('aov', 0)} {snap.get('currency')}
 • Coșuri abandonate (7 zile): {snap.get('abandoned_carts', 0)}
 • Clienți noi (24h): {snap.get('new_customers_24h', 0)}
+• Total cumpărători unici (30z): {snap.get('total_unique_customers', 0)}
+• Clienți recurenți (fideli): {snap.get('repeat_customers', 0)} ({snap.get('returning_rate', 0)}% retenție)
 {top_str}
+{vip_str}
 {low_stock_str}
 """.strip()
 

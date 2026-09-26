@@ -100,8 +100,33 @@ class ShopifyClient:
         shop_info = await self.get_shop_info()
 
         # Revenue calc
-        revenue_30d = sum(float(o["total_price"]) for o in orders)
-        revenue_today = sum(float(o["total_price"]) for o in today_orders)
+        revenue_30d = sum(float(o.get("total_price", 0)) for o in orders)
+        revenue_today = sum(float(o.get("total_price", 0)) for o in today_orders)
+        aov = round(revenue_30d / len(orders), 2) if len(orders) > 0 else 0.0
+
+        # Customer Intelligence & Segmentation
+        customer_map: Dict[str, Dict[str, Any]] = {}
+        for order in orders:
+            cust = order.get("customer")
+            if cust:
+                cid = str(cust.get("id") or cust.get("email") or "guest")
+                first = cust.get("first_name") or ""
+                last = cust.get("last_name") or ""
+                full_name = f"{first} {last}".strip() or "Client"
+                if cid not in customer_map:
+                    customer_map[cid] = {
+                        "name": full_name,
+                        "email": cust.get("email", ""),
+                        "orders_count": 0,
+                        "total_spent": 0.0,
+                    }
+                customer_map[cid]["orders_count"] += 1
+                customer_map[cid]["total_spent"] += float(order.get("total_price", 0))
+
+        total_unique = len(customer_map)
+        repeat_count = sum(1 for c in customer_map.values() if c["orders_count"] > 1)
+        returning_rate = round((repeat_count / total_unique * 100), 1) if total_unique > 0 else 0.0
+        vip_customers = sorted(customer_map.values(), key=lambda x: x["total_spent"], reverse=True)[:3]
 
         # Top products from orders
         product_sales: Dict[str, int] = {}
@@ -112,16 +137,21 @@ class ShopifyClient:
         top_products = sorted(product_sales.items(), key=lambda x: x[1], reverse=True)[:5]
 
         return {
-            "shop_name":        shop_info.get("name", "Magazinul tău"),
-            "orders_30d":       len(orders),
-            "orders_today":     len(today_orders),
-            "revenue_30d":      round(revenue_30d, 2),
-            "revenue_today":    round(revenue_today, 2),
-            "abandoned_carts":  len(abandoned),
-            "low_stock_items":  low_stock,
-            "new_customers_24h": new_customers,
-            "top_products":     [{"name": p[0], "units": p[1]} for p in top_products],
-            "currency":         shop_info.get("currency", "USD"),
+            "shop_name":              shop_info.get("name", "Magazinul tău"),
+            "orders_30d":             len(orders),
+            "orders_today":           len(today_orders),
+            "revenue_30d":            round(revenue_30d, 2),
+            "revenue_today":          round(revenue_today, 2),
+            "aov":                    aov,
+            "abandoned_carts":        len(abandoned),
+            "low_stock_items":        low_stock,
+            "new_customers_24h":       new_customers,
+            "total_unique_customers": total_unique,
+            "repeat_customers":       repeat_count,
+            "returning_rate":         returning_rate,
+            "vip_customers":          vip_customers,
+            "top_products":           [{"name": p[0], "units": p[1]} for p in top_products],
+            "currency":               shop_info.get("currency", "USD"),
         }
 
     # ── GraphQL Billing API ───────────────────────────────────────────────────
