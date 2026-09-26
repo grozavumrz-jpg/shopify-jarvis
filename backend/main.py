@@ -40,6 +40,20 @@ def startup():
     db.init_db()
 
 
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    shop = request.query_params.get("shop", "*.myshopify.com")
+    response.headers["Content-Security-Policy"] = (
+        f"frame-ancestors https://{shop} https://admin.shopify.com https://*.myshopify.com;"
+    )
+    if "x-frame-options" in response.headers:
+        del response.headers["x-frame-options"]
+    if "X-Frame-Options" in response.headers:
+        del response.headers["X-Frame-Options"]
+    return response
+
+
 # ── Frontend ──────────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
@@ -49,10 +63,30 @@ async def root(request: Request):
         canonical_shop = shop if shop.endswith(".myshopify.com") else f"{shop}.myshopify.com"
         record = db.get_shop(canonical_shop)
         if not record:
-            return RedirectResponse(f"/auth/install?shop={shop}")
+            install_url = f"/auth/install?shop={shop}"
+            return HTMLResponse(f"""
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <script>
+                        var installUrl = "{install_url}";
+                        if (window.top !== window.self) {{
+                            window.top.location.href = installUrl;
+                        }} else {{
+                            window.location.href = installUrl;
+                        }}
+                    </script>
+                </head>
+                <body style="font-family: system-ui; text-align: center; padding-top: 50px;">
+                    <p>Se inițializează Jarvis...</p>
+                </body>
+                </html>
+            """)
     index = os.path.join(FRONTEND_DIST, "index.html")
     if os.path.exists(index):
-        return FileResponse(index)
+        with open(index, "r", encoding="utf-8") as f:
+            content = f.read()
+        return HTMLResponse(content)
     return HTMLResponse("<h1>Jarvis for Shopify — backend running ✅</h1>")
 
 
@@ -94,10 +128,27 @@ async def callback(request: Request):
     # Save to DB
     db.upsert_shop(shop, access_token, shop_name)
 
-    # Redirect to app inside Shopify admin
-    return RedirectResponse(
-        f"https://{shop}/admin/apps/{SHOPIFY_API_KEY}"
-    )
+    # Escape iframe and redirect to embedded app inside Shopify admin
+    shop_sub = shop.replace(".myshopify.com", "")
+    target_url = f"https://admin.shopify.com/store/{shop_sub}/apps/{SHOPIFY_API_KEY}"
+    return HTMLResponse(f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <script>
+                var target = "{target_url}";
+                if (window.top !== window.self) {{
+                    window.top.location.href = target;
+                }} else {{
+                    window.location.href = target;
+                }}
+            </script>
+        </head>
+        <body style="font-family: system-ui; text-align: center; padding-top: 50px;">
+            <p>Instalare finalizată! Se deschide Jarvis...</p>
+        </body>
+        </html>
+    """)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
