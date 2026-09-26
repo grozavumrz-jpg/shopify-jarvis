@@ -1380,7 +1380,14 @@ const styles = `
   font-size: 10px;
   font-weight: 700;
   color: var(--cyan-glow);
-  margin-bottom: 4px;
+  margin-bottom: 6px;
+}
+
+.bubble-body {
+  white-space: pre-wrap;
+  line-height: 1.6;
+  font-size: 14px;
+  word-break: break-word;
 }
 
 .chat-input-bar {
