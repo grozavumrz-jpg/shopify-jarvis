@@ -1,16 +1,19 @@
 import os
 import json
 from datetime import datetime
-import google.generativeai as genai
+import httpx
 from typing import Dict, Any, List
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-genai.configure(api_key=GEMINI_API_KEY)
+API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
 
 
 class AIAdvisor:
     def __init__(self):
-        self.model = genai.GenerativeModel("gemini-1.5-flash")
+        self.api_key = GEMINI_API_KEY
+
+    def _get_api_key(self):
+        return os.getenv("GEMINI_API_KEY", self.api_key)
 
     def _snapshot_to_text(self, snap: Dict) -> str:
         low_stock_str = ""
@@ -37,6 +40,32 @@ CIFRE CHEIE:
 {top_str}
 {low_stock_str}
 """.strip()
+
+    async def _call_gemini(self, prompt: str) -> str:
+        key = self._get_api_key()
+        url = f"{API_URL}?key={key}"
+        payload = {
+            "contents": [
+                {
+                    "parts": [{"text": prompt}]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.7,
+                "maxOutputTokens": 1000
+            }
+        }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            res = await client.post(url, json=payload)
+            if res.status_code != 200:
+                raise Exception(f"Google AI Status {res.status_code}: {res.text}")
+            data = res.json()
+            candidates = data.get("candidates", [])
+            if candidates and "content" in candidates[0]:
+                parts = candidates[0]["content"].get("parts", [])
+                if parts:
+                    return parts[0].get("text", "").strip()
+            return ""
 
     async def generate_briefing(self, snapshot: Dict) -> Dict:
         """Generate the daily morning briefing."""
@@ -66,17 +95,14 @@ Returnează un JSON cu exact această structură (fără markdown, doar JSON pur
 }}"""
 
         try:
-            resp = self.model.generate_content(prompt)
-            text = resp.text.strip()
-            # Extract JSON
+            text = await self._call_gemini(prompt)
             start = text.find("{")
             end   = text.rfind("}") + 1
             if start >= 0 and end > start:
                 return json.loads(text[start:end])
-        except Exception as e:
+        except Exception:
             pass
 
-        # Fallback briefing
         return self._fallback_briefing(snapshot)
 
     async def chat(self, shop_name: str, snapshot: Dict, history: List[Dict], message: str) -> str:
@@ -90,7 +116,7 @@ Returnează un JSON cu exact această structură (fără markdown, doar JSON pur
 
         prompt = f"""Ești Jarvis, asistentul personal al magazinului Shopify "{shop_name}".
 Ai acces la datele reale ale magazinului. Ești direct, prietenos, practic.
-Răspunzi ÎNTOTDEAUNA în română, cu sfaturi concrete.
+Răspunzi ÎNTOTDEAUNA în română, cu sfaturi concrete de creștere a vânzărilor.
 
 DATE MAGAZIN:
 {context}
@@ -102,8 +128,7 @@ Tu: {message}
 Jarvis:"""
 
         try:
-            resp = self.model.generate_content(prompt)
-            return resp.text.strip()
+            return await self._call_gemini(prompt)
         except Exception as e:
             return f"❌ Eroare AI: {str(e)}"
 
