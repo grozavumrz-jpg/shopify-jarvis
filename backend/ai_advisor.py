@@ -67,10 +67,12 @@ CIFRE CHEIE:
                     return parts[0].get("text", "").strip()
             return ""
 
-    async def generate_briefing(self, snapshot: Dict) -> Dict:
-        """Generate the daily morning briefing."""
+    async def generate_briefing(self, snapshot: Dict, lang: str = "en") -> Dict:
+        """Generate the daily morning briefing in the requested language."""
         context = self._snapshot_to_text(snapshot)
-        prompt = f"""Ești Jarvis, asistentul personal al unui antreprenor Shopify.
+        
+        if lang == "ro":
+            prompt = f"""Ești Jarvis, asistentul personal al unui antreprenor Shopify.
 Analizează datele magazinului și generează un briefing zilnic motivant și util.
 
 DATE MAGAZIN:
@@ -93,6 +95,30 @@ Returnează un JSON cu exact această structură (fără markdown, doar JSON pur
   "traffic_tip": "Un sfat concret pentru a aduce trafic azi (Instagram, TikTok, email etc.)",
   "motivation": "O frază motivantă scurtă pentru ziua de azi"
 }}"""
+        else:
+            prompt = f"""You are JARVIS, the autonomous AI co-founder for a Shopify merchant.
+Analyze the store telemetry and generate an actionable, motivating morning briefing.
+
+STORE TELEMETRY:
+{context}
+
+Return pure JSON with this exact structure (no markdown):
+{{
+  "health_score": 85,
+  "greeting": "Concise, charismatic Jarvis greeting (1 sentence, e.g. 'Good morning, systems online and ready for growth.')",
+  "voice_script": "Concise spoken voice script of 2-3 sentences for text-to-speech audio report (e.g. 'All systems nominal. Yesterday we recorded X orders. We have Y abandoned checkouts ready for recovery. Here is today\'s tactical plan.')",
+  "summary": "2-3 sentence executive summary of revenue, momentum, and bottlenecks.",
+  "top_tasks": [
+    {{"priority": 1, "task": "Concrete high-impact action #1", "why": "Strategic reasoning", "icon": "🎯"}},
+    {{"priority": 2, "task": "Concrete high-impact action #2", "why": "Strategic reasoning", "icon": "📦"}},
+    {{"priority": 3, "task": "Concrete high-impact action #3", "why": "Strategic reasoning", "icon": "📈"}}
+  ],
+  "alerts": [
+    {{"type": "warning", "message": "Critical alert if any (e.g. abandoned carts or low stock)", "action": "Immediate corrective action"}}
+  ],
+  "traffic_tip": "High-converting growth strategy for today (TikTok hook, Instagram story, or retention email)",
+  "motivation": "Punchy stoic or entrepreneurial motivation"
+}}"""
 
         try:
             text = await self._call_gemini(prompt)
@@ -103,18 +129,19 @@ Returnează un JSON cu exact această structură (fără markdown, doar JSON pur
         except Exception:
             pass
 
-        return self._fallback_briefing(snapshot)
+        return self._fallback_briefing(snapshot, lang)
 
-    async def chat(self, shop_name: str, snapshot: Dict, history: List[Dict], message: str) -> str:
+    async def chat(self, shop_name: str, snapshot: Dict, history: List[Dict], message: str, lang: str = "en") -> str:
         """Answer a question about the store."""
         context = self._snapshot_to_text(snapshot)
 
         history_str = ""
         for h in history[-8:]:
-            role = "Tu" if h["role"] == "user" else "Jarvis"
+            role = "Merchant" if h["role"] == "user" else "Jarvis"
             history_str += f"{role}: {h['content']}\n"
 
-        prompt = f"""Ești Jarvis, asistentul personal al magazinului Shopify "{shop_name}".
+        if lang == "ro":
+            prompt = f"""Ești Jarvis, asistentul personal al magazinului Shopify "{shop_name}".
 Ai acces la datele reale ale magazinului. Ești direct, prietenos, practic.
 Răspunzi ÎNTOTDEAUNA în română, cu sfaturi concrete de creștere a vânzărilor.
 
@@ -126,38 +153,69 @@ CONVERSAȚIE:
 Tu: {message}
 
 Jarvis:"""
+        else:
+            prompt = f"""You are JARVIS, the autonomous strategic AI partner for the Shopify store "{shop_name}".
+You have real-time access to live store telemetry, inventory, abandoned checkouts, and customer metrics.
+Be concise, proactive, charismatic, and growth-focused (like Tony Stark's JARVIS for eCommerce).
+Always reply in English with actionable revenue-generating tactics.
+
+STORE TELEMETRY:
+{context}
+
+CONVERSATION LOG:
+{history_str}
+Merchant: {message}
+
+JARVIS:"""
 
         try:
             return await self._call_gemini(prompt)
         except Exception as e:
-            return f"❌ Eroare AI: {str(e)}"
+            return f"❌ AI Protocol Error: {str(e)}"
 
-    def _fallback_briefing(self, snap: Dict) -> Dict:
+    def _fallback_briefing(self, snap: Dict, lang: str = "en") -> Dict:
         alerts = []
         if snap.get("abandoned_carts", 0) > 0:
             alerts.append({
                 "type": "warning",
-                "message": f"{snap['abandoned_carts']} coșuri abandonate",
-                "action": "Trimite email cu discount 10%"
+                "message": f"{snap['abandoned_carts']} abandoned checkouts detected" if lang == "en" else f"{snap['abandoned_carts']} coșuri abandonate",
+                "action": "Send 10% recovery discount link" if lang == "en" else "Trimite email cu discount 10%"
             })
         if snap.get("low_stock_items"):
             alerts.append({
                 "type": "danger",
-                "message": f"{len(snap['low_stock_items'])} produse cu stoc mic",
-                "action": "Reaprovizionează urgent"
+                "message": f"{len(snap['low_stock_items'])} items with critical low stock" if lang == "en" else f"{len(snap['low_stock_items'])} produse cu stoc mic",
+                "action": "Restock urgently" if lang == "en" else "Reaprovizionează urgent"
             })
 
-        return {
-            "health_score": 82,
-            "greeting": f"Protocoalele active, Jarvis la raport. Să creștem vânzările pentru {snap.get('shop_name')}! 🚀",
-            "voice_script": f"Bună dimineața! Telemetria magazinului este activă. Ai înregistrat {snap.get('orders_today', 0)} comenzi și avem oportunități de creștere. Iată prioritățile zilei.",
-            "summary": f"Ieri ai avut {snap.get('orders_today', 0)} comenzi și {snap.get('revenue_today', 0)} {snap.get('currency', 'USD')} venit. Hai să facem azi și mai bine!",
-            "top_tasks": [
-                {"priority": 1, "task": "Verifică și expediază comenzile noi", "why": "Clienții mulțumiți lasă recenzii de 5 stele", "icon": "📦"},
-                {"priority": 2, "task": "Postează pe TikTok/Reels produsul vedetă", "why": "Atrage trafic cald fără costuri de reclamă", "icon": "📱"},
-                {"priority": 3, "task": "Trimite email celor cu coș abandonat", "why": f"{snap.get('abandoned_carts', 0)} potențiali clienți de recuperat", "icon": "📧"},
-            ],
-            "alerts": alerts,
-            "traffic_tip": "Postează un video demonstrativ de 15 secunde pe TikTok cu cel mai popular produs și adaugă link în bio.",
-            "motivation": "Fiecare vânzare de azi e un pas către independența ta financiară! 💪"
-        }
+        if lang == "ro":
+            return {
+                "health_score": 82,
+                "greeting": f"Protocoalele active, Jarvis la raport. Să creștem vânzările pentru {snap.get('shop_name')}! 🚀",
+                "voice_script": f"Bună dimineața! Telemetria magazinului este activă. Ai înregistrat {snap.get('orders_today', 0)} comenzi și avem oportunități de creștere. Iată prioritățile zilei.",
+                "summary": f"Ieri ai avut {snap.get('orders_today', 0)} comenzi și {snap.get('revenue_today', 0)} {snap.get('currency', 'USD')} venit. Hai să facem azi și mai bine!",
+                "top_tasks": [
+                    {"priority": 1, "task": "Verifică și expediază comenzile noi", "why": "Clienții mulțumiți lasă recenzii de 5 stele", "icon": "📦"},
+                    {"priority": 2, "task": "Postează pe TikTok/Reels produsul vedetă", "why": "Atrage trafic cald fără costuri de reclamă", "icon": "📱"},
+                    {"priority": 3, "task": "Trimite email celor cu coș abandonat", "why": f"{snap.get('abandoned_carts', 0)} potențiali clienți de recuperat", "icon": "📧"},
+                ],
+                "alerts": alerts,
+                "traffic_tip": "Postează un video demonstrativ de 15 secunde pe TikTok cu cel mai popular produs și adaugă link în bio.",
+                "motivation": "Fiecare vânzare de azi e un pas către independența ta financiară! 💪"
+            }
+        else:
+            return {
+                "health_score": 85,
+                "greeting": f"Good morning! Systems nominal. Let's scale revenue for {snap.get('shop_name')} today. 🚀",
+                "voice_script": f"Good morning! Store telemetry is active. We recorded {snap.get('orders_today', 0)} orders today and {snap.get('abandoned_carts', 0)} abandoned checkouts ready for recovery. Here are today's tactical priorities.",
+                "summary": f"Store generated {snap.get('orders_today', 0)} orders and {snap.get('revenue_today', 0)} {snap.get('currency', 'USD')} revenue today. Momentum is positive.",
+                "top_tasks": [
+                    {"priority": 1, "task": "Dispatch pending orders promptly", "why": "Fast fulfillment drives 5-star customer retention", "icon": "📦"},
+                    {"priority": 2, "task": "Launch viral 30s TikTok/Reels featuring best seller", "why": "Free organic traffic with zero ad spend", "icon": "📱"},
+                    {"priority": 3, "task": "Send automated recovery email for abandoned checkouts", "why": f"Recover high-intent revenue from {snap.get('abandoned_carts', 0)} carts", "icon": "📧"},
+                ],
+                "alerts": alerts,
+                "traffic_tip": "Post a 15-second product demonstration video on TikTok showcasing the main customer benefit, with a direct bio link.",
+                "motivation": "Consistency builds empires. Make every action count today! 💪"
+            }
+

@@ -1,8 +1,177 @@
 import React, { useState, useEffect, useRef } from 'react'
 
+// Multi-language dictionary (English & Romanian)
+const I18N = {
+  en: {
+    brand_sub_pro: 'AUTONOMOUS PRO',
+    brand_sub_free: 'OBSERVER MODE',
+    telemetry_connected: 'STORE TELEMETRY CONNECTED',
+    voice_active: '🎙️ VOICE: ACTIVE',
+    voice_mute: '🔇 VOICE: MUTE',
+    upgrade_btn: '⚡ UPGRADE PRO ($9.99/mo)',
+    pro_active_badge: '💎 PRO ACTIVE • 7-DAY TRIAL',
+    tab_hud: '🪐 TELEMETRY & REPORT',
+    tab_chat: '💬 CHAT WITH JARVIS',
+    tab_actions: '⚡ 1-CLICK CAMPAIGNS',
+    tab_plans: '💎 SUBSCRIPTIONS',
+    health_score_label: 'HEALTH SCORE',
+    listen_briefing: '🔊 LISTEN TO VOICE BRIEFING',
+    stop_voice: '⏹️ STOP VOICE',
+    voice_locked_msg: '🔒 Jarvis autonomous voice is available on Pro Plan.',
+    unlock_pro: 'Unlock ($9.99)',
+    orders_today: 'ORDERS TODAY',
+    orders_sub: '▲ Synced in real-time',
+    revenue_today: 'REVENUE TODAY',
+    revenue_30d: '30 days:',
+    abandoned_carts: 'ABANDONED CARTS',
+    abandoned_alert: '⚠️ Immediate revenue recovery opportunity',
+    abandoned_ok: '✅ Zero lost checkouts',
+    new_customers: 'NEW CUSTOMERS (24H)',
+    customers_sub: 'Total customer base expanding',
+    tactical_plan: '🎯 TACTICAL PLAN FOR TODAY',
+    ai_prioritized: 'AI PRIORITIZED',
+    analyzing_priorities: 'Jarvis is analyzing store priorities...',
+    traffic_strategy: '📈 TRAFFIC STRATEGY & ALERTS',
+    daily_growth_tip: 'DAILY GROWTH TACTIC',
+    auto_diagnostics: 'AUTOMATED DIAGNOSTICS:',
+    store_nominal: 'All store parameters are optimal. No critical anomalies detected.',
+    chat_welcome_title: 'Jarvis is ready.',
+    chat_welcome_desc: 'I know your catalog, inventory levels, and live orders. Where shall we start accelerating growth today?',
+    chip_1: '💡 Why are my sales low today and what can I fix immediately?',
+    chip_2: '📱 Write a high-converting video script for my best selling product.',
+    chip_3: '🛒 How do I recover the recent abandoned checkouts with a discount?',
+    chat_placeholder_free: 'Ask Jarvis ({count} free questions left today)...',
+    chat_placeholder_pro: 'Command Jarvis any task regarding your store...',
+    chat_send: 'SEND',
+    thinking_text: 'Processing store telemetry with Gemini AI...',
+    action_tiktok_title: '🎬 Viral 30s TikTok/Reels Script',
+    action_tiktok_desc: 'Jarvis writes a 3-step high-converting video script (Visual Hook in first 3s, Core Problem/Solution, and direct CTA) tailored to your catalog.',
+    action_email_title: '📧 Magnetic Cart Recovery Email',
+    action_email_desc: 'Generates a persuasive abandoned checkout email with subject line, emotional angle, and 10% discount code offer.',
+    action_seo_title: '🔍 Conversion & SEO Catalog Audit',
+    action_seo_desc: 'Scans your product catalog and rewrites product titles/descriptions to rank higher on Google and convert first-time visitors.',
+    action_trigger: 'GENERATE NOW →',
+    action_generating: 'GENERATING WITH AI...',
+    pricing_title: 'CHOOSE THE INTELLIGENCE LEVEL FOR YOUR STORE',
+    pricing_sub: 'No expensive agencies or employees. Jarvis is your 24/7 technical and marketing co-founder.',
+    plan_free_title: 'Observer Mode',
+    plan_free_badge: 'BASIC PLAN',
+    plan_free_price: '$0',
+    plan_free_period: '/ forever',
+    plan_free_desc: 'Monitors orders and gives high-level visibility over store metrics.',
+    plan_free_perk1: '✔ Real-time sales & order dashboard',
+    plan_free_perk2: '✔ 3 free manual chat questions / day',
+    plan_free_perk3: '✔ Text-only daily briefing on demand',
+    plan_free_dim1: '✖ No autonomous audio voice',
+    plan_free_dim2: '✖ No 1-click viral campaign generators',
+    plan_free_dim3: '✖ No proactive loss detection alerts',
+    plan_free_btn_active: 'CURRENT PLAN',
+    plan_free_btn_switch: 'DOWNGRADE TO FREE',
+    plan_pro_title: 'Jarvis Autonomous Pro',
+    plan_pro_badge: 'RECOMMENDED FOR SALES',
+    plan_pro_price: '$9.99',
+    plan_pro_period: '/ month (7-day free trial)',
+    plan_pro_desc: 'Full-fledged autonomous AI partner with voice synthesis, predictive alerts, and automated revenue generators.',
+    plan_pro_perk1: '⭐ Jarvis Speaks to You: Daily synthetic voice audio report',
+    plan_pro_perk2: '⭐ Unlimited AI Chat: No question limits',
+    plan_pro_perk3: '⭐ 1-Click Campaigns: Viral TikTok scripts & cart emails',
+    plan_pro_perk4: '⭐ Proactive Loss Prevention: Instant cart alerts',
+    plan_pro_perk5: '⭐ Store Health Matrix: Live conversion & velocity audit',
+    plan_pro_perk6: '⭐ Daily AI Action Priorities with Gamified XP',
+    plan_pro_btn: '⚡ ACTIVATE JARVIS PRO ($9.99/mo - 7 DAYS TRIAL)',
+    plan_pro_btn_active: 'PRO ACTIVE (7-DAY FREE TRIAL)',
+    test_mode_toggle: '🧪 Developer Mock Toggle',
+    copied_toast: 'Copied to clipboard!'
+  },
+  ro: {
+    brand_sub_pro: 'AUTONOMOUS PRO',
+    brand_sub_free: 'OBSERVER MODE',
+    telemetry_connected: 'TELEMETRIE CONECTATĂ',
+    voice_active: '🎙️ VOCE: ACTIVĂ',
+    voice_mute: '🔇 VOCE: MUT',
+    upgrade_btn: '⚡ UPGRADE PRO ($9.99/lună)',
+    pro_active_badge: '💎 PRO ACTIV • 7 ZILE TRIAL',
+    tab_hud: '🪐 TELEMETRIE & RAPORT',
+    tab_chat: '💬 DISCUTĂ CU JARVIS',
+    tab_actions: '⚡ CAMPANII 1-CLICK',
+    tab_plans: '💎 ABONAMENTE',
+    health_score_label: 'SCOR SĂNĂTATE',
+    listen_briefing: '🔊 ASCULTĂ BRIEFINGUL VOCAL',
+    stop_voice: '⏹️ OPREȘTE VOCEA',
+    voice_locked_msg: '🔒 Vocea autonomă Jarvis este disponibilă în Planul Pro.',
+    unlock_pro: 'Deblochează ($9.99)',
+    orders_today: 'COMENZI ASTĂZI',
+    orders_sub: '▲ Sincronizat în timp real',
+    revenue_today: 'VENIT ASTĂZI',
+    revenue_30d: '30 zile:',
+    abandoned_carts: 'COȘURI ABANDONATE',
+    abandoned_alert: '⚠️ Oportunitate de recuperare imediată',
+    abandoned_ok: '✅ Niciun coș pierdut',
+    new_customers: 'CLIENȚI NOI (24H)',
+    customers_sub: 'Bază totală în creștere',
+    tactical_plan: '🎯 PLAN TACTIC PENTRU ASTĂZI',
+    ai_prioritized: 'PRIORITIZAT AI',
+    analyzing_priorities: 'Jarvis analizează prioritățile magazinului...',
+    traffic_strategy: '📈 STRATEGIE DE TRAFIC & ALERTE',
+    daily_growth_tip: 'SFATUL ZILEI PENTRU VÂNZĂRI',
+    auto_diagnostics: 'DIAGNOSTIC AUTOMAT:',
+    store_nominal: 'Magazinul funcționează la parametri normali. Nicio anomalie critică.',
+    chat_welcome_title: 'Jarvis este pregătit.',
+    chat_welcome_desc: 'Cunosc fiecare produs, stocul și comenzile tale. Cu ce începem optimizarea astăzi?',
+    chip_1: '💡 De ce nu am vânzări azi și ce pot schimba rapid?',
+    chip_2: '📱 Scrie un scenariu video captivant pentru cel mai vândut produs al meu.',
+    chip_3: '🛒 Cum recuperez cele mai recente coșuri abandonate?',
+    chat_placeholder_free: 'Întreabă-l pe Jarvis ({count} întrebări rămase azi)...',
+    chat_placeholder_pro: 'Ordonă-i lui Jarvis orice sarcină legată de magazin...',
+    chat_send: 'TRIMITE',
+    thinking_text: 'Se procesează telemetria magazinului cu Gemini AI...',
+    action_tiktok_title: '🎬 Script Video TikTok / Reels în 3 Pași',
+    action_tiktok_desc: 'Jarvis generează un scenariu video cu cârlig psihologic (Hook vizual în primele 3s, Problemă, Soluție și Call To Action) adaptat catalogului tău.',
+    action_email_title: '📧 Email Magnetic de Recuperare Coșuri',
+    action_email_desc: 'Scrie automat un email cu o rată uriașă de conversie pentru vizitatorii care au părăsit coșul fără să finalizeze comanda.',
+    action_seo_title: '🔍 Optimizare Titluri & Descrieri Produse',
+    action_seo_desc: 'Analizează catalogul tău de produse și îți rescrie titlurile ca să atragă căutări organice pe Google și să mărească rata de click.',
+    action_trigger: 'GENEREAZĂ ACUM →',
+    action_generating: 'GENERARE ÎN CURS...',
+    pricing_title: 'ALEGE NIVELUL DE INTELIGENȚĂ PENTRU MAGAZINUL TĂU',
+    pricing_sub: 'Fără angajați scumpi. Jarvis este cofondatorul tău tehnic și de marketing disponibil 24/7.',
+    plan_free_title: 'Observer Mode',
+    plan_free_badge: 'PLANUL DE BAZĂ',
+    plan_free_price: '$0',
+    plan_free_period: '/ pentru totdeauna',
+    plan_free_desc: 'Monitorizează comenzile și oferă o perspectivă generală asupra cifrelor magazinului.',
+    plan_free_perk1: '✔ Dashboard de bază cu vânzări și comenzi',
+    plan_free_perk2: '✔ 3 întrebări manuale pe zi în chat',
+    plan_free_perk3: '✔ Raport text la cerere',
+    plan_free_dim1: '✖ Fără voce audio autonomă',
+    plan_free_dim2: '✖ Fără generatoare automate de campanii',
+    plan_free_dim3: '✖ Fără alerte proactive de coșuri abandonate',
+    plan_free_btn_active: 'PLAN ACTIV',
+    plan_free_btn_switch: 'TRECI PE GRATUIT',
+    plan_pro_title: 'Jarvis Autonomous Pro',
+    plan_pro_badge: 'RECOMANDAT PENTRU VÂNZĂRI',
+    plan_pro_price: '$9.99',
+    plan_pro_period: '/ lună (Trial 7 zile inclus)',
+    plan_pro_desc: 'Asistentul complet cu voce, predicții în timp real și generare automată de conținut de vânzare.',
+    plan_pro_perk1: '⭐ Jarvis Vorbește cu Tine: Raport vocal zilnic sintetic',
+    plan_pro_perk2: '⭐ Chat AI Nelimitat: Fără limite de întrebări',
+    plan_pro_perk3: '⭐ Campanii 1-Click: Scripturi TikTok virale & emailuri',
+    plan_pro_perk4: '⭐ Alerte Proactive: Te anunță imediat când apar coșuri abandonate',
+    plan_pro_perk5: '⭐ Store Health Matrix: Audit continuu al conversiei',
+    plan_pro_perk6: '⭐ Prioritizare Tactică Zilnică',
+    plan_pro_btn: '⚡ ACTIVEAZĂ JARVIS PRO ($9.99/lună - 7 ZILE TRIAL)',
+    plan_pro_btn_active: 'PLAN PRO ACTIVAT (TRIAL 7 ZILE)',
+    test_mode_toggle: '🧪 Comutator Test Dezvoltator',
+    copied_toast: 'Copiat în clipboard!'
+  }
+}
+
 export default function App() {
   const params = new URLSearchParams(window.location.search)
   const shop = params.get('shop') || 'maisongrozavu.myshopify.com'
+
+  const [lang, setLang] = useState('en') // 'en' | 'ro'
+  const t = I18N[lang]
 
   const [activeTab, setActiveTab] = useState('hud') // 'hud' | 'chat' | 'actions' | 'plans'
   const [loading, setLoading] = useState(true)
@@ -22,16 +191,17 @@ export default function App() {
   // Tactical Tasks
   const [completedTasks, setCompletedTasks] = useState({})
 
-  // 1-Click Generator Output Modal/Drawer
+  // 1-Click Generator Output Modal
   const [generatedOutput, setGeneratedOutput] = useState(null)
   const [generatingAction, setGeneratingAction] = useState(false)
+  const [subscribing, setSubscribing] = useState(false)
 
-  // Initialize and Fetch Store Telemetry
+  // Load telemetry with current language
   useEffect(() => {
-    async function initJarvis() {
+    async function loadTelemetry() {
       setLoading(true)
       try {
-        const res = await fetch(`/api/briefing?shop=${encodeURIComponent(shop)}`)
+        const res = await fetch(`/api/briefing?shop=${encodeURIComponent(shop)}&lang=${lang}`)
         if (res.ok) {
           const data = await res.json()
           setBriefing(data.briefing)
@@ -49,8 +219,8 @@ export default function App() {
         setLoading(false)
       }
     }
-    initJarvis()
-  }, [shop])
+    loadTelemetry()
+  }, [shop, lang])
 
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -62,14 +232,19 @@ export default function App() {
     window.speechSynthesis.cancel()
 
     const utterance = new SpeechSynthesisUtterance(text)
-    utterance.lang = 'ro-RO'
-    utterance.rate = 1.05
-    utterance.pitch = 0.95 // slightly deeper, confident Jarvis tone
+    utterance.rate = 1.02
+    utterance.pitch = 0.95
 
-    // Try finding a Romanian or British voice
     const voices = window.speechSynthesis.getVoices()
-    const roVoice = voices.find(v => v.lang.includes('ro') || v.lang.includes('RO'))
-    if (roVoice) utterance.voice = roVoice
+    if (lang === 'en') {
+      utterance.lang = 'en-US'
+      const enVoice = voices.find(v => v.lang.includes('en-GB') || v.lang.includes('en-US'))
+      if (enVoice) utterance.voice = enVoice
+    } else {
+      utterance.lang = 'ro-RO'
+      const roVoice = voices.find(v => v.lang.includes('ro') || v.lang.includes('RO'))
+      if (roVoice) utterance.voice = roVoice
+    }
 
     utterance.onstart = () => setIsSpeaking(true)
     utterance.onend = () => setIsSpeaking(false)
@@ -83,7 +258,7 @@ export default function App() {
       setActiveTab('plans')
       return
     }
-    const voiceText = briefing?.voice_script || briefing?.summary || "Sistemele sunt online. Toate protocoalele funcționează optim."
+    const voiceText = briefing?.voice_script || briefing?.summary || "Systems are online. All protocols nominal."
     speakText(voiceText)
   }
 
@@ -92,7 +267,6 @@ export default function App() {
     const text = (customPrompt || inputMessage).trim()
     if (!text || sendingChat) return
 
-    // Free plan usage limit check
     if (plan === 'free' && freeQuestionsLeft <= 0) {
       setActiveTab('plans')
       return
@@ -112,18 +286,17 @@ export default function App() {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shop, message: text })
+        body: JSON.stringify({ shop, message: text, lang })
       })
-      if (!res.ok) throw new Error('Eroare de procesare neurală')
+      if (!res.ok) throw new Error('AI processing error')
       const data = await res.json()
       setChatMessages([...updated, { role: 'assistant', content: data.reply }])
 
-      // If user is Pro and voice is enabled, speak the answer
       if (plan === 'pro' && voiceEnabled) {
-        speakText(data.reply.slice(0, 280)) // speak first 2 sentences
+        speakText(data.reply.slice(0, 260))
       }
     } catch (err) {
-      setChatMessages([...updated, { role: 'assistant', content: `❌ Protocol întrerupt: ${err.message}` }])
+      setChatMessages([...updated, { role: 'assistant', content: `❌ Protocol Error: ${err.message}` }])
     } finally {
       setSendingChat(false)
     }
@@ -138,30 +311,62 @@ export default function App() {
     setGeneratingAction(true)
     let prompt = ''
     if (type === 'tiktok') {
-      prompt = `Scrie-mi un script complet de TikTok/Reels de 30 secunde pentru cel mai vândut produs din magazin. Include: 1 Hook vizual captivant în primele 3 secunde, Problemă, Soluție și Call To Action direct către magazin.`
+      prompt = lang === 'ro' 
+        ? `Scrie-mi un script complet de TikTok/Reels de 30 secunde pentru cel mai vândut produs din magazin. Include: 1 Hook vizual captivant în primele 3 secunde, Problemă, Soluție și Call To Action direct către magazin.`
+        : `Write a viral 30-second TikTok/Reels script for our best-selling product. Include: 1 Visual Hook in the first 3 seconds, relatable Customer Pain Point, Product Solution demonstration, and a strong Call to Action to buy now.`
     } else if (type === 'email_cart') {
-      prompt = `Scrie un email irezistibil de recuperare a coșurilor abandonate pentru clienții de azi. Include un subiect cu rată mare de deschidere, ton empatic și o ofertă cu cod de discount 10%.`
+      prompt = lang === 'ro'
+        ? `Scrie un email irezistibil de recuperare a coșurilor abandonate pentru clienții de azi. Include un subiect cu rată mare de deschidere, ton empatic și o ofertă cu cod de discount 10%.`
+        : `Write a high-converting abandoned cart recovery email. Include an attention-grabbing subject line with high open rates, an empathetic tone, urgency, and a 10% discount promo code offer.`
     } else if (type === 'seo_audit') {
-      prompt = `Fă un audit rapid de conversie pentru produsele mele și sugerează 3 îmbunătățiri directe de titlu și descriere ca să convingă vizitatorii să cumpere din primul minut.`
+      prompt = lang === 'ro'
+        ? `Fă un audit rapid de conversie pentru produsele mele și sugerează 3 îmbunătățiri directe de titlu și descriere ca să convingă vizitatorii să cumpere din primul minut.`
+        : `Conduct a rapid conversion audit on my store catalog. Recommend 3 direct title and description optimizations to boost click-through rate and compel first-time visitors to purchase.`
     }
 
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shop, message: prompt })
+        body: JSON.stringify({ shop, message: prompt, lang })
       })
       const data = await res.json()
       setGeneratedOutput({ title: type.toUpperCase(), content: data.reply })
     } catch (e) {
-      alert('Eroare la generare: ' + e.message)
+      alert('Generation error: ' + e.message)
     } finally {
       setGeneratingAction(false)
     }
   }
 
-  // Upgrade or Switch Plan
-  const handleUpgrade = async (targetPlan) => {
+  // Official Shopify Billing API Subscription trigger
+  const handleOfficialShopifySubscribe = async () => {
+    setSubscribing(true)
+    try {
+      const res = await fetch('/api/billing/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop, test: true })
+      })
+      const data = await res.json()
+      if (data.confirmation_url) {
+        if (window.top !== window.self) {
+          window.top.location.href = data.confirmation_url
+        } else {
+          window.location.href = data.confirmation_url
+        }
+      } else {
+        throw new Error('No confirmation URL returned by Shopify Billing')
+      }
+    } catch (e) {
+      alert('Billing Notice: ' + e.message)
+    } finally {
+      setSubscribing(false)
+    }
+  }
+
+  // Developer Mock Plan Toggle (instant test)
+  const handleMockUpgrade = async (targetPlan) => {
     try {
       const res = await fetch('/api/plan/upgrade', {
         method: 'POST',
@@ -171,7 +376,9 @@ export default function App() {
       if (res.ok) {
         setPlan(targetPlan)
         if (targetPlan === 'pro') {
-          speakText("Protocolul Jarvis Pro a fost activat cu succes. Toate sistemele autonome sunt la dispoziția dumneavoastră.")
+          speakText(lang === 'ro' 
+            ? "Protocolul Jarvis Pro a fost activat. Toate sistemele autonome sunt online." 
+            : "Jarvis Pro protocol activated. All autonomous systems are online and at your service.")
         }
       }
     } catch (e) {
@@ -183,7 +390,7 @@ export default function App() {
     setCompletedTasks(prev => ({ ...prev, [idx]: !prev[idx] }))
   }
 
-  const healthScore = briefing?.health_score || (snapshot ? Math.min(95, 70 + (snapshot.orders_today * 5) - (snapshot.abandoned_carts * 2)) : 84)
+  const healthScore = briefing?.health_score || (snapshot ? Math.min(95, 70 + (snapshot.orders_today * 5) - (snapshot.abandoned_carts * 2)) : 85)
 
   if (loading) {
     return (
@@ -193,8 +400,8 @@ export default function App() {
           <div className="ring ring-2"></div>
           <div className="core-glow"></div>
         </div>
-        <div className="loading-text">INIȚIALIZARE PROTOCOL JARVIS TELEMETRY...</div>
-        <div className="loading-sub">Sincronizare comenzi, produse și analiză predictivă</div>
+        <div className="loading-text">INITIALIZING JARVIS TELEMETRY ENGINE...</div>
+        <div className="loading-sub">Synchronizing live orders, inventory velocity, and predictive models</div>
         <style>{styles}</style>
       </div>
     )
@@ -212,15 +419,25 @@ export default function App() {
           </div>
           <div>
             <div className="brand-title">
-              JARVIS <span className="brand-badge">{plan === 'pro' ? 'AUTONOMOUS PRO' : 'OBSERVER MODE'}</span>
+              JARVIS <span className="brand-badge">{plan === 'pro' ? t.brand_sub_pro : t.brand_sub_free}</span>
             </div>
             <div className="brand-status">
-              <span className="live-indicator"></span> TELEMETRIE CONECTATĂ • {shop}
+              <span className="live-indicator"></span> {t.telemetry_connected} • {shop}
             </div>
           </div>
         </div>
 
         <div className="hud-actions">
+          {/* Language Switcher */}
+          <div className="lang-switcher">
+            <button className={`lang-btn ${lang === 'en' ? 'active' : ''}`} onClick={() => setLang('en')}>
+              🇺🇸 EN
+            </button>
+            <button className={`lang-btn ${lang === 'ro' ? 'active' : ''}`} onClick={() => setLang('ro')}>
+              🇷🇴 RO
+            </button>
+          </div>
+
           {plan === 'pro' && (
             <button
               className={`hud-btn ${voiceEnabled ? 'active' : ''}`}
@@ -228,19 +445,19 @@ export default function App() {
                 if (isSpeaking) window.speechSynthesis.cancel()
                 setVoiceEnabled(!voiceEnabled)
               }}
-              title="Comutator Voce Jarvis"
+              title="Toggle Jarvis Voice"
             >
-              {voiceEnabled ? '🎙️ VOCE: ACTIVĂ' : '🔇 VOCE: MUT'}
+              {voiceEnabled ? t.voice_active : t.voice_mute}
             </button>
           )}
 
           {plan === 'free' ? (
             <button className="upgrade-glow-btn" onClick={() => setActiveTab('plans')}>
-              ⚡ UPGRADE PRO ($9.99/lună)
+              {t.upgrade_btn}
             </button>
           ) : (
             <div className="pro-active-badge">
-              💎 PRO ACTIV • 7 ZILE TRIAL
+              {t.pro_active_badge}
             </div>
           )}
         </div>
@@ -252,26 +469,26 @@ export default function App() {
           className={`nav-item ${activeTab === 'hud' ? 'active' : ''}`}
           onClick={() => setActiveTab('hud')}
         >
-          <span className="nav-icon">🪐</span> TELEMETRIE & RAPORT
+          <span className="nav-icon">🪐</span> {t.tab_hud}
         </button>
         <button
           className={`nav-item ${activeTab === 'chat' ? 'active' : ''}`}
           onClick={() => setActiveTab('chat')}
         >
-          <span className="nav-icon">💬</span> DISCUTĂ CU JARVIS
-          {plan === 'free' && <span className="nav-pill">{freeQuestionsLeft} libere</span>}
+          <span className="nav-icon">💬</span> {t.tab_chat}
+          {plan === 'free' && <span className="nav-pill">{freeQuestionsLeft} left</span>}
         </button>
         <button
           className={`nav-item ${activeTab === 'actions' ? 'active' : ''}`}
           onClick={() => setActiveTab('actions')}
         >
-          <span className="nav-icon">⚡</span> CAMPANII 1-CLICK
+          <span className="nav-icon">⚡</span> {t.tab_actions}
         </button>
         <button
           className={`nav-item ${activeTab === 'plans' ? 'active' : ''}`}
           onClick={() => setActiveTab('plans')}
         >
-          <span className="nav-icon">💎</span> ABONAMENTE
+          <span className="nav-icon">💎</span> {t.tab_plans}
         </button>
       </nav>
 
@@ -291,23 +508,23 @@ export default function App() {
                     <div className="ring ring-3"></div>
                     <div className="core-glow">
                       <div className="health-number">{healthScore}%</div>
-                      <div className="health-label">SCOR SĂNĂTATE</div>
+                      <div className="health-label">{t.health_score_label}</div>
                     </div>
                   </div>
                 </div>
 
                 <div className="hero-info">
-                  <div className="greeting-line">{briefing?.greeting || "Sistemele sunt online, domnule Grozavu."}</div>
+                  <div className="greeting-line">{briefing?.greeting || "Good morning! Jarvis telemetry online."}</div>
                   <div className="summary-text">{briefing?.summary}</div>
 
                   <div className="hero-buttons">
                     {plan === 'pro' ? (
                       <button className="speak-btn" onClick={triggerVoiceBriefing}>
-                        {isSpeaking ? '⏹️ OPREȘTE VOCEA' : '🔊 ASCULTĂ BRIEFINGUL VOCAL'}
+                        {isSpeaking ? t.stop_voice : t.listen_briefing}
                       </button>
                     ) : (
                       <div className="voice-locked" onClick={() => setActiveTab('plans')}>
-                        🔒 Vocea autonomă Jarvis este disponibilă în Planul Pro. <span className="link-text">Deblochează ($9.99)</span>
+                        {t.voice_locked_msg} <span className="link-text">{t.unlock_pro}</span>
                       </div>
                     )}
                   </div>
@@ -318,31 +535,31 @@ export default function App() {
             {/* Live Metrics Grid */}
             <div className="metrics-row">
               <div className="metric-card">
-                <div className="metric-header">COMENZI ASTĂZI</div>
+                <div className="metric-header">{t.orders_today}</div>
                 <div className="metric-value">{snapshot?.orders_today || 0}</div>
-                <div className="metric-footer highlight-green">▲ Sincronizat în timp real</div>
+                <div className="metric-footer highlight-green">{t.orders_sub}</div>
               </div>
 
               <div className="metric-card">
-                <div className="metric-header">VENIT ASTĂZI</div>
+                <div className="metric-header">{t.revenue_today}</div>
                 <div className="metric-value">
                   {snapshot?.revenue_today || 0} <span className="currency">{snapshot?.currency || 'USD'}</span>
                 </div>
-                <div className="metric-footer">30 zile: {snapshot?.revenue_30d || 0} {snapshot?.currency}</div>
+                <div className="metric-footer">{t.revenue_30d} {snapshot?.revenue_30d || 0} {snapshot?.currency}</div>
               </div>
 
               <div className="metric-card alert-border">
-                <div className="metric-header">COȘURI ABANDONATE</div>
+                <div className="metric-header">{t.abandoned_carts}</div>
                 <div className="metric-value critical">{snapshot?.abandoned_carts || 0}</div>
                 <div className="metric-footer highlight-orange">
-                  {snapshot?.abandoned_carts > 0 ? '⚠️ Oportunitate de recuperare imediată' : '✅ Niciun coș pierdut'}
+                  {snapshot?.abandoned_carts > 0 ? t.abandoned_alert : t.abandoned_ok}
                 </div>
               </div>
 
               <div className="metric-card">
-                <div className="metric-header">CLIENȚI NOI (24H)</div>
+                <div className="metric-header">{t.new_customers}</div>
                 <div className="metric-value">{snapshot?.new_customers_24h || 0}</div>
-                <div className="metric-footer">Bază totală în creștere</div>
+                <div className="metric-footer">{t.customers_sub}</div>
               </div>
             </div>
 
@@ -350,8 +567,8 @@ export default function App() {
             <div className="two-columns">
               <div className="hud-card">
                 <div className="card-title">
-                  <span>🎯 PLAN TACTIC PENTRU ASTĂZI</span>
-                  <span className="tag-live">PRIORITIZAT AI</span>
+                  <span>{t.tactical_plan}</span>
+                  <span className="tag-live">{t.ai_prioritized}</span>
                 </div>
                 <div className="tasks-list">
                   {briefing?.top_tasks && briefing.top_tasks.length > 0 ? (
@@ -360,14 +577,14 @@ export default function App() {
                         <input type="checkbox" checked={!!completedTasks[i]} readOnly />
                         <div className="task-content">
                           <div className="task-title">
-                            {task.icon || '📌'} Prioritate {task.priority}: {task.task}
+                            {task.icon || '📌'} #{task.priority}: {task.task}
                           </div>
                           <div className="task-why">{task.why}</div>
                         </div>
                       </div>
                     ))
                   ) : (
-                    <div className="empty-notice">Jarvis analizează prioritățile magazinului...</div>
+                    <div className="empty-notice">{t.analyzing_priorities}</div>
                   )}
                 </div>
               </div>
@@ -375,32 +592,32 @@ export default function App() {
               {/* Traffic Advice & Smart Alerts */}
               <div className="hud-card">
                 <div className="card-title">
-                  <span>📈 STRATEGIE DE TRAFIC & ALERTE</span>
+                  <span>{t.traffic_strategy}</span>
                 </div>
 
                 {briefing?.traffic_tip && (
                   <div className="traffic-box">
-                    <div className="traffic-tag">SFATUL ZILEI PENTRU VÂNZĂRI</div>
+                    <div className="traffic-tag">{t.daily_growth_tip}</div>
                     <div className="traffic-desc">{briefing.traffic_tip}</div>
                   </div>
                 )}
 
                 <div className="alerts-box">
-                  <div className="box-subtitle">DIAGNOSTIC AUTOMAT:</div>
+                  <div className="box-subtitle">{t.auto_diagnostics}</div>
                   {briefing?.alerts && briefing.alerts.length > 0 ? (
                     briefing.alerts.map((al, idx) => (
                       <div key={idx} className="alert-item">
                         <span className="alert-icon">🚨</span>
                         <div>
                           <strong>{al.message}</strong>
-                          <div className="alert-action">Acțiune recomandată: {al.action}</div>
+                          <div className="alert-action">{al.action}</div>
                         </div>
                       </div>
                     ))
                   ) : (
                     <div className="alert-item green">
                       <span className="alert-icon">🛡️</span>
-                      <div>Magazinul funcționează la parametri normali. Nicio anomalie critică.</div>
+                      <div>{t.store_nominal}</div>
                     </div>
                   )}
                 </div>
@@ -409,33 +626,31 @@ export default function App() {
           </div>
         )}
 
-        {/* ════ TAB 2: CHAT CU JARVIS ════ */}
+        {/* ════ TAB 2: CHAT WITH JARVIS ════ */}
         {activeTab === 'chat' && (
           <div className="chat-container">
             <div className="chat-stream">
               {chatMessages.length === 0 ? (
                 <div className="chat-welcome">
                   <div className="reactor-mini pulse-slow"><div className="core-dot"></div></div>
-                  <h3>Jarvis este pregătit.</h3>
-                  <p>
-                    Cunosc fiecare produs, stocul și comenzile tale. Cu ce începem optimizarea astăzi?
-                  </p>
+                  <h3>{t.chat_welcome_title}</h3>
+                  <p>{t.chat_welcome_desc}</p>
                   <div className="prompt-chips">
-                    <button onClick={() => handleSendMessage("De ce nu am suficiente vânzări azi și ce pot schimba rapid?")}>
-                      💡 De ce nu am vânzări azi?
+                    <button onClick={() => handleSendMessage(t.chip_1)}>
+                      {t.chip_1}
                     </button>
-                    <button onClick={() => handleSendMessage("Scrie un text persuasiv de reclamă pentru cel mai vândut produs al meu.")}>
-                      📱 Scrie o reclamă persuasivă
+                    <button onClick={() => handleSendMessage(t.chip_2)}>
+                      {t.chip_2}
                     </button>
-                    <button onClick={() => handleSendMessage("Cum recuperez cele mai recente coșuri abandonate?")}>
-                      🛒 Cum recuperez coșurile abandonate?
+                    <button onClick={() => handleSendMessage(t.chip_3)}>
+                      {t.chip_3}
                     </button>
                   </div>
                 </div>
               ) : (
                 chatMessages.map((msg, i) => (
                   <div key={i} className={`chat-bubble ${msg.role}`}>
-                    <div className="bubble-header">{msg.role === 'user' ? 'TU' : '🤖 JARVIS'}</div>
+                    <div className="bubble-header">{msg.role === 'user' ? (lang === 'ro' ? 'TU' : 'YOU') : '🤖 JARVIS'}</div>
                     <div className="bubble-body">{msg.content}</div>
                   </div>
                 ))
@@ -445,7 +660,7 @@ export default function App() {
                   <div className="bubble-header">🤖 JARVIS</div>
                   <div className="thinking-dots">
                     <span></span><span></span><span></span>
-                    <em>Se procesează telemetria magazinului...</em>
+                    <em>{t.thinking_text}</em>
                   </div>
                 </div>
               )}
@@ -455,13 +670,13 @@ export default function App() {
             <div className="chat-input-bar">
               <input
                 type="text"
-                placeholder={plan === 'free' ? `Întreabă-l pe Jarvis (${freeQuestionsLeft} întrebări rămase azi)...` : "Ordonă-i lui Jarvis orice sarcină legată de magazin..."}
+                placeholder={plan === 'free' ? t.chat_placeholder_free.replace('{count}', freeQuestionsLeft) : t.chat_placeholder_pro}
                 value={inputMessage}
                 onChange={(e) => setInputMessage(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
               />
               <button className="send-btn" onClick={() => handleSendMessage()} disabled={sendingChat}>
-                TRIMITE
+                {t.chat_send}
               </button>
             </div>
           </div>
@@ -472,28 +687,28 @@ export default function App() {
           <div className="actions-grid">
             <div className="action-card" onClick={() => runQuickAction('tiktok')}>
               <div className="action-badge">VIRAL REELS / TIKTOK</div>
-              <h3>🎬 Script Video în 3 Pași</h3>
-              <p>Jarvis generează un scenariu video cu cârlig psihologic (Hook, Demonstrație și Îndemn la cumpărare) pentru produsele tale.</p>
+              <h3>{t.action_tiktok_title}</h3>
+              <p>{t.action_tiktok_desc}</p>
               <button className="action-trigger-btn" disabled={generatingAction}>
-                {generatingAction ? 'GENERARE ÎN CURS...' : 'GENEREAZĂ SCRIPT ACUM →'}
+                {generatingAction ? t.action_generating : t.action_trigger}
               </button>
             </div>
 
             <div className="action-card" onClick={() => runQuickAction('email_cart')}>
-              <div className="action-badge">RECUPERARE COȘURI</div>
-              <h3>📧 Email Magnetic de Recuperare</h3>
-              <p>Scrie automat un email cu o rată uriașă de conversie pentru vizitatorii care au părăsit coșul de cumpărături fără să plătească.</p>
+              <div className="action-badge">REVENUE RECOVERY</div>
+              <h3>{t.action_email_title}</h3>
+              <p>{t.action_email_desc}</p>
               <button className="action-trigger-btn" disabled={generatingAction}>
-                {generatingAction ? 'GENERARE ÎN CURS...' : 'CREEAZĂ EMAIL COȘ →'}
+                {generatingAction ? t.action_generating : t.action_trigger}
               </button>
             </div>
 
             <div className="action-card" onClick={() => runQuickAction('seo_audit')}>
-              <div className="action-badge">AUDIT CONVERSIE</div>
-              <h3>🔍 Optimizare Titluri & Descrieri</h3>
-              <p>Analizează catalogul tău de produse și îți rescrie titlurile ca să atragă căutări organice pe Google și să mărească rata de click.</p>
+              <div className="action-badge">CONVERSION AUDIT</div>
+              <h3>{t.action_seo_title}</h3>
+              <p>{t.action_seo_desc}</p>
               <button className="action-trigger-btn" disabled={generatingAction}>
-                {generatingAction ? 'GENERARE ÎN CURS...' : 'OPTIMIZEAZĂ CATALOGUL →'}
+                {generatingAction ? t.action_generating : t.action_trigger}
               </button>
             </div>
 
@@ -501,72 +716,85 @@ export default function App() {
               <div className="output-modal">
                 <div className="output-box">
                   <div className="output-header">
-                    <span>REZULTAT GENERAT: {generatedOutput.title}</span>
+                    <span>AI OUTPUT: {generatedOutput.title}</span>
                     <button className="close-btn" onClick={() => setGeneratedOutput(null)}>✕</button>
                   </div>
                   <pre className="output-content">{generatedOutput.content}</pre>
                   <button className="copy-btn" onClick={() => {
                     navigator.clipboard.writeText(generatedOutput.content)
-                    alert('Copiat în clipboard!')
-                  }}>📋 COPIAZĂ TEXTUL</button>
+                    alert(t.copied_toast)
+                  }}>📋 COPY TEXT</button>
                 </div>
               </div>
             )}
           </div>
         )}
 
-        {/* ════ TAB 4: PRICING & SUBSCRIPTIONS ════ */}
+        {/* ════ TAB 4: PRICING & OFFICIAL SHOPIFY BILLING ════ */}
         {activeTab === 'plans' && (
           <div className="pricing-container">
             <div className="pricing-title">
-              <h2>ALEGE NIVELUL DE INTELIGENȚĂ PENTRU MAGAZINUL TĂU</h2>
-              <p>Fără angajați scumpi. Jarvis este cofondatorul tău tehnic și de marketing disponibil 24/7.</p>
+              <h2>{t.pricing_title}</h2>
+              <p>{t.pricing_sub}</p>
             </div>
 
             <div className="pricing-cards">
-              {/* PLAN GRATUIT */}
+              {/* FREE PLAN */}
               <div className={`pricing-card ${plan === 'free' ? 'current' : ''}`}>
-                <div className="plan-badge">PLANUL DE BAZĂ</div>
-                <h3>Observer Mode</h3>
-                <div className="price-tag">$0 <span>/ pentru totdeauna</span></div>
-                <p className="plan-desc">Monitorizează comenzile și oferă o perspectivă generală asupra cifrelor magazinului.</p>
+                <div className="plan-badge">{t.plan_free_badge}</div>
+                <h3>{t.plan_free_title}</h3>
+                <div className="price-tag">{t.plan_free_price} <span>{t.plan_free_period}</span></div>
+                <p className="plan-desc">{t.plan_free_desc}</p>
                 <ul className="plan-perks">
-                  <li>✔ Dashboard de bază cu vânzări și comenzi</li>
-                  <li>✔ 3 întrebări manuale pe zi în chat</li>
-                  <li>✔ Raport text la cerere</li>
-                  <li className="dim">✖ Fără voce audio autonomă</li>
-                  <li className="dim">✖ Fără generatoare automate de campanii</li>
-                  <li className="dim">✖ Fără alerte proactive de coșuri abandonate</li>
+                  <li>{t.plan_free_perk1}</li>
+                  <li>{t.plan_free_perk2}</li>
+                  <li>{t.plan_free_perk3}</li>
+                  <li className="dim">{t.plan_free_dim1}</li>
+                  <li className="dim">{t.plan_free_dim2}</li>
+                  <li className="dim">{t.plan_free_dim3}</li>
                 </ul>
                 <button
                   className="plan-btn secondary"
                   disabled={plan === 'free'}
-                  onClick={() => handleUpgrade('free')}
+                  onClick={() => handleMockUpgrade('free')}
                 >
-                  {plan === 'free' ? 'PLAN ACTIV' : 'TRECI PE GRATUIT'}
+                  {plan === 'free' ? t.plan_free_btn_active : t.plan_free_btn_switch}
                 </button>
               </div>
 
-              {/* PLAN PLATIT */}
+              {/* PRO PLAN */}
               <div className={`pricing-card pro ${plan === 'pro' ? 'current' : ''}`}>
-                <div className="plan-badge hot">RECOMANDAT PENTRU VÂNZĂRI</div>
-                <h3>Jarvis Autonomous Pro</h3>
-                <div className="price-tag">$9.99 <span>/ lună (Trial 7 zile inclus)</span></div>
-                <p className="plan-desc">Asistentul complet cu voce, predicții în timp real și generare automată de conținut de vânzare.</p>
+                <div className="plan-badge hot">{t.plan_pro_badge}</div>
+                <h3>{t.plan_pro_title}</h3>
+                <div className="price-tag">{t.plan_pro_price} <span>{t.plan_pro_period}</span></div>
+                <p className="plan-desc">{t.plan_pro_desc}</p>
                 <ul className="plan-perks">
-                  <li>⭐ <strong>Jarvis Vorbește cu Tine:</strong> Raport vocal zilnic sintetic</li>
-                  <li>⭐ <strong>Chat AI Nelimitat:</strong> Fără limite de întrebări</li>
-                  <li>⭐ <strong>Campanii 1-Click:</strong> Scripturi TikTok virale & emailuri</li>
-                  <li>⭐ <strong>Alerte Proactive:</strong> Te anunță imediat când apar coșuri abandonate</li>
-                  <li>⭐ <strong>Store Health Score:</strong> Audit continuu al conversiei magazinului</li>
-                  <li>⭐ <strong>Prioritizare Tactică Zilnică</strong></li>
+                  <li><strong>{t.plan_pro_perk1}</strong></li>
+                  <li><strong>{t.plan_pro_perk2}</strong></li>
+                  <li><strong>{t.plan_pro_perk3}</strong></li>
+                  <li><strong>{t.plan_pro_perk4}</strong></li>
+                  <li><strong>{t.plan_pro_perk5}</strong></li>
+                  <li><strong>{t.plan_pro_perk6}</strong></li>
                 </ul>
+
+                {/* Official Shopify Subscription Button */}
                 <button
                   className="plan-btn primary"
-                  onClick={() => handleUpgrade('pro')}
+                  disabled={subscribing}
+                  onClick={handleOfficialShopifySubscribe}
                 >
-                  {plan === 'pro' ? 'PLAN PRO ACTIVAT (TRIAL 7 ZILE)' : '⚡ ACTIVEAZĂ JARVIS PRO ($9.99/lună)'}
+                  {subscribing ? 'CONNECTING SHOPIFY BILLING...' : (plan === 'pro' ? t.plan_pro_btn_active : t.plan_pro_btn)}
                 </button>
+
+                {/* Instant Dev Mock Toggle */}
+                <div style={{ marginTop: '12px', textAlign: 'center' }}>
+                  <button
+                    style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: '11px', cursor: 'pointer', textDecoration: 'underline' }}
+                    onClick={() => handleMockUpgrade(plan === 'pro' ? 'free' : 'pro')}
+                  >
+                    {t.test_mode_toggle} ({plan === 'pro' ? 'Switch Free' : 'Switch Pro'})
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -610,7 +838,6 @@ const styles = `
   padding: 20px;
 }
 
-/* Header */
 .hud-header {
   display: flex;
   justify-content: space-between;
@@ -675,6 +902,30 @@ const styles = `
   gap: 12px;
 }
 
+.lang-switcher {
+  display: flex;
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid var(--border-cyan);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.lang-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.lang-btn.active {
+  background: var(--cyan-glow);
+  color: #000;
+}
+
 .hud-btn {
   background: rgba(15, 23, 42, 0.8);
   border: 1px solid var(--border-cyan);
@@ -719,7 +970,6 @@ const styles = `
   background: rgba(56, 189, 248, 0.1);
 }
 
-/* Nav */
 .hud-nav {
   display: flex;
   gap: 10px;
@@ -761,7 +1011,6 @@ const styles = `
   color: #fbbf24;
 }
 
-/* Cards & Grid */
 .view-grid {
   display: flex;
   flex-direction: column;
@@ -833,7 +1082,6 @@ const styles = `
   font-weight: 700;
 }
 
-/* Reactor Core Graphic */
 .reactor-large-box {
   width: 130px;
   height: 130px;
@@ -906,7 +1154,6 @@ const styles = `
   box-shadow: 0 0 10px var(--cyan-glow);
 }
 
-/* Metrics Row */
 .metrics-row {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -956,7 +1203,6 @@ const styles = `
 .highlight-green { color: var(--green-glow); }
 .highlight-orange { color: #fb923c; }
 
-/* 2 Columns Section */
 .two-columns {
   display: grid;
   grid-template-columns: 1.2fr 1fr;
@@ -1052,7 +1298,6 @@ const styles = `
 
 .alert-action { color: var(--text-dim); margin-top: 2px; }
 
-/* Chat Container */
 .chat-container {
   display: flex;
   flex-direction: column;
@@ -1176,7 +1421,6 @@ const styles = `
 
 .send-btn:hover { transform: scale(1.03); }
 
-/* 1-Click Action Grid */
 .actions-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -1239,7 +1483,6 @@ const styles = `
   color: #000;
 }
 
-/* Modal Output */
 .output-modal {
   position: fixed;
   inset: 0;
@@ -1305,7 +1548,6 @@ const styles = `
   cursor: pointer;
 }
 
-/* Pricing Page */
 .pricing-container {
   max-width: 900px;
   margin: 0 auto;
@@ -1429,7 +1671,6 @@ const styles = `
   color: #fff;
 }
 
-/* Animations */
 @keyframes spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }

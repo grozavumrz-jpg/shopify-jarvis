@@ -3,9 +3,10 @@ from typing import Dict, Any, List
 
 
 class ShopifyClient:
-    """Thin async wrapper around Shopify Admin REST API."""
+    """Async wrapper around Shopify Admin REST and GraphQL APIs."""
 
     def __init__(self, shop: str, token: str):
+        self.shop = shop
         self.base = f"https://{shop}/admin/api/2024-01"
         self.headers = {
             "X-Shopify-Access-Token": token,
@@ -122,3 +123,68 @@ class ShopifyClient:
             "top_products":     [{"name": p[0], "units": p[1]} for p in top_products],
             "currency":         shop_info.get("currency", "USD"),
         }
+
+    # ── GraphQL Billing API ───────────────────────────────────────────────────
+
+    async def _graphql(self, query: str, variables: dict = None) -> Dict:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.post(
+                f"https://{self.shop}/admin/api/2024-01/graphql.json",
+                headers=self.headers,
+                json={"query": query, "variables": variables or {}}
+            )
+            r.raise_for_status()
+            return r.json()
+
+    async def create_app_subscription(self, return_url: str, test: bool = True) -> str:
+        """Create a recurring Shopify app subscription for $9.99/mo with 7 days trial."""
+        mutation = """
+        mutation AppSubscriptionCreate(
+          $name: String!
+          $returnUrl: URL!
+          $trialDays: Int
+          $test: Boolean
+          $price: Decimal!
+        ) {
+          appSubscriptionCreate(
+            name: $name
+            returnUrl: $returnUrl
+            trialDays: $trialDays
+            test: $test
+            lineItems: [
+              {
+                plan: {
+                  appRecurringPricingDetails: {
+                    price: { amount: $price, currencyCode: USD }
+                    interval: EVERY_30_DAYS
+                  }
+                }
+              }
+            ]
+          ) {
+            appSubscription {
+              id
+              status
+            }
+            confirmationUrl
+            userErrors {
+              field
+              message
+            }
+          }
+        }
+        """
+        variables = {
+            "name": "Jarvis Autonomous Pro",
+            "returnUrl": return_url,
+            "trialDays": 7,
+            "test": test,
+            "price": 9.99
+        }
+        res = await self._graphql(mutation, variables)
+        data = res.get("data", {}).get("appSubscriptionCreate", {})
+        errors = data.get("userErrors", [])
+        if errors:
+            raise Exception(f"Billing Error: {errors[0].get('message')}")
+        return data.get("confirmationUrl")
+

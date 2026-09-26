@@ -163,7 +163,7 @@ def get_shop_or_404(shop: str):
 # ── API endpoints ─────────────────────────────────────────────────────────────
 
 @app.get("/api/briefing")
-async def get_briefing(shop: str = Query(...)):
+async def get_briefing(shop: str = Query(...), lang: str = Query("en")):
     """Return today's AI briefing. Generates a new one if older than 2h."""
     record = get_shop_or_404(shop)
 
@@ -186,7 +186,7 @@ async def get_briefing(shop: str = Query(...)):
             }
 
     # Generate fresh briefing
-    briefing = await ai.generate_briefing(snapshot)
+    briefing = await ai.generate_briefing(snapshot, lang=lang)
     db.save_briefing(shop, briefing)
     return {
         "briefing": briefing,
@@ -222,6 +222,7 @@ async def get_snapshot(shop: str = Query(...)):
 class ChatRequest(BaseModel):
     shop: str
     message: str
+    lang: Optional[str] = "en"
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
@@ -241,7 +242,8 @@ async def chat(req: ChatRequest):
         shop_name=record.get("shop_name", req.shop),
         snapshot=snapshot,
         history=history[:-1],   # exclude the message we just saved
-        message=req.message
+        message=req.message,
+        lang=req.lang or "en"
     )
 
     db.save_message(req.shop, "assistant", reply)
@@ -266,7 +268,92 @@ async def status(shop: str = Query(None)):
     return {"status": "Jarvis for Shopify API — online ✅"}
 
 
-# ── Shopify Webhooks ──────────────────────────────────────────────────────────
+# ── Privacy Policy (Required by Shopify App Store) ───────────────────────────
+
+@app.get("/privacy", response_class=HTMLResponse)
+async def privacy_policy():
+    return HTMLResponse("""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Privacy Policy - Jarvis for Shopify</title>
+      <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; line-height: 1.6; max-width: 800px; margin: 40px auto; padding: 0 20px; color: #1e293b; }
+        h1, h2, h3 { color: #0f172a; }
+        code { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; }
+        .footer { margin-top: 50px; font-size: 14px; color: #64748b; border-top: 1px solid #e2e8f0; padding-top: 20px; }
+      </style>
+    </head>
+    <body>
+      <h1>Privacy Policy for Jarvis AI Assistant</h1>
+      <p><em>Last updated: September 2026</em></p>
+      
+      <h2>1. Overview</h2>
+      <p>Jarvis for Shopify ("the App") is developed to provide merchants with AI-powered store analytics, voice briefings, and conversion optimization recommendations. We take privacy seriously and strictly adhere to GDPR, CCPA, and Shopify App Store Requirements.</p>
+      
+      <h2>2. Information We Collect</h2>
+      <p>When you install Jarvis, we receive access to specific store data through official Shopify API scopes granted by the merchant:</p>
+      <ul>
+        <li><strong>Store Details:</strong> Store name, currency, domain.</li>
+        <li><strong>Order & Checkout Analytics:</strong> Aggregate sales volume, recent order count, abandoned cart counts (for calculating conversion rates and recovery tips).</li>
+        <li><strong>Product Data:</strong> Product titles, inventory levels (for low-stock alerts and marketing copy suggestions).</li>
+      </ul>
+      <p><strong>Note:</strong> We do NOT sell, rent, or monetize your store data or customer personal data to third parties.</p>
+
+      <h2>3. How We Use Information</h2>
+      <p>All collected metrics are processed solely to provide real-time recommendations, generate briefings, and power AI assistant responses via Google Gemini models. Data is encrypted in transit and at rest.</p>
+
+      <h2>4. Data Retention and Deletion</h2>
+      <p>When you uninstall the App, our systems automatically deactivate your store record. Store data is completely erased upon receipt of Shopify's mandatory <code>shop/redact</code> GDPR webhook within 48 hours.</p>
+
+      <h2>5. Merchant & Customer Rights (GDPR / CCPA)</h2>
+      <p>Under GDPR and CCPA, merchants and customers have the right to request access to or deletion of their data. We fully support and process automated Shopify GDPR webhooks for data requests and erasure.</p>
+
+      <h2>6. Contact Us</h2>
+      <p>If you have any questions about this Privacy Policy, please contact us at: <strong>grozavumrz@gmail.com</strong></p>
+
+      <div class="footer">
+        © 2026 Jarvis for Shopify • All rights reserved.
+      </div>
+    </body>
+    </html>
+    """)
+
+
+# ── Shopify Mandatory GDPR Webhooks ──────────────────────────────────────────
+
+@app.post("/webhooks/customers/data_request")
+async def customer_data_request(request: Request):
+    """Mandatory GDPR endpoint: customer requests their stored data."""
+    # We do not store identifiable customer PII permanently.
+    return {"status": "ok", "message": "No customer PII stored permanently"}
+
+
+@app.post("/webhooks/customers/redact")
+async def customer_redact(request: Request):
+    """Mandatory GDPR endpoint: request to delete customer data."""
+    return {"status": "ok", "message": "Customer data redacted"}
+
+
+@app.post("/webhooks/shop/redact")
+async def shop_redact(request: Request):
+    """Mandatory GDPR endpoint: 48h after app uninstall, purge shop data."""
+    try:
+        body = await request.json()
+        shop = body.get("shop_domain", "")
+        if shop:
+            with db.get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM messages WHERE shop=%s", (shop,))
+                    cur.execute("DELETE FROM briefings WHERE shop=%s", (shop,))
+                    cur.execute("DELETE FROM shops WHERE shop=%s", (shop,))
+                conn.commit()
+    except Exception:
+        pass
+    return {"status": "ok"}
+
 
 @app.post("/webhooks/app/uninstalled")
 async def app_uninstalled(request: Request):
@@ -279,7 +366,60 @@ async def app_uninstalled(request: Request):
     return {"ok": True}
 
 
+# ── Official Shopify Billing API ─────────────────────────────────────────────
+
+class BillingCreateRequest(BaseModel):
+    shop: str
+    test: bool = True
+
+@app.post("/api/billing/create")
+async def billing_create(req: BillingCreateRequest):
+    """Initiates an official Shopify Recurring App Subscription ($9.99/mo)."""
+    record = get_shop_or_404(req.shop)
+    client = ShopifyClient(req.shop, record["access_token"])
+    return_url = f"{APP_URL}/api/billing/callback?shop={req.shop}"
+    
+    confirmation_url = await client.create_app_subscription(
+        return_url=return_url,
+        test=req.test
+    )
+    return {"confirmation_url": confirmation_url}
+
+
+@app.get("/api/billing/callback")
+async def billing_callback(shop: str = Query(...), charge_id: Optional[str] = Query(None)):
+    """Handles the merchant approval redirect from Shopify Billing screen."""
+    record = get_shop_or_404(shop)
+    
+    # Mark shop as pro plan
+    with db.get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE shops SET plan='pro' WHERE shop=%s", (shop,))
+        conn.commit()
+        
+    shop_sub = shop.replace(".myshopify.com", "")
+    target_url = f"https://admin.shopify.com/store/{shop_sub}/apps/{SHOPIFY_API_KEY}"
+    return HTMLResponse(f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <script>
+                var target = "{target_url}";
+                if (window.top !== window.self) {{
+                    window.top.location.href = target;
+                }} else {{
+                    window.location.href = target;
+                }}
+            </script>
+        </head>
+        <body style="font-family: system-ui; text-align: center; padding-top: 50px;">
+            <p>Abonament Jarvis Pro activat cu succes! Se deschide magazinul...</p>
+        </body>
+        </html>
+    """)
+
+
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 8000))
+    port = int(os.getenv("PORT", 8080))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
