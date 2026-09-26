@@ -192,8 +192,15 @@ export default function App() {
   const params = new URLSearchParams(window.location.search)
   const shop = params.get('shop') || 'maisongrozavu.myshopify.com'
 
-  const [lang, setLang] = useState('en') // 'en' | 'ro'
-  const t = I18N[lang]
+  const [lang, setLang] = useState(() => {
+    return localStorage.getItem('jarvis_lang') || 'ro'
+  })
+  const t = I18N[lang] || I18N.ro
+
+  const handleSetLang = (newLang) => {
+    setLang(newLang)
+    localStorage.setItem('jarvis_lang', newLang)
+  }
 
   const [activeTab, setActiveTab] = useState('hud') // 'hud' | 'chat' | 'actions' | 'plans'
   const [loading, setLoading] = useState(true)
@@ -345,11 +352,19 @@ export default function App() {
       setFreeQuestionsLeft(prev => Math.max(0, prev - 1))
     }
 
+    // Auto-detect Romanian language in user text to ensure seamless Romanian response
+    const roMarkers = ['salut', 'buna', 'bună', 'cum', 'ce ', 'vreau', 'magazin', 'vanzari', 'vânzări', 'stoc', 'comenzi', 'produs', 'te rog', 'multumesc', 'mulțumesc', 'azi', 'acum']
+    const isRoInput = roMarkers.some(m => text.toLowerCase().includes(m))
+    const effectiveLang = isRoInput ? 'ro' : lang
+    if (isRoInput && lang !== 'ro') {
+      handleSetLang('ro')
+    }
+
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shop, message: text, lang })
+        body: JSON.stringify({ shop, message: text, lang: effectiveLang })
       })
       if (!res.ok) throw new Error('AI processing error')
       const data = await res.json()
@@ -501,10 +516,10 @@ export default function App() {
         <div className="hud-actions">
           {/* Language Switcher */}
           <div className="lang-switcher">
-            <button className={`lang-btn ${lang === 'en' ? 'active' : ''}`} onClick={() => setLang('en')}>
+            <button className={`lang-btn ${lang === 'en' ? 'active' : ''}`} onClick={() => handleSetLang('en')}>
               🇺🇸 EN
             </button>
-            <button className={`lang-btn ${lang === 'ro' ? 'active' : ''}`} onClick={() => setLang('ro')}>
+            <button className={`lang-btn ${lang === 'ro' ? 'active' : ''}`} onClick={() => handleSetLang('ro')}>
               🇷🇴 RO
             </button>
           </div>

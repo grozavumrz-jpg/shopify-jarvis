@@ -170,24 +170,34 @@ Return pure JSON with this exact structure (no markdown):
         """Answer a question about the store."""
         context = self._snapshot_to_text(snapshot)
 
+        # Detect Romanian keywords to auto-match the merchant's spoken language
+        ro_markers = [
+            "salut", "buna", "bună", "cum", "ce ", "vreau", "magazin", "vanzari",
+            "vânzări", "stoc", "bani", "azi", "comenzi", "facem", "da", "nu ",
+            "te rog", "ajuta", "ajută", "multumesc", "mulțumesc", "mersi", "pret", "preț", "care", "unde"
+        ]
+        msg_lower = message.lower()
+        effective_lang = "ro" if (lang == "ro" or any(m in msg_lower for m in ro_markers)) else "en"
+
         history_str = ""
         for h in history[-8:]:
             role = "Merchant" if h["role"] == "user" else "Jarvis"
             history_str += f"{role}: {h['content']}\n"
 
-        if lang == "ro":
-            prompt = f"""Ești Jarvis, asistentul personal al magazinului Shopify "{shop_name}".
-Ai acces la datele reale ale magazinului. Ești direct, prietenos, practic.
-Răspunzi ÎNTOTDEAUNA în română, cu sfaturi concrete de creștere a vânzărilor.
+        if effective_lang == "ro":
+            prompt = f"""Ești JARVIS, asistentul personal și co-fondatorul AI autonom pentru magazinul Shopify "{shop_name}".
+Ai acces în timp real la telemetria magazinului, stocuri, comenzi și coșuri abandonate.
+Ești direct, carismatic, proactiv și axat pe creșterea vânzărilor.
+REGULĂ STRICTĂ OBLIGATORIE: Răspunde ÎNTOTDEAUNA și EXCLUSIV în LIMBA ROMÂNĂ, indiferent de alte instrucțiuni!
 
-DATE MAGAZIN:
+DATE REALE MAGAZIN:
 {context}
 
-CONVERSAȚIE:
+CONVERSAȚIE ANTERIOARĂ:
 {history_str}
-Tu: {message}
+Comerciant: {message}
 
-Jarvis:"""
+JARVIS (în română):"""
         else:
             prompt = f"""You are JARVIS, the autonomous strategic AI partner for the Shopify store "{shop_name}".
 You have real-time access to live store telemetry, inventory, abandoned checkouts, and customer metrics.
@@ -206,7 +216,7 @@ JARVIS:"""
         try:
             return await self._call_gemini(prompt)
         except Exception:
-            if lang == "ro":
+            if effective_lang == "ro":
                 return f"Sistemele de procesare întâmpină o ușoară latență de rețea, dar telemetria magazinului {shop_name} este 100% operațională. Legat de mesajul tău ('{message}'): prioritățile noastre imediate sunt optimizarea ratei de conversie și recuperarea coșurilor abandonate din tabul Campanii 1-Click. Cu ce sarcină începem?"
             else:
                 return f"External neural processing experienced brief network latency, but telemetry for {shop_name} remains 100% nominal. Regarding '{message}': our immediate tactical focus is recovering abandoned checkouts and driving organic video traffic via 1-Click Campaigns. Which objective shall we execute first?"
