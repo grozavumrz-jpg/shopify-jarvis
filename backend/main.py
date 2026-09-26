@@ -63,7 +63,7 @@ async def root(request: Request):
         canonical_shop = shop if shop.endswith(".myshopify.com") else f"{shop}.myshopify.com"
         record = db.get_shop(canonical_shop)
         if not record:
-            install_url = f"/auth/install?shop={shop}"
+            install_url = f"{APP_URL}/auth/install?shop={shop}"
             return HTMLResponse(f"""
                 <!DOCTYPE html>
                 <html>
