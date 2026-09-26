@@ -49,7 +49,9 @@ DATE MAGAZIN:
 
 Returnează un JSON cu exact această structură (fără markdown, doar JSON pur):
 {{
-  "greeting": "Salut scurt motivant (1 propoziție)",
+  "health_score": 85,
+  "greeting": "Salut scurt motivant în stil Jarvis (1 propoziție)",
+  "voice_script": "Mesaj vorbit scurt și direct de 2-3 propoziții în stil Jarvis (ex: 'Sistemele sunt online. Astăzi avem X comenzi și oportunitatea de a recupera Y coșuri. Iată prioritățile.')",
   "summary": "Rezumat al zilei în 2-3 propoziții. Ce merge bine, ce nu.",
   "top_tasks": [
     {{"priority": 1, "task": "Acțiunea concretă #1", "why": "De ce e importantă", "icon": "🎯"}},
@@ -121,14 +123,16 @@ Jarvis:"""
             })
 
         return {
-            "greeting": f"Bună dimineața! Să facem {snap.get('shop_name')} să crească azi! 🚀",
-            "summary": f"Ieri ai avut {snap['orders_today']} comenzi și {snap['revenue_today']} {snap['currency']} venit. Hai să facem azi și mai bine!",
+            "health_score": 82,
+            "greeting": f"Protocoalele active, Jarvis la raport. Să creștem vânzările pentru {snap.get('shop_name')}! 🚀",
+            "voice_script": f"Bună dimineața! Telemetria magazinului este activă. Ai înregistrat {snap.get('orders_today', 0)} comenzi și avem oportunități de creștere. Iată prioritățile zilei.",
+            "summary": f"Ieri ai avut {snap.get('orders_today', 0)} comenzi și {snap.get('revenue_today', 0)} {snap.get('currency', 'USD')} venit. Hai să facem azi și mai bine!",
             "top_tasks": [
-                {"priority": 1, "task": "Verifică și răspunde la toate comenzile noi", "why": "Clienții fericiți revin", "icon": "📦"},
-                {"priority": 2, "task": "Postează pe Instagram/TikTok un produs top", "why": "Trafic organic gratuit", "icon": "📱"},
-                {"priority": 3, "task": "Trimite email clienților cu coș abandonat", "why": f"{snap['abandoned_carts']} potențiali clienți de recuperat", "icon": "📧"},
+                {"priority": 1, "task": "Verifică și expediază comenzile noi", "why": "Clienții mulțumiți lasă recenzii de 5 stele", "icon": "📦"},
+                {"priority": 2, "task": "Postează pe TikTok/Reels produsul vedetă", "why": "Atrage trafic cald fără costuri de reclamă", "icon": "📱"},
+                {"priority": 3, "task": "Trimite email celor cu coș abandonat", "why": f"{snap.get('abandoned_carts', 0)} potențiali clienți de recuperat", "icon": "📧"},
             ],
             "alerts": alerts,
-            "traffic_tip": "Postează un Reel/TikTok cu un produs best-seller + story cu testimonial de client. Cel mai ieftin trafic.",
-            "motivation": "Fiecare vânzare de azi e un client fidel de mâine! 💪"
+            "traffic_tip": "Postează un video demonstrativ de 15 secunde pe TikTok cu cel mai popular produs și adaugă link în bio.",
+            "motivation": "Fiecare vânzare de azi e un pas către independența ta financiară! 💪"
         }

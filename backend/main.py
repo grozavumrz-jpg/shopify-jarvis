@@ -169,20 +169,45 @@ async def get_briefing(shop: str = Query(...)):
 
     # Check cached briefing
     cached = db.get_latest_briefing(shop)
+    client = ShopifyClient(shop, record["access_token"])
+    snapshot = await client.get_store_snapshot()
+    current_plan = record.get("plan", "free") or "free"
+
     if cached:
         age_minutes = (datetime.utcnow() - datetime.fromisoformat(
             cached["created_at"].replace("Z", "").split(".")[0]
         )).total_seconds() / 60
         if age_minutes < 120:
-            return {"briefing": cached["data"], "cached": True}
+            return {
+                "briefing": cached["data"],
+                "cached": True,
+                "snapshot": snapshot,
+                "plan": current_plan
+            }
 
     # Generate fresh briefing
-    client   = ShopifyClient(shop, record["access_token"])
-    snapshot = await client.get_store_snapshot()
     briefing = await ai.generate_briefing(snapshot)
-
     db.save_briefing(shop, briefing)
-    return {"briefing": briefing, "cached": False, "snapshot": snapshot}
+    return {
+        "briefing": briefing,
+        "cached": False,
+        "snapshot": snapshot,
+        "plan": current_plan
+    }
+
+
+class PlanUpgradeRequest(BaseModel):
+    shop: str
+    plan: str
+
+@app.post("/api/plan/upgrade")
+async def upgrade_plan(req: PlanUpgradeRequest):
+    record = get_shop_or_404(req.shop)
+    with db.get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE shops SET plan=%s WHERE shop=%s", (req.plan, req.shop))
+        conn.commit()
+    return {"ok": True, "plan": req.plan}
 
 
 @app.get("/api/snapshot")
