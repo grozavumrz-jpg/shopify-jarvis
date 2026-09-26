@@ -25,7 +25,7 @@ app.add_middleware(
 )
 
 SHOPIFY_API_KEY = os.getenv("SHOPIFY_API_KEY", "")
-APP_URL         = os.getenv("APP_URL", "http://localhost:8000")
+APP_URL         = os.getenv("APP_URL") or os.getenv("APP URL") or "https://shopify-jarvis-production.up.railway.app"
 
 ai = AIAdvisor()
 

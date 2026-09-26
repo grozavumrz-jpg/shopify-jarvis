@@ -8,7 +8,7 @@ import httpx
 
 SHOPIFY_API_KEY    = os.getenv("SHOPIFY_API_KEY", "")
 SHOPIFY_API_SECRET = os.getenv("SHOPIFY_API_SECRET", "")
-APP_URL            = os.getenv("APP_URL", "http://localhost:8000")
+APP_URL            = os.getenv("APP_URL") or os.getenv("APP URL") or "https://shopify-jarvis-production.up.railway.app"
 SCOPES = (
     "read_orders,read_products,read_customers,"
     "read_checkouts,read_analytics,read_inventory"
