@@ -402,21 +402,33 @@ class AutopilotDispatchRequest(BaseModel):
     shop: str
     lang: Optional[str] = "ro"
 
+@app.get("/api/debug/shops")
+async def debug_shops():
+    shops = db.get_active_shops()
+    return [{"shop": s["shop"], "shop_name": s.get("shop_name"), "plan": s.get("plan")} for s in shops]
+
 @app.get("/api/autopilot/status")
 async def get_autopilot_status(shop: str = Query(...)):
-    record = get_shop_or_404(shop)
-    client = ShopifyClient(shop, record["access_token"])
-    checkouts = await client.get_abandoned_checkouts_detailed()
-    potential_revenue = sum(c["total_price"] for c in checkouts)
-    logs = db.get_autopilot_logs(shop, limit=20)
-    return {
-        "active": True,
-        "daemon": AUTOPILOT_STATUS,
-        "pending_carts_count": len(checkouts),
-        "potential_revenue": round(potential_revenue, 2),
-        "queue": checkouts,
-        "logs": logs
-    }
+    try:
+        record = get_shop_or_404(shop)
+        client = ShopifyClient(shop, record["access_token"])
+        checkouts = await client.get_abandoned_checkouts_detailed()
+        potential_revenue = sum(c["total_price"] for c in checkouts)
+        logs = db.get_autopilot_logs(shop, limit=20)
+        return {
+            "active": True,
+            "daemon": AUTOPILOT_STATUS,
+            "pending_carts_count": len(checkouts),
+            "potential_revenue": round(potential_revenue, 2),
+            "queue": checkouts,
+            "logs": logs
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, detail=f"Autopilot status error: {repr(e)}")
 
 @app.post("/api/autopilot/dispatch")
 async def execute_autopilot_dispatch(req: AutopilotDispatchRequest):

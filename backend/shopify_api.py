@@ -88,7 +88,10 @@ class ShopifyClient:
                 headers=self.headers,
                 params=params or {},
             )
-            r.raise_for_status()
+            if r.status_code != 200:
+                print(f"[Shopify API Error] {r.status_code} on {path}: {r.text}")
+                from fastapi import HTTPException
+                raise HTTPException(status_code=r.status_code, detail=f"Shopify {r.status_code}: {r.text[:200]}")
             return r.json()
 
     # ── Store info ────────────────────────────────────────────────────────────
