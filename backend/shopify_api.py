@@ -150,6 +150,13 @@ class ShopifyClient:
 
             geo = detect_customer_language_and_country(c_name, email, phone, country_code, country_name)
 
+            raw_url = c.get("abandoned_checkout_url") or ""
+            if raw_url and "discount=" not in raw_url:
+                delimiter = "&" if "?" in raw_url else "?"
+                checkout_link = f"{raw_url}{delimiter}discount=JARVIS10"
+            else:
+                checkout_link = raw_url
+
             detailed.append({
                 "id": str(c.get("id")),
                 "token": c.get("token") or "",
@@ -158,7 +165,7 @@ class ShopifyClient:
                 "total_price": float(c.get("total_price") or 0.0),
                 "currency": c.get("currency") or "EUR",
                 "items": items or ["Produse din coș"],
-                "checkout_url": c.get("abandoned_checkout_url") or "",
+                "checkout_url": checkout_link,
                 "created_at": c.get("created_at") or "",
                 "detected_lang": geo["lang"],
                 "detected_lang_name": geo["lang_name"],
