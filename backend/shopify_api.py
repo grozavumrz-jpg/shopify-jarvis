@@ -51,6 +51,53 @@ class ShopifyClient:
         })
         return data.get("checkouts", [])
 
+    async def get_abandoned_checkouts_detailed(self) -> List[Dict]:
+        from datetime import datetime, timedelta
+        since = (datetime.utcnow() - timedelta(days=14)).isoformat() + "Z"
+        data = await self._get("/checkouts.json", {
+            "created_at_min": since,
+            "limit":          50,
+        })
+        checkouts = data.get("checkouts", [])
+        detailed = []
+        for c in checkouts:
+            cust = c.get("customer") or {}
+            first = cust.get("first_name", "") or ""
+            last = cust.get("last_name", "") or ""
+            c_name = f"{first} {last}".strip()
+            if not c_name:
+                bill = c.get("billing_address") or {}
+                c_name = f"{bill.get('first_name', '')} {bill.get('last_name', '')}".strip() or "Client"
+
+            email = c.get("email") or cust.get("email") or ""
+            items = [item.get("title") for item in c.get("line_items", []) if item.get("title")]
+
+            detailed.append({
+                "id": str(c.get("id")),
+                "token": c.get("token") or "",
+                "email": email,
+                "customer_name": c_name,
+                "total_price": float(c.get("total_price") or 0.0),
+                "currency": c.get("currency") or "EUR",
+                "items": items or ["Produse din coș"],
+                "checkout_url": c.get("abandoned_checkout_url") or "",
+                "created_at": c.get("created_at") or ""
+            })
+        return detailed
+
+    async def send_recovery_email(self, checkout_id: str) -> bool:
+        """Trigger Shopify's native abandoned checkout recovery email if supported."""
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.post(
+                    f"{self.base}/checkouts/{checkout_id}/recovery_email.json",
+                    headers=self.headers,
+                    json={}
+                )
+                return r.status_code in (200, 201)
+        except Exception:
+            return False
+
     # ── Products ──────────────────────────────────────────────────────────────
 
     async def get_products(self, limit: int = 50) -> List[Dict]:

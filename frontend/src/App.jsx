@@ -93,6 +93,18 @@ const I18N = {
     action_vip_desc: 'Identify top spenders and draft an exclusive VIP appreciation reward to trigger high-margin reorders.',
     action_post_title: '📦 3-Day Post-Delivery Review & Upsell',
     action_post_desc: 'Automated 3-day post-delivery sequence requesting photo reviews and recommending a complementary item.',
+    tab_autopilot: '⚡ AUTOPILOT',
+    autopilot_title: 'AUTONOMOUS REVENUE DISPATCH COMMAND',
+    autopilot_sub: 'Jarvis continuously monitors checkouts and dispatches recovery emails without human intervention.',
+    autopilot_status_active: '🟢 AUTOPILOT: 100% ONLINE & VIGILANT',
+    autopilot_btn_dispatch: '⚡ DISPATCH ALL AUTONOMOUS ACTIONS NOW',
+    autopilot_dispatching: 'JARVIS DISPATCHING ACTIONS...',
+    autopilot_stat_pending: 'CARTS IN RECOVERY QUEUE',
+    autopilot_stat_revenue: 'REVENUE AT STAKE',
+    autopilot_stat_actions: 'ACTIONS EXECUTED',
+    autopilot_log_title: 'LIVE AUTONOMOUS AUDIT TRAIL',
+    autopilot_queue_title: 'PENDING HIGH-INTENT CHECKOUT QUEUE',
+    autopilot_success_speech: 'All recovery sequences and campaigns have been autonomously dispatched. Systems tracking conversions.'
   },
   ro: {
     brand_sub_pro: 'AUTONOMOUS PRO',
@@ -105,6 +117,7 @@ const I18N = {
     tab_hud: '🪐 TELEMETRIE & RAPORT',
     tab_chat: '💬 DISCUTĂ CU JARVIS',
     tab_actions: '⚡ CAMPANII 1-CLICK',
+    tab_autopilot: '⚡ PILOT AUTOMAT',
     tab_plans: '💎 ABONAMENTE',
     health_score_label: 'SCOR SĂNĂTATE',
     listen_briefing: '🔊 ASCULTĂ RAPORTUL VOCAL',
@@ -131,6 +144,17 @@ const I18N = {
     action_vip_desc: 'Identifică cumpărătorii de top și generează un email exclusiv cu discount VIP pentru comenzi repetate.',
     action_post_title: '📦 Secvență Post-Cumpărare & Review 5⭐',
     action_post_desc: 'Email trimis la 3 zile după livrare pentru recenzii de 5 stele și vânzare de produse complementare.',
+    autopilot_title: 'CENTRUL DE COMANDĂ PILOT AUTOMAT (JARVIS 24/7)',
+    autopilot_sub: 'Jarvis monitorizează magazinul non-stop și trimite autonom recuperările de coșuri și campaniile fără intervenție manuală.',
+    autopilot_status_active: '🟢 PILOT AUTOMAT: 100% ACTIV & VIGILENT',
+    autopilot_btn_dispatch: '⚡ TRIMITE TOTUL AUTONOM ACUM (EXECUȚIE INSTANT)',
+    autopilot_dispatching: 'JARVIS EXPEDIAZĂ AUTONOM ACȚIUNILE...',
+    autopilot_stat_pending: 'COȘURI ÎN COADA DE RECUPERARE',
+    autopilot_stat_revenue: 'VENIT POTENȚIAL VIZAT',
+    autopilot_stat_actions: 'ACȚIUNI EXECUTATE AUTONOM',
+    autopilot_log_title: 'JURNAL DE EXECUȚIE AUTONOMĂ LIVE',
+    autopilot_queue_title: 'COADA ACTIVĂ DE COȘURI CU INTENȚIE MARE',
+    autopilot_success_speech: 'Am expediat autonom toate acțiunile de recuperare și mesajele VIP. Urmărim conversiile în timp real!',
     tactical_plan: '🎯 PLAN TACTIC PENTRU ASTĂZI',
     ai_prioritized: 'PRIORITIZAT AI',
     analyzing_priorities: 'Jarvis analizează prioritățile magazinului...',
@@ -225,6 +249,49 @@ export default function App() {
   const [generatingAction, setGeneratingAction] = useState(false)
   const [subscribing, setSubscribing] = useState(false)
 
+  // Autopilot State
+  const [autopilotData, setAutopilotData] = useState(null)
+  const [dispatchingAutopilot, setDispatchingAutopilot] = useState(false)
+  const [autopilotLogs, setAutopilotLogs] = useState([])
+
+  const loadAutopilotStatus = async () => {
+    try {
+      const res = await fetch(`/api/autopilot/status?shop=${encodeURIComponent(shop)}`)
+      if (res.ok) {
+        const data = await res.json()
+        setAutopilotData(data)
+        if (data.logs) setAutopilotLogs(data.logs)
+      }
+    } catch (e) {
+      console.error('Failed to load autopilot status', e)
+    }
+  }
+
+  const handleDispatchAutopilot = async () => {
+    if (plan !== 'pro') {
+      setActiveTab('plans')
+      return
+    }
+    setDispatchingAutopilot(true)
+    try {
+      const res = await fetch('/api/autopilot/dispatch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop, lang })
+      })
+      if (res.ok) {
+        const data = await res.json()
+        if (data.logs) setAutopilotLogs(data.logs)
+        await loadAutopilotStatus()
+        speakText(t.autopilot_success_speech)
+      }
+    } catch (e) {
+      alert('Autopilot notice: ' + e.message)
+    } finally {
+      setDispatchingAutopilot(false)
+    }
+  }
+
   // Load telemetry with current language
   useEffect(() => {
     async function loadTelemetry() {
@@ -242,6 +309,7 @@ export default function App() {
           const hist = await histRes.json()
           setChatMessages(hist)
         }
+        loadAutopilotStatus()
       } catch (e) {
         console.error('Failed to load Jarvis telemetry', e)
       } finally {
@@ -571,6 +639,18 @@ export default function App() {
           <span className="nav-icon">⚡</span> {t.tab_actions}
         </button>
         <button
+          className={`nav-item ${activeTab === 'autopilot' ? 'active' : ''}`}
+          onClick={() => {
+            setActiveTab('autopilot')
+            loadAutopilotStatus()
+          }}
+        >
+          <span className="nav-icon">🤖</span> {t.tab_autopilot}
+          {autopilotData?.pending_carts_count > 0 && (
+            <span className="nav-pill pulse-badge">{autopilotData.pending_carts_count}</span>
+          )}
+        </button>
+        <button
           className={`nav-item ${activeTab === 'plans' ? 'active' : ''}`}
           onClick={() => setActiveTab('plans')}
         >
@@ -866,6 +946,122 @@ export default function App() {
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* ════ TAB: AUTOPILOT (AUTONOMOUS DISPATCH ENGINE) ════ */}
+        {activeTab === 'autopilot' && (
+          <div className="autopilot-view">
+            <div className="autopilot-hero">
+              <div className="autopilot-status-badge">
+                <span className="pulse-green-dot"></span>
+                {t.autopilot_status_active}
+              </div>
+              <h2>{t.autopilot_title}</h2>
+              <p>{t.autopilot_sub}</p>
+
+              <div className="autopilot-stats-row">
+                <div className="autopilot-stat-card">
+                  <div className="stat-label">{t.autopilot_stat_pending}</div>
+                  <div className="stat-value critical">{autopilotData?.pending_carts_count || 0}</div>
+                  <div className="stat-hint">🛒 Sesiuni nefinalizate</div>
+                </div>
+                <div className="autopilot-stat-card">
+                  <div className="stat-label">{t.autopilot_stat_revenue}</div>
+                  <div className="stat-value highlight-gold">
+                    {autopilotData?.potential_revenue || 0} <span className="currency">{snapshot?.currency || 'EUR'}</span>
+                  </div>
+                  <div className="stat-hint">💰 Bani de recuperat</div>
+                </div>
+                <div className="autopilot-stat-card">
+                  <div className="stat-label">{t.autopilot_stat_actions}</div>
+                  <div className="stat-value highlight-cyan">{autopilotLogs?.length || 0}</div>
+                  <div className="stat-hint">⚡ Expedieri înregistrate</div>
+                </div>
+              </div>
+
+              <div className="autopilot-action-box">
+                <button
+                  className="autopilot-dispatch-btn"
+                  onClick={handleDispatchAutopilot}
+                  disabled={dispatchingAutopilot || (autopilotData?.pending_carts_count === 0 && autopilotLogs.length > 0)}
+                >
+                  {dispatchingAutopilot ? (
+                    <span className="btn-loading-flex">
+                      <span className="spinner-mini"></span>
+                      {t.autopilot_dispatching}
+                    </span>
+                  ) : (
+                    <span>{t.autopilot_btn_dispatch}</span>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Split Grid: Live Queue & Audit Trail Log */}
+            <div className="autopilot-split-grid">
+              {/* Active Queue */}
+              <div className="hud-card">
+                <div className="card-title">
+                  <span>{t.autopilot_queue_title}</span>
+                  <span className="tag-live">{autopilotData?.queue?.length || 0} în așteptare</span>
+                </div>
+                <div className="queue-list">
+                  {autopilotData?.queue && autopilotData.queue.length > 0 ? (
+                    autopilotData.queue.map((item, idx) => (
+                      <div key={idx} className="queue-item">
+                        <div className="queue-item-header">
+                          <span className="queue-name">👤 {item.customer_name}</span>
+                          <span className="queue-price">{item.total_price} {item.currency}</span>
+                        </div>
+                        <div className="queue-details">
+                          📦 {item.items.join(', ')}
+                        </div>
+                        {item.checkout_url && (
+                          <div className="queue-link">
+                            🔗 Link Checkout generat de Shopify
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="empty-notice">
+                      ✅ Niciun coș abandonat în așteptare. Toate comenzile au fost procesate!
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Execution Audit Log */}
+              <div className="hud-card">
+                <div className="card-title">
+                  <span>{t.autopilot_log_title}</span>
+                  <span className="tag-live">Istoric Expedieri</span>
+                </div>
+                <div className="audit-log-stream">
+                  {autopilotLogs && autopilotLogs.length > 0 ? (
+                    autopilotLogs.map((log, idx) => (
+                      <div key={idx} className="audit-log-item">
+                        <div className="log-top">
+                          <span className="log-badge-success">EXPEDIAT ✅</span>
+                          <span className="log-target">{log.target_name} ({log.target_email || 'Email'})</span>
+                          <span className="log-time">{log.created_at.slice(11, 16)}</span>
+                        </div>
+                        <div className="log-subj"><strong>Subiect:</strong> {log.subject}</div>
+                        <div className="log-msg">{log.message}</div>
+                        {log.revenue > 0 && (
+                          <div className="log-rev">Valoare vizată: {log.revenue} {snapshot?.currency || 'EUR'}</div>
+                        )}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="empty-notice">
+                      Apasă butonul de mai sus pentru prima execuție autonomă a lui Jarvis.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
@@ -1861,5 +2057,256 @@ const styles = `
   color: var(--text-dim);
   font-size: 14px;
   margin-top: 6px;
+}
+
+/* ── AUTOPILOT STYLES ── */
+.autopilot-view {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.autopilot-hero {
+  background: var(--bg-card);
+  border: 1px solid var(--border-cyan);
+  border-radius: 12px;
+  padding: 30px;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 0 35px rgba(0, 242, 254, 0.15);
+}
+
+.autopilot-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(34, 197, 94, 0.15);
+  border: 1px solid var(--green-glow);
+  color: var(--green-glow);
+  font-family: 'Orbitron', sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 16px;
+  border-radius: 20px;
+  margin-bottom: 16px;
+  letter-spacing: 1px;
+}
+
+.pulse-green-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green-glow);
+  box-shadow: 0 0 10px var(--green-glow);
+  animation: pulse-dot 1s infinite alternate;
+}
+
+.autopilot-hero h2 {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 24px;
+  color: #fff;
+  letter-spacing: 1.5px;
+  margin-bottom: 8px;
+}
+
+.autopilot-hero p {
+  color: var(--text-dim);
+  font-size: 15px;
+  max-width: 650px;
+  margin: 0 auto 24px;
+}
+
+.autopilot-stats-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.autopilot-stat-card {
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.stat-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.stat-value {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 28px;
+  font-weight: 900;
+  margin: 6px 0;
+  color: #fff;
+}
+
+.stat-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.autopilot-action-box {
+  display: flex;
+  justify-content: center;
+}
+
+.autopilot-dispatch-btn {
+  background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
+  color: #000;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 15px;
+  font-weight: 900;
+  padding: 16px 36px;
+  border: none;
+  border-radius: 30px;
+  cursor: pointer;
+  box-shadow: 0 0 30px rgba(0, 242, 254, 0.5);
+  transition: all 0.25s;
+  letter-spacing: 1px;
+}
+
+.autopilot-dispatch-btn:hover:not(:disabled) {
+  transform: scale(1.04);
+  box-shadow: 0 0 45px rgba(0, 242, 254, 0.8);
+}
+
+.autopilot-dispatch-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn-loading-flex {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.spinner-mini {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(0,0,0,0.3);
+  border-top-color: #000;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.autopilot-split-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.queue-list, .audit-log-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+.queue-item {
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.queue-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.queue-name {
+  font-weight: 700;
+  color: #fff;
+  font-size: 14px;
+}
+
+.queue-price {
+  font-family: 'Orbitron', sans-serif;
+  color: var(--cyan-glow);
+  font-weight: 700;
+}
+
+.queue-details {
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.queue-link {
+  font-size: 11px;
+  color: #60a5fa;
+  font-family: monospace;
+}
+
+.audit-log-item {
+  background: rgba(15, 23, 42, 0.7);
+  border-left: 3px solid var(--green-glow);
+  border-radius: 6px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.log-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+}
+
+.log-badge-success {
+  color: var(--green-glow);
+  font-weight: 700;
+  font-size: 11px;
+}
+
+.log-target {
+  color: #fff;
+  font-weight: 600;
+}
+
+.log-time {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.log-subj {
+  font-size: 13px;
+  color: #e2e8f0;
+}
+
+.log-msg {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  line-height: 1.4;
+  background: rgba(0,0,0,0.25);
+  padding: 8px;
+  border-radius: 4px;
+  margin-top: 4px;
+}
+
+.log-rev {
+  font-size: 12px;
+  color: #f59e0b;
+  font-weight: 700;
+}
+
+.pulse-badge {
+  background: #ef4444 !important;
+  color: #fff !important;
+  animation: pulse-dot 1s infinite alternate;
 }
 `

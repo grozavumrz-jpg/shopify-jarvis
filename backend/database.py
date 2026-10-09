@@ -48,6 +48,19 @@ def init_db():
                     data JSONB NOT NULL,
                     created_at TIMESTAMP DEFAULT NOW()
                 );
+
+                CREATE TABLE IF NOT EXISTS autopilot_logs (
+                    id SERIAL PRIMARY KEY,
+                    shop TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    target_name TEXT,
+                    target_email TEXT,
+                    subject TEXT,
+                    message TEXT,
+                    revenue NUMERIC DEFAULT 0.0,
+                    status TEXT DEFAULT 'executed',
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
             """)
         conn.commit()
 
@@ -147,3 +160,35 @@ def get_latest_briefing(shop: str) -> Optional[Dict]:
             if row:
                 return {"data": row["data"], "created_at": str(row["created_at"])}
     return None
+
+
+# ── Autopilot Logs ────────────────────────────────────────────────────────────
+
+def save_autopilot_log(shop: str, action_type: str, target_name: str, target_email: str, subject: str, message: str, revenue: float = 0.0, status: str = "executed"):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO autopilot_logs (shop, action_type, target_name, target_email, subject, message, revenue, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (shop, action_type, target_name, target_email, subject, message, revenue, status))
+        conn.commit()
+
+
+def get_autopilot_logs(shop: str, limit: int = 20) -> List[Dict]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, action_type, target_name, target_email, subject, message, revenue, status, created_at
+                FROM autopilot_logs
+                WHERE shop=%s
+                ORDER BY created_at DESC
+                LIMIT %s
+            """, (shop, limit))
+            rows = cur.fetchall()
+            logs = []
+            for r in rows:
+                item = dict(r)
+                item["created_at"] = str(item["created_at"])
+                item["revenue"] = float(item.get("revenue") or 0.0)
+                logs.append(item)
+            return logs

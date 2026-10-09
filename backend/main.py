@@ -301,6 +301,74 @@ async def get_tts(text: str = Query(...), lang: str = Query("ro")):
     raise HTTPException(500, "TTS audio stream failed")
 
 
+# ── Autonomous Dispatch Engine (Autopilot) ───────────────────────────────────
+
+class AutopilotDispatchRequest(BaseModel):
+    shop: str
+    lang: Optional[str] = "ro"
+
+@app.get("/api/autopilot/status")
+async def get_autopilot_status(shop: str = Query(...)):
+    record = get_shop_or_404(shop)
+    client = ShopifyClient(shop, record["access_token"])
+    checkouts = await client.get_abandoned_checkouts_detailed()
+    potential_revenue = sum(c["total_price"] for c in checkouts)
+    logs = db.get_autopilot_logs(shop, limit=15)
+    return {
+        "active": True,
+        "pending_carts_count": len(checkouts),
+        "potential_revenue": round(potential_revenue, 2),
+        "queue": checkouts,
+        "logs": logs
+    }
+
+@app.post("/api/autopilot/dispatch")
+async def execute_autopilot_dispatch(req: AutopilotDispatchRequest):
+    record = get_shop_or_404(req.shop)
+    client = ShopifyClient(req.shop, record["access_token"])
+    shop_name = record.get("shop_name", req.shop)
+    checkouts = await client.get_abandoned_checkouts_detailed()
+
+    dispatched = []
+    total_rev = 0.0
+
+    for c in checkouts:
+        recovery = await ai.generate_autonomous_recovery(shop_name, c, lang=req.lang or "ro")
+        # Try Shopify native recovery email if applicable
+        await client.send_recovery_email(c["id"])
+        
+        rev = float(c.get("total_price") or 0.0)
+        total_rev += rev
+        
+        # Save to permanent audit log
+        db.save_autopilot_log(
+            shop=req.shop,
+            action_type="abandoned_cart_recovery",
+            target_name=c.get("customer_name") or "Cumpărător",
+            target_email=c.get("email") or "Sesiune checkout",
+            subject=recovery.get("subject", ""),
+            message=recovery.get("body", ""),
+            revenue=rev,
+            status="executed"
+        )
+        dispatched.append({
+            "target": c.get("customer_name"),
+            "email": c.get("email"),
+            "subject": recovery.get("subject"),
+            "revenue": rev,
+            "items": c.get("items")
+        })
+
+    logs = db.get_autopilot_logs(req.shop, limit=15)
+    return {
+        "ok": True,
+        "dispatched_count": len(dispatched),
+        "total_revenue_targeted": round(total_rev, 2),
+        "dispatched": dispatched,
+        "logs": logs
+    }
+
+
 # ── Privacy Policy (Required by Shopify App Store) ───────────────────────────
 
 @app.get("/privacy", response_class=HTMLResponse)
