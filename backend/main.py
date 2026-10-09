@@ -16,6 +16,7 @@ import database as db
 from shopify_auth import verify_hmac, build_install_url, exchange_code_for_token
 from shopify_api import ShopifyClient
 from ai_advisor import AIAdvisor
+from whatsapp_dispatcher import WhatsAppDispatcher
 
 # ── Init ──────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Jarvis for Shopify")
@@ -31,6 +32,7 @@ SHOPIFY_API_KEY = os.getenv("SHOPIFY_API_KEY", "")
 APP_URL         = os.getenv("APP_URL") or os.getenv("APP URL") or "https://shopify-jarvis-production.up.railway.app"
 
 ai = AIAdvisor()
+wa_dispatcher = WhatsAppDispatcher()
 
 # Serve React frontend build
 FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
@@ -335,18 +337,31 @@ async def process_single_checkout_recovery(shop: str, client: ShopifyClient, sho
     lang = c.get("detected_lang") or "ro"
     recovery = await ai.generate_autonomous_recovery(shop_name, c, lang=lang)
 
-    # Trigger official Shopify recovery email
+    # 1. Trigger official Shopify recovery email
     await client.send_recovery_email(cid)
+
+    # 2. Trigger Autonomous WhatsApp Dispatch if customer provided a phone number
+    wa_result = None
+    wa_text = recovery.get("whatsapp_message") or recovery.get("body", "")
+    phone = c.get("phone") or ""
+    if phone:
+        wa_result = await wa_dispatcher.send_autonomous_whatsapp(
+            phone=phone,
+            customer_name=c.get("customer_name") or "Client",
+            message=wa_text
+        )
 
     rev = float(c.get("total_price") or 0.0)
     action_type = "manual_autopilot_dispatch" if force else "autopilot_24_7_recovery"
     status_label = "executed_manual" if force else "executed_24_7"
+    if wa_result and wa_result.get("success"):
+        status_label += "_wa_auto"
 
     db.save_autopilot_log(
         shop=shop,
         action_type=action_type,
         target_name=c.get("customer_name") or "Cumpărător",
-        target_email=email or "Sesiune checkout",
+        target_email=email or phone or "Sesiune checkout",
         subject=recovery.get("subject", ""),
         message=recovery.get("body", ""),
         revenue=rev,
@@ -356,10 +371,16 @@ async def process_single_checkout_recovery(shop: str, client: ShopifyClient, sho
         lang=lang
     )
 
+    wa_link = wa_result.get("wa_link") if (wa_result and wa_result.get("wa_link")) else (wa_dispatcher.generate_wa_me_link(phone, wa_text) if phone else None)
+
     return {
         "target": c.get("customer_name"),
         "email": email,
+        "phone": phone,
         "subject": recovery.get("subject"),
+        "message": recovery.get("body"),
+        "whatsapp_message": wa_text,
+        "wa_link": wa_link,
         "revenue": rev,
         "items": c.get("items"),
         "lang": lang,
@@ -398,6 +419,34 @@ async def autopilot_daemon_loop():
         await asyncio.sleep(900)  # Check every 15 minutes 24/7
 
 
+class WhatsAppConfigRequest(BaseModel):
+    shop: str
+    meta_token: Optional[str] = None
+    meta_phone_id: Optional[str] = None
+    twilio_sid: Optional[str] = None
+    twilio_token: Optional[str] = None
+    webhook_url: Optional[str] = None
+
+@app.post("/api/settings/whatsapp")
+async def save_whatsapp_settings(req: WhatsAppConfigRequest):
+    if req.meta_token:
+        os.environ["WHATSAPP_API_TOKEN"] = req.meta_token
+        wa_dispatcher.meta_token = req.meta_token
+    if req.meta_phone_id:
+        os.environ["WHATSAPP_PHONE_NUMBER_ID"] = req.meta_phone_id
+        wa_dispatcher.meta_phone_id = req.meta_phone_id
+    if req.twilio_sid:
+        os.environ["TWILIO_ACCOUNT_SID"] = req.twilio_sid
+        wa_dispatcher.twilio_sid = req.twilio_sid
+    if req.twilio_token:
+        os.environ["TWILIO_AUTH_TOKEN"] = req.twilio_token
+        wa_dispatcher.twilio_token = req.twilio_token
+    if req.webhook_url:
+        os.environ["WHATSAPP_WEBHOOK_URL"] = req.webhook_url
+        wa_dispatcher.webhook_url = req.webhook_url
+    return {"ok": True, "message": "Canal WhatsApp configurat cu succes"}
+
+
 class AutopilotDispatchRequest(BaseModel):
     shop: str
     lang: Optional[str] = "ro"
@@ -413,6 +462,14 @@ async def get_autopilot_status(shop: str = Query(...)):
         record = get_shop_or_404(shop)
         client = ShopifyClient(shop, record["access_token"])
         checkouts = await client.get_abandoned_checkouts_detailed()
+        for c in checkouts:
+            phone = c.get("phone") or ""
+            if phone and len(phone) >= 8:
+                c_name = c.get("customer_name") or "Client"
+                shop_label = record.get("shop_name") or shop
+                wa_msg = f"Salut {c_name}! 👋 Sunt Jarvis de la {shop_label}. Produsele tale sunt rezervate pentru 6 ore cu 10% reducere (cod JARVIS10)! 👉 {c.get('checkout_url')}"
+                c["wa_link"] = wa_dispatcher.generate_wa_me_link(phone, wa_msg)
+
         potential_revenue = sum(c["total_price"] for c in checkouts)
         logs = db.get_autopilot_logs(shop, limit=20)
         return {

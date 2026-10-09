@@ -964,16 +964,17 @@ export default function App() {
                 <div className="daemon-banner-left">
                   <span className="daemon-pulsar"></span>
                   <div>
-                    <strong>{lang === 'ro' ? 'DAEMON AUTONOM 24/7 ONLINE:' : 'AUTONOMOUS 24/7 DAEMON ONLINE:'}</strong>{' '}
+                    <strong>{lang === 'ro' ? 'DAEMON AUTONOM 24/7 (EMAIL + WHATSAPP):' : 'AUTONOMOUS 24/7 (EMAIL + WHATSAPP):'}</strong>{' '}
                     <span>
                       {lang === 'ro'
-                        ? 'Jarvis scanează automat magazinul la fiecare 15 minute, detectează limba fiecărui cumpărător și trimite recuperarea fără nicio intervenție.'
-                        : 'Jarvis continuously monitors your store every 15 minutes, detects each customer’s native language, and recovers carts hands-free.'}
+                        ? 'Jarvis scanează automat magazinul la fiecare 15 minute, detectează limba fiecărui cumpărător și trimite recuperarea multi-canal fără nicio intervenție.'
+                        : 'Jarvis continuously monitors your store every 15 minutes, detects each customer’s native language, and recovers carts across email & WhatsApp hands-free.'}
                     </span>
                   </div>
                 </div>
                 <div className="daemon-banner-right">
-                  <span className="daemon-badge">🛡️ {lang === 'ro' ? 'Filtru Anti-Spam 48h Activ' : '48h Anti-Spam Active'}</span>
+                  <span className="daemon-badge">💬 WhatsApp + Email 24/7</span>
+                  <span className="daemon-badge">🛡️ {lang === 'ro' ? 'Filtru Anti-Spam 48h' : '48h Anti-Spam'}</span>
                 </div>
               </div>
 
@@ -1044,14 +1045,24 @@ export default function App() {
                           📦 {item.items.join(', ')}
                         </div>
                         <div className="queue-footer">
-                          <span className="queue-lang-note">
-                            🗣️ {lang === 'ro' ? 'Mesaj AI pregătit în limba:' : 'AI message prepared in:'} <strong>{item.detected_lang_name || item.detected_lang}</strong>
-                          </span>
-                          {item.checkout_url && (
-                            <span className="queue-link">
-                              🔗 Link Shopify
+                          <div className="queue-tags-row">
+                            <span className="queue-lang-note">
+                              🗣️ {lang === 'ro' ? 'Limbă maternă:' : 'Native copy:'} <strong>{item.detected_lang_name || item.detected_lang}</strong>
                             </span>
-                          )}
+                            <span className="fomo-badge">⏳ Rezervat 6h (-10%)</span>
+                          </div>
+                          <div className="queue-actions-row">
+                            {item.wa_link && (
+                              <a href={item.wa_link} target="_blank" rel="noreferrer" className="wa-btn-badge">
+                                💬 WhatsApp Direct
+                              </a>
+                            )}
+                            {item.checkout_url && (
+                              <a href={item.checkout_url} target="_blank" rel="noreferrer" className="queue-link">
+                                🔗 Link Coș (-10% Auto)
+                              </a>
+                            )}
+                          </div>
                         </div>
                       </div>
                     ))
@@ -2410,11 +2421,56 @@ const styles = `
 
 .queue-footer {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  gap: 8px;
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.queue-tags-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.queue-actions-row {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.wa-btn-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #25d366;
+  color: #0b2212 !important;
+  font-weight: 700;
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  text-decoration: none;
+  transition: transform 0.2s, filter 0.2s;
+}
+
+.wa-btn-badge:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.1);
+}
+
+.fomo-badge {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 600;
 }
 
 .queue-lang-note {
