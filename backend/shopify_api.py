@@ -2,55 +2,6 @@ import httpx
 from typing import Dict, Any, List
 
 
-class ShopifyClient:
-    """Async wrapper around Shopify Admin REST and GraphQL APIs."""
-
-    def __init__(self, shop: str, token: str):
-        self.shop = shop
-        self.base = f"https://{shop}/admin/api/2024-01"
-        self.headers = {
-            "X-Shopify-Access-Token": token,
-            "Content-Type": "application/json",
-        }
-
-    async def _get(self, path: str, params: dict = None) -> Dict:
-        async with httpx.AsyncClient(timeout=20) as client:
-            r = await client.get(
-                f"{self.base}{path}",
-                headers=self.headers,
-                params=params or {},
-            )
-            r.raise_for_status()
-            return r.json()
-
-    # ── Store info ────────────────────────────────────────────────────────────
-
-    async def get_shop_info(self) -> Dict:
-        data = await self._get("/shop.json")
-        return data.get("shop", {})
-
-    # ── Orders ────────────────────────────────────────────────────────────────
-
-    async def get_recent_orders(self, days: int = 30) -> List[Dict]:
-        from datetime import datetime, timedelta
-        since = (datetime.utcnow() - timedelta(days=days)).isoformat() + "Z"
-        data = await self._get("/orders.json", {
-            "status":          "any",
-            "created_at_min":  since,
-            "limit":           250,
-            "fields":          "id,created_at,total_price,financial_status,fulfillment_status,line_items,customer",
-        })
-        return data.get("orders", [])
-
-    async def get_abandoned_checkouts(self) -> List[Dict]:
-        from datetime import datetime, timedelta
-        since = (datetime.utcnow() - timedelta(days=7)).isoformat() + "Z"
-        data = await self._get("/checkouts.json", {
-            "created_at_min": since,
-            "limit":          50,
-        })
-        return data.get("checkouts", [])
-
 def detect_customer_language_and_country(c_name: str, email: str, phone: str, country_code: str, country_name: str) -> dict:
     cc = (country_code or "").upper().strip()
     
@@ -118,6 +69,55 @@ def detect_customer_language_and_country(c_name: str, email: str, phone: str, co
 
     return {"lang": "en", "country": country_name or "Internațional", "flag": "🌍", "lang_name": "Engleză (English)"}
 
+
+class ShopifyClient:
+    """Async wrapper around Shopify Admin REST and GraphQL APIs."""
+
+    def __init__(self, shop: str, token: str):
+        self.shop = shop
+        self.base = f"https://{shop}/admin/api/2024-01"
+        self.headers = {
+            "X-Shopify-Access-Token": token,
+            "Content-Type": "application/json",
+        }
+
+    async def _get(self, path: str, params: dict = None) -> Dict:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(
+                f"{self.base}{path}",
+                headers=self.headers,
+                params=params or {},
+            )
+            r.raise_for_status()
+            return r.json()
+
+    # ── Store info ────────────────────────────────────────────────────────────
+
+    async def get_shop_info(self) -> Dict:
+        data = await self._get("/shop.json")
+        return data.get("shop", {})
+
+    # ── Orders ────────────────────────────────────────────────────────────────
+
+    async def get_recent_orders(self, days: int = 30) -> List[Dict]:
+        from datetime import datetime, timedelta
+        since = (datetime.utcnow() - timedelta(days=days)).isoformat() + "Z"
+        data = await self._get("/orders.json", {
+            "status":          "any",
+            "created_at_min":  since,
+            "limit":           250,
+            "fields":          "id,created_at,total_price,financial_status,fulfillment_status,line_items,customer",
+        })
+        return data.get("orders", [])
+
+    async def get_abandoned_checkouts(self) -> List[Dict]:
+        from datetime import datetime, timedelta
+        since = (datetime.utcnow() - timedelta(days=7)).isoformat() + "Z"
+        data = await self._get("/checkouts.json", {
+            "created_at_min": since,
+            "limit":          50,
+        })
+        return data.get("checkouts", [])
 
     async def get_abandoned_checkouts_detailed(self) -> List[Dict]:
         from datetime import datetime, timedelta
