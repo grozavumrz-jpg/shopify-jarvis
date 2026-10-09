@@ -268,34 +268,38 @@ JARVIS:"""
             }
 
     async def generate_autonomous_recovery(self, shop_name: str, checkout: Dict, lang: str = "ro") -> Dict:
-        """Generate a personalized abandoned cart recovery message for a specific customer."""
+        """Generate a personalized abandoned cart recovery message for a specific customer in their native language."""
+        detected_lang = (lang or checkout.get("detected_lang") or "ro").lower()
+        detected_lang_name = checkout.get("detected_lang_name") or (
+            "Italiano (Italian)" if detected_lang == "it" else
+            "Español (Spanish)" if detected_lang == "es" else
+            "Deutsch (German)" if detected_lang == "de" else
+            "Français (French)" if detected_lang == "fr" else
+            "Română (Romanian)" if detected_lang == "ro" else
+            "English"
+        )
+        detected_country = checkout.get("detected_country") or "International"
         items_str = ", ".join(checkout.get("items", [])) or "articolele tale preferate"
         cust_name = checkout.get("customer_name") or "Cumpărător"
         url = checkout.get("checkout_url") or ""
         total = checkout.get("total_price", 0)
         curr = checkout.get("currency", "EUR")
 
-        if lang == "ro":
-            prompt = f"""Ești JARVIS, asistentul autonom pentru magazinul "{shop_name}".
-Creează un email scurt, prietenos și extrem de persuasiv de recuperare a coșului abandonat pentru clientul {cust_name}.
-Produsele lăsate în coș: {items_str} (Total: {total} {curr}).
-Link de finalizare: {url}
+        prompt = f"""You are JARVIS, an autonomous high-converting eCommerce AI retention engine for "{shop_name}".
+Create an irresistible abandoned cart recovery email tailored specifically for customer {cust_name}.
 
-Returnează un JSON pur cu formatul exact:
-{{
-  "subject": "Subiect email irezistibil (max 8 cuvinte)",
-  "body": "Text email captivant, personalizat pentru {cust_name}, incluzând mențiunea produsului {items_str}, reducerea de 10% cu codul 'JARVIS10' și link-ul de checkout: {url}"
-}}"""
-        else:
-            prompt = f"""You are JARVIS, the autonomous AI assistant for "{shop_name}".
-Generate a concise, irresistible abandoned cart recovery email for customer {cust_name}.
-Items in cart: {items_str} (Total: {total} {curr}).
-Direct link: {url}
+CUSTOMER LOCATION: {detected_country}
+NATIVE LANGUAGE REQUIREMENT: The email MUST be written 100% natively in {detected_lang_name} (ISO code: {detected_lang}).
+Do NOT use any English if the language is Italian, Spanish, German, French, or Romanian. Write with natural local idioms and warm, respectful eCommerce courtesy.
+
+CART ITEMS: {items_str} (Total value: {total} {curr}).
+EXCLUSIVE DISCOUNT: 10% OFF with code 'JARVIS10'.
+RECOVERY LINK: {url}
 
 Return pure JSON with this exact format:
 {{
-  "subject": "Irresistible email subject line (max 8 words)",
-  "body": "Engaging personalized email body for {cust_name}, highlighting {items_str}, offering 10% off with promo code 'JARVIS10', and providing the checkout link: {url}"
+  "subject": "Irresistible subject line in {detected_lang_name} (max 8 words)",
+  "body": "Engaging personalized email body in {detected_lang_name} addressing {cust_name}, highlighting {items_str}, offering 10% off with promo code 'JARVIS10', and providing the checkout link: {url}"
 }}"""
 
         try:
@@ -303,19 +307,42 @@ Return pure JSON with this exact format:
             start = text.find("{")
             end   = text.rfind("}") + 1
             if start >= 0 and end > start:
-                return json.loads(text[start:end])
+                parsed = json.loads(text[start:end])
+                if parsed.get("subject") and parsed.get("body"):
+                    return parsed
         except Exception:
             pass
 
-        # High-converting default template
-        if lang == "ro":
+        # High-converting native fallback templates
+        item_sample = items_str[:25]
+        if detected_lang == "it":
             return {
-                "subject": f"Ai uitat {items_str[:25]} în coș? 🎁 Iată 10% reducere",
+                "subject": f"Hai dimenticato {item_sample} nel carrello? 🎁 -10% per te",
+                "body": f"Ciao {cust_name},\n\nAbbiamo notato che hai lasciato {items_str} nel tuo carrello su {shop_name}.\n\nI tuoi articoli sono stati messi da parte per te e abbiamo attivato uno sconto esclusivo del 10%!\n\nUsa il codice JARVIS10 al checkout:\n👉 Completa il tuo ordine qui: {url}\n\nA presto,\nIl team di {shop_name}"
+            }
+        elif detected_lang == "es":
+            return {
+                "subject": f"¿Olvidaste {item_sample} en tu carrito? 🎁 10% de descuento",
+                "body": f"Hola {cust_name},\n\nNotamos que dejaste {items_str} en tu carrito en {shop_name}.\n\n¡Tus artículos están reservados y hemos activado un descuento especial del 10% para ti!\n\nUsa el código JARVIS10 al finalizar tu compra:\n👉 Completa tu pedido aquí: {url}\n\nUn saludo cordial,\nEl equipo de {shop_name}"
+            }
+        elif detected_lang == "de":
+            return {
+                "subject": f"Hast du {item_sample} im Warenkorb vergessen? 🎁 10% Rabatt",
+                "body": f"Hallo {cust_name},\n\nwir haben bemerkt, dass du {items_str} in deinem Warenkorb bei {shop_name} hinterlassen hast.\n\nDeine Artikel sind für dich reserviert und wir haben einen exklusiven Rabatt von 10% für dich freigeschaltet!\n\nNutze den Gutscheincode JARVIS10 an der Kasse:\n👉 Schließe deine Bestellung hier ab: {url}\n\nHerzliche Grüße,\nDein Team von {shop_name}"
+            }
+        elif detected_lang == "fr":
+            return {
+                "subject": f"Avez-vous oublié {item_sample} ? 🎁 -10% de réduction",
+                "body": f"Bonjour {cust_name},\n\nNous avons remarqué que vous avez laissé {items_str} dans votre panier chez {shop_name}.\n\nBonne nouvelle : vos articles sont réservés et nous vous offrons 10% de réduction immédiate !\n\nUtilisez le code promo JARVIS10 lors du paiement :\n👉 Finalisez votre commande ici : {url}\n\nBien cordialement,\nL'équipe {shop_name}"
+            }
+        elif detected_lang == "ro":
+            return {
+                "subject": f"Ai uitat {item_sample} în coș? 🎁 Iată 10% reducere",
                 "body": f"Salut {cust_name},\n\nAm observat că ai adăugat {items_str} în coș la {shop_name}, dar nu ai finalizat comanda.\n\nPentru că știm cât de mult îți dorești produsele, ți-am păstrat selecția rezervată și ți-am deblocat un discount de 10%!\n\nFolosește codul JARVIS10 la checkout pentru reducere:\n👉 Finalizează comanda aici: {url}\n\nCu prietenie,\nEchipa {shop_name}"
             }
         else:
             return {
-                "subject": f"Your {items_str[:25]} is waiting! 🎁 Take 10% off",
+                "subject": f"Your {item_sample} is waiting! 🎁 Take 10% off",
                 "body": f"Hi {cust_name},\n\nWe noticed you left {items_str} in your cart at {shop_name}.\n\nGood news: we held your items and unlocked an exclusive 10% discount for you!\n\nUse code JARVIS10 at checkout:\n👉 Complete your order here: {url}\n\nBest regards,\nTeam {shop_name}"
             }
 

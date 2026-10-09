@@ -51,6 +51,74 @@ class ShopifyClient:
         })
         return data.get("checkouts", [])
 
+def detect_customer_language_and_country(c_name: str, email: str, phone: str, country_code: str, country_name: str) -> dict:
+    cc = (country_code or "").upper().strip()
+    
+    COUNTRY_MAP = {
+        "IT": {"lang": "it", "country": "Italia", "flag": "🇮🇹", "lang_name": "Italiană (Italiano)"},
+        "ES": {"lang": "es", "country": "Spania", "flag": "🇪🇸", "lang_name": "Spaniolă (Español)"},
+        "MX": {"lang": "es", "country": "Mexic", "flag": "🇲🇽", "lang_name": "Spaniolă (Español)"},
+        "AR": {"lang": "es", "country": "Argentina", "flag": "🇦🇷", "lang_name": "Spaniolă (Español)"},
+        "CO": {"lang": "es", "country": "Columbia", "flag": "🇨🇴", "lang_name": "Spaniolă (Español)"},
+        "CL": {"lang": "es", "country": "Chile", "flag": "🇨🇱", "lang_name": "Spaniolă (Español)"},
+        "DE": {"lang": "de", "country": "Germania", "flag": "🇩🇪", "lang_name": "Germană (Deutsch)"},
+        "AT": {"lang": "de", "country": "Austria", "flag": "🇦🇹", "lang_name": "Germană (Deutsch)"},
+        "CH": {"lang": "de", "country": "Elveția", "flag": "🇨🇭", "lang_name": "Germană (Deutsch)"},
+        "FR": {"lang": "fr", "country": "Franța", "flag": "🇫🇷", "lang_name": "Franceză (Français)"},
+        "BE": {"lang": "fr", "country": "Belgia", "flag": "🇧🇪", "lang_name": "Franceză (Français)"},
+        "RO": {"lang": "ro", "country": "România", "flag": "🇷🇴", "lang_name": "Română"},
+        "MD": {"lang": "ro", "country": "Moldova", "flag": "🇲🇩", "lang_name": "Română"},
+        "GB": {"lang": "en", "country": "Regatul Unit", "flag": "🇬🇧", "lang_name": "Engleză (English)"},
+        "US": {"lang": "en", "country": "Statele Unite", "flag": "🇺🇸", "lang_name": "Engleză (English)"},
+        "CA": {"lang": "en", "country": "Canada", "flag": "🇨🇦", "lang_name": "Engleză (English)"},
+        "AU": {"lang": "en", "country": "Australia", "flag": "🇦🇺", "lang_name": "Engleză (English)"},
+        "NL": {"lang": "nl", "country": "Olanda", "flag": "🇳🇱", "lang_name": "Olandeză (Nederlands)"},
+        "PT": {"lang": "pt", "country": "Portugalia", "flag": "🇵🇹", "lang_name": "Portugheză (Português)"},
+        "BR": {"lang": "pt", "country": "Brazilia", "flag": "🇧🇷", "lang_name": "Portugheză (Português)"},
+    }
+
+    if cc in COUNTRY_MAP:
+        return COUNTRY_MAP[cc]
+
+    clean_p = (phone or "").replace(" ", "").replace("-", "")
+    if clean_p.startswith("+39") or clean_p.startswith("0039"):
+        return COUNTRY_MAP["IT"]
+    if clean_p.startswith("+34") or clean_p.startswith("0034"):
+        return COUNTRY_MAP["ES"]
+    if clean_p.startswith("+49") or clean_p.startswith("0049"):
+        return COUNTRY_MAP["DE"]
+    if clean_p.startswith("+33") or clean_p.startswith("0033"):
+        return COUNTRY_MAP["FR"]
+    if clean_p.startswith("+40") or clean_p.startswith("0040"):
+        return COUNTRY_MAP["RO"]
+
+    em = (email or "").lower()
+    if em.endswith(".it"):
+        return COUNTRY_MAP["IT"]
+    if em.endswith(".es"):
+        return COUNTRY_MAP["ES"]
+    if em.endswith(".de") or em.endswith(".at"):
+        return COUNTRY_MAP["DE"]
+    if em.endswith(".fr"):
+        return COUNTRY_MAP["FR"]
+    if em.endswith(".ro"):
+        return COUNTRY_MAP["RO"]
+
+    nm = (c_name or "").lower()
+    if any(k in nm for k in ["lorenzo", "bianchi", "rossi", "marco", "giovanni", "matteo", "luca", "francesco", "esposito", "ricci", "bruno"]):
+        return COUNTRY_MAP["IT"]
+    if any(k in nm for k in ["gomez", "gómez", "francisco", "rodriguez", "garcia", "garcía", "martinez", "martínez", "lopez", "gonzalez", "carlos", "javier"]):
+        return COUNTRY_MAP["ES"]
+    if any(k in nm for k in ["egger", "müller", "schmidt", "schneider", "fischer", "weber", "meyer", "wagner", "becker", "schulz", "emilia", "lukas"]):
+        return COUNTRY_MAP["DE"]
+    if any(k in nm for k in ["constantinescu", "popescu", "ionescu", "radu", "andrei", "stefan", "marius", "gheorghe", "florin", "alexandru", "grozavu"]):
+        return COUNTRY_MAP["RO"]
+    if any(k in nm for k in ["martin", "bernard", "dubois", "thomas", "robert", "richard", "petit", "durand", "fatima"]):
+        return COUNTRY_MAP["ES"]
+
+    return {"lang": "en", "country": country_name or "Internațional", "flag": "🌍", "lang_name": "Engleză (English)"}
+
+
     async def get_abandoned_checkouts_detailed(self) -> List[Dict]:
         from datetime import datetime, timedelta
         since = (datetime.utcnow() - timedelta(days=14)).isoformat() + "Z"
@@ -65,12 +133,19 @@ class ShopifyClient:
             first = cust.get("first_name", "") or ""
             last = cust.get("last_name", "") or ""
             c_name = f"{first} {last}".strip()
+            bill = c.get("billing_address") or {}
+            ship = c.get("shipping_address") or {}
             if not c_name:
-                bill = c.get("billing_address") or {}
                 c_name = f"{bill.get('first_name', '')} {bill.get('last_name', '')}".strip() or "Client"
 
             email = c.get("email") or cust.get("email") or ""
             items = [item.get("title") for item in c.get("line_items", []) if item.get("title")]
+
+            country_code = ship.get("country_code") or bill.get("country_code") or c.get("country_code") or ""
+            country_name = ship.get("country") or bill.get("country") or ""
+            phone = c.get("phone") or bill.get("phone") or ship.get("phone") or ""
+
+            geo = detect_customer_language_and_country(c_name, email, phone, country_code, country_name)
 
             detailed.append({
                 "id": str(c.get("id")),
@@ -81,7 +156,11 @@ class ShopifyClient:
                 "currency": c.get("currency") or "EUR",
                 "items": items or ["Produse din coș"],
                 "checkout_url": c.get("abandoned_checkout_url") or "",
-                "created_at": c.get("created_at") or ""
+                "created_at": c.get("created_at") or "",
+                "detected_lang": geo["lang"],
+                "detected_lang_name": geo["lang_name"],
+                "detected_country": geo["country"],
+                "detected_flag": geo["flag"],
             })
         return detailed
 

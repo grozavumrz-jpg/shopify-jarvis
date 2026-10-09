@@ -960,23 +960,45 @@ export default function App() {
               <h2>{t.autopilot_title}</h2>
               <p>{t.autopilot_sub}</p>
 
+              <div className="autopilot-daemon-banner">
+                <div className="daemon-banner-left">
+                  <span className="daemon-pulsar"></span>
+                  <div>
+                    <strong>{lang === 'ro' ? 'DAEMON AUTONOM 24/7 ONLINE:' : 'AUTONOMOUS 24/7 DAEMON ONLINE:'}</strong>{' '}
+                    <span>
+                      {lang === 'ro'
+                        ? 'Jarvis scanează automat magazinul la fiecare 15 minute, detectează limba fiecărui cumpărător și trimite recuperarea fără nicio intervenție.'
+                        : 'Jarvis continuously monitors your store every 15 minutes, detects each customer’s native language, and recovers carts hands-free.'}
+                    </span>
+                  </div>
+                </div>
+                <div className="daemon-banner-right">
+                  <span className="daemon-badge">🛡️ {lang === 'ro' ? 'Filtru Anti-Spam 48h Activ' : '48h Anti-Spam Active'}</span>
+                </div>
+              </div>
+
               <div className="autopilot-stats-row">
                 <div className="autopilot-stat-card">
                   <div className="stat-label">{t.autopilot_stat_pending}</div>
                   <div className="stat-value critical">{autopilotData?.pending_carts_count || 0}</div>
-                  <div className="stat-hint">🛒 Sesiuni nefinalizate</div>
+                  <div className="stat-hint">🛒 {lang === 'ro' ? 'Sesiuni nefinalizate' : 'Unfinished sessions'}</div>
                 </div>
                 <div className="autopilot-stat-card">
                   <div className="stat-label">{t.autopilot_stat_revenue}</div>
                   <div className="stat-value highlight-gold">
                     {autopilotData?.potential_revenue || 0} <span className="currency">{snapshot?.currency || 'EUR'}</span>
                   </div>
-                  <div className="stat-hint">💰 Bani de recuperat</div>
+                  <div className="stat-hint">💰 {lang === 'ro' ? 'Bani de recuperat' : 'Revenue to recover'}</div>
                 </div>
                 <div className="autopilot-stat-card">
                   <div className="stat-label">{t.autopilot_stat_actions}</div>
                   <div className="stat-value highlight-cyan">{autopilotLogs?.length || 0}</div>
-                  <div className="stat-hint">⚡ Expedieri înregistrate</div>
+                  <div className="stat-hint">⚡ {lang === 'ro' ? 'Expedieri autonome' : 'Autonomous dispatches'}</div>
+                </div>
+                <div className="autopilot-stat-card">
+                  <div className="stat-label">{lang === 'ro' ? 'LIMBI DETECTATE' : 'LANGUAGES DETECTED'}</div>
+                  <div className="stat-value highlight-purple">🇮🇹 🇪🇸 🇩🇪 🇷🇴 🇬🇧</div>
+                  <div className="stat-hint">🌐 {lang === 'ro' ? 'Adaptare 100% nativă' : '100% Native copy'}</div>
                 </div>
               </div>
 
@@ -1004,29 +1026,38 @@ export default function App() {
               <div className="hud-card">
                 <div className="card-title">
                   <span>{t.autopilot_queue_title}</span>
-                  <span className="tag-live">{autopilotData?.queue?.length || 0} în așteptare</span>
+                  <span className="tag-live">{autopilotData?.queue?.length || 0} {lang === 'ro' ? 'în așteptare' : 'pending'}</span>
                 </div>
                 <div className="queue-list">
                   {autopilotData?.queue && autopilotData.queue.length > 0 ? (
                     autopilotData.queue.map((item, idx) => (
                       <div key={idx} className="queue-item">
                         <div className="queue-item-header">
-                          <span className="queue-name">👤 {item.customer_name}</span>
+                          <div className="queue-name-group">
+                            <span className="queue-flag">{item.detected_flag || '🌍'}</span>
+                            <span className="queue-name">{item.customer_name}</span>
+                            <span className="queue-country-tag">{item.detected_country} • {item.detected_lang_name || item.detected_lang}</span>
+                          </div>
                           <span className="queue-price">{item.total_price} {item.currency}</span>
                         </div>
                         <div className="queue-details">
                           📦 {item.items.join(', ')}
                         </div>
-                        {item.checkout_url && (
-                          <div className="queue-link">
-                            🔗 Link Checkout generat de Shopify
-                          </div>
-                        )}
+                        <div className="queue-footer">
+                          <span className="queue-lang-note">
+                            🗣️ {lang === 'ro' ? 'Mesaj AI pregătit în limba:' : 'AI message prepared in:'} <strong>{item.detected_lang_name || item.detected_lang}</strong>
+                          </span>
+                          {item.checkout_url && (
+                            <span className="queue-link">
+                              🔗 Link Shopify
+                            </span>
+                          )}
+                        </div>
                       </div>
                     ))
                   ) : (
                     <div className="empty-notice">
-                      ✅ Niciun coș abandonat în așteptare. Toate comenzile au fost procesate!
+                      ✅ {lang === 'ro' ? 'Niciun coș abandonat în așteptare. Toate au fost procesate!' : 'No pending carts in queue. All have been processed!'}
                     </div>
                   )}
                 </div>
@@ -1036,15 +1067,20 @@ export default function App() {
               <div className="hud-card">
                 <div className="card-title">
                   <span>{t.autopilot_log_title}</span>
-                  <span className="tag-live">Istoric Expedieri</span>
+                  <span className="tag-live">{lang === 'ro' ? 'Istoric Expedieri' : 'Dispatch History'}</span>
                 </div>
                 <div className="audit-log-stream">
                   {autopilotLogs && autopilotLogs.length > 0 ? (
                     autopilotLogs.map((log, idx) => (
                       <div key={idx} className="audit-log-item">
                         <div className="log-top">
-                          <span className="log-badge-success">EXPEDIAT ✅</span>
-                          <span className="log-target">{log.target_name} ({log.target_email || 'Email'})</span>
+                          <span className="log-badge-success">
+                            {log.status === 'executed_24_7' ? '🤖 24/7 AUTO' : '⚡ INSTANT'}
+                          </span>
+                          <span className="log-target">
+                            {log.target_name} ({log.target_email || 'Email'})
+                            {log.country && <span className="log-geo-pill">📍 {log.country} {log.lang && `(${log.lang.toUpperCase()})`}</span>}
+                          </span>
                           <span className="log-time">{log.created_at.slice(11, 16)}</span>
                         </div>
                         <div className="log-subj"><strong>Subiect:</strong> {log.subject}</div>
@@ -1056,7 +1092,7 @@ export default function App() {
                     ))
                   ) : (
                     <div className="empty-notice">
-                      Apasă butonul de mai sus pentru prima execuție autonomă a lui Jarvis.
+                      {lang === 'ro' ? 'Jarvis monitorizează în fundal. Expedierile vor apărea automat aici.' : 'Jarvis is monitoring in the background. Dispatches will appear here automatically.'}
                     </div>
                   )}
                 </div>
@@ -2309,4 +2345,100 @@ const styles = `
   color: #fff !important;
   animation: pulse-dot 1s infinite alternate;
 }
+
+.autopilot-daemon-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-top: 14px;
+}
+
+.daemon-banner-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: #e2e8f0;
+}
+
+.daemon-pulsar {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 10px #10b981;
+  animation: pulse-dot 1.2s infinite alternate;
+  flex-shrink: 0;
+}
+
+.daemon-badge {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  color: #38bdf8;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.queue-name-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.queue-flag {
+  font-size: 16px;
+}
+
+.queue-country-tag {
+  background: rgba(56, 189, 248, 0.12);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.queue-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.queue-lang-note {
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.queue-lang-note strong {
+  color: #38bdf8;
+}
+
+.log-geo-pill {
+  background: rgba(168, 85, 247, 0.15);
+  color: #c084fc;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  margin-left: 6px;
+  font-weight: 600;
+}
+
+.highlight-purple {
+  color: #c084fc;
+  font-size: 16px;
+}
 `
+

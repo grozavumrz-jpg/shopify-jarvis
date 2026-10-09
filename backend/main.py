@@ -1,6 +1,7 @@
 import os
 import uuid
-from datetime import datetime
+import asyncio
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from fastapi import FastAPI, Request, HTTPException, Query
@@ -38,8 +39,9 @@ if os.path.isdir(FRONTEND_DIST):
 
 
 @app.on_event("startup")
-def startup():
+async def startup():
     db.init_db()
+    asyncio.create_task(autopilot_daemon_loop())
 
 
 @app.middleware("http")
@@ -301,7 +303,100 @@ async def get_tts(text: str = Query(...), lang: str = Query("ro")):
     raise HTTPException(500, "TTS audio stream failed")
 
 
-# ── Autonomous Dispatch Engine (Autopilot) ───────────────────────────────────
+# ── Autonomous Dispatch Engine (Autopilot 24/7) ──────────────────────────────
+
+AUTOPILOT_STATUS = {
+    "is_running": True,
+    "last_cycle_at": None,
+    "last_recovered_count": 0,
+    "total_auto_recovered": 0,
+    "interval_minutes": 15
+}
+
+async def process_single_checkout_recovery(shop: str, client: ShopifyClient, shop_name: str, c: dict, force: bool = False) -> Optional[dict]:
+    cid = str(c.get("id"))
+    email = c.get("email") or ""
+
+    # Deduplication Guard: Never spam a customer twice within 48 hours
+    if not force and db.is_checkout_recently_processed(shop, checkout_id=cid, email=email, hours=48):
+        return None
+
+    # Safety Timing Window: Wait at least 10 minutes from cart creation before sending
+    if not force:
+        try:
+            cart_time_str = c.get("created_at", "").replace("Z", "+00:00")
+            cart_dt = datetime.fromisoformat(cart_time_str)
+            now_dt = datetime.now(timezone.utc)
+            if (now_dt - cart_dt).total_seconds() < 600:
+                return None
+        except Exception:
+            pass
+
+    lang = c.get("detected_lang") or "ro"
+    recovery = await ai.generate_autonomous_recovery(shop_name, c, lang=lang)
+
+    # Trigger official Shopify recovery email
+    await client.send_recovery_email(cid)
+
+    rev = float(c.get("total_price") or 0.0)
+    action_type = "manual_autopilot_dispatch" if force else "autopilot_24_7_recovery"
+    status_label = "executed_manual" if force else "executed_24_7"
+
+    db.save_autopilot_log(
+        shop=shop,
+        action_type=action_type,
+        target_name=c.get("customer_name") or "Cumpărător",
+        target_email=email or "Sesiune checkout",
+        subject=recovery.get("subject", ""),
+        message=recovery.get("body", ""),
+        revenue=rev,
+        status=status_label,
+        checkout_id=cid,
+        country=c.get("detected_country"),
+        lang=lang
+    )
+
+    return {
+        "target": c.get("customer_name"),
+        "email": email,
+        "subject": recovery.get("subject"),
+        "revenue": rev,
+        "items": c.get("items"),
+        "lang": lang,
+        "lang_name": c.get("detected_lang_name"),
+        "country": c.get("detected_country"),
+        "flag": c.get("detected_flag")
+    }
+
+async def autopilot_daemon_loop():
+    await asyncio.sleep(15)
+    print("🚀 [Jarvis Autopilot] Background 24/7 worker active.")
+    while True:
+        try:
+            shops = db.get_active_shops()
+            total_cycle = 0
+            for s in shops:
+                try:
+                    shop = s["shop"]
+                    token = s["access_token"]
+                    shop_name = s.get("shop_name") or shop
+                    client = ShopifyClient(shop, token)
+                    checkouts = await client.get_abandoned_checkouts_detailed()
+                    for c in checkouts:
+                        res = await process_single_checkout_recovery(shop, client, shop_name, c, force=False)
+                        if res:
+                            total_cycle += 1
+                except Exception as shop_err:
+                    print(f"[Autopilot Shop Error {s.get('shop')}]: {shop_err}")
+
+            AUTOPILOT_STATUS["last_cycle_at"] = datetime.utcnow().isoformat()
+            AUTOPILOT_STATUS["last_recovered_count"] = total_cycle
+            AUTOPILOT_STATUS["total_auto_recovered"] += total_cycle
+        except Exception as e:
+            print(f"[Autopilot Daemon Loop Error]: {e}")
+
+        await asyncio.sleep(900)  # Check every 15 minutes 24/7
+
 
 class AutopilotDispatchRequest(BaseModel):
     shop: str
@@ -313,9 +408,10 @@ async def get_autopilot_status(shop: str = Query(...)):
     client = ShopifyClient(shop, record["access_token"])
     checkouts = await client.get_abandoned_checkouts_detailed()
     potential_revenue = sum(c["total_price"] for c in checkouts)
-    logs = db.get_autopilot_logs(shop, limit=15)
+    logs = db.get_autopilot_logs(shop, limit=20)
     return {
         "active": True,
+        "daemon": AUTOPILOT_STATUS,
         "pending_carts_count": len(checkouts),
         "potential_revenue": round(potential_revenue, 2),
         "queue": checkouts,
@@ -333,33 +429,13 @@ async def execute_autopilot_dispatch(req: AutopilotDispatchRequest):
     total_rev = 0.0
 
     for c in checkouts:
-        recovery = await ai.generate_autonomous_recovery(shop_name, c, lang=req.lang or "ro")
-        # Try Shopify native recovery email if applicable
-        await client.send_recovery_email(c["id"])
-        
-        rev = float(c.get("total_price") or 0.0)
-        total_rev += rev
-        
-        # Save to permanent audit log
-        db.save_autopilot_log(
-            shop=req.shop,
-            action_type="abandoned_cart_recovery",
-            target_name=c.get("customer_name") or "Cumpărător",
-            target_email=c.get("email") or "Sesiune checkout",
-            subject=recovery.get("subject", ""),
-            message=recovery.get("body", ""),
-            revenue=rev,
-            status="executed"
-        )
-        dispatched.append({
-            "target": c.get("customer_name"),
-            "email": c.get("email"),
-            "subject": recovery.get("subject"),
-            "revenue": rev,
-            "items": c.get("items")
-        })
+        # In manual trigger, force=True sends all pending carts immediately
+        res = await process_single_checkout_recovery(req.shop, client, shop_name, c, force=True)
+        if res:
+            dispatched.append(res)
+            total_rev += res["revenue"]
 
-    logs = db.get_autopilot_logs(req.shop, limit=15)
+    logs = db.get_autopilot_logs(req.shop, limit=20)
     return {
         "ok": True,
         "dispatched_count": len(dispatched),
@@ -367,6 +443,7 @@ async def execute_autopilot_dispatch(req: AutopilotDispatchRequest):
         "dispatched": dispatched,
         "logs": logs
     }
+
 
 
 # ── Privacy Policy (Required by Shopify App Store) ───────────────────────────

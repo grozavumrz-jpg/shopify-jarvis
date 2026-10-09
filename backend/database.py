@@ -59,8 +59,15 @@ def init_db():
                     message TEXT,
                     revenue NUMERIC DEFAULT 0.0,
                     status TEXT DEFAULT 'executed',
+                    checkout_id TEXT,
+                    country TEXT,
+                    lang TEXT,
                     created_at TIMESTAMP DEFAULT NOW()
                 );
+
+                ALTER TABLE autopilot_logs ADD COLUMN IF NOT EXISTS checkout_id TEXT;
+                ALTER TABLE autopilot_logs ADD COLUMN IF NOT EXISTS country TEXT;
+                ALTER TABLE autopilot_logs ADD COLUMN IF NOT EXISTS lang TEXT;
             """)
         conn.commit()
 
@@ -162,15 +169,52 @@ def get_latest_briefing(shop: str) -> Optional[Dict]:
     return None
 
 
-# ── Autopilot Logs ────────────────────────────────────────────────────────────
+# ── Autopilot Logs & Automation Helpers ────────────────────────────────────────
 
-def save_autopilot_log(shop: str, action_type: str, target_name: str, target_email: str, subject: str, message: str, revenue: float = 0.0, status: str = "executed"):
+def get_active_shops() -> List[Dict]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT shop, access_token, shop_name, plan FROM shops WHERE active=TRUE")
+            return [dict(r) for r in cur.fetchall()]
+
+
+def is_checkout_recently_processed(shop: str, checkout_id: Optional[str] = None, email: Optional[str] = None, hours: int = 48) -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            query = """
+                SELECT 1 FROM autopilot_logs
+                WHERE shop = %s
+                  AND created_at >= NOW() - INTERVAL '%s hours'
+                  AND (
+                      (%s IS NOT NULL AND checkout_id = %s)
+                      OR
+                      (%s IS NOT NULL AND target_email = %s AND target_email != '' AND target_email NOT LIKE '%%checkout%%')
+                  )
+                LIMIT 1
+            """
+            cur.execute(query, (shop, hours, checkout_id, checkout_id, email, email))
+            return cur.fetchone() is not None
+
+
+def save_autopilot_log(
+    shop: str,
+    action_type: str,
+    target_name: str,
+    target_email: str,
+    subject: str,
+    message: str,
+    revenue: float = 0.0,
+    status: str = "executed",
+    checkout_id: Optional[str] = None,
+    country: Optional[str] = None,
+    lang: Optional[str] = None
+):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO autopilot_logs (shop, action_type, target_name, target_email, subject, message, revenue, status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """, (shop, action_type, target_name, target_email, subject, message, revenue, status))
+                INSERT INTO autopilot_logs (shop, action_type, target_name, target_email, subject, message, revenue, status, checkout_id, country, lang)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (shop, action_type, target_name, target_email, subject, message, revenue, status, checkout_id, country, lang))
         conn.commit()
 
 
@@ -178,7 +222,7 @@ def get_autopilot_logs(shop: str, limit: int = 20) -> List[Dict]:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT id, action_type, target_name, target_email, subject, message, revenue, status, created_at
+                SELECT id, action_type, target_name, target_email, subject, message, revenue, status, checkout_id, country, lang, created_at
                 FROM autopilot_logs
                 WHERE shop=%s
                 ORDER BY created_at DESC
