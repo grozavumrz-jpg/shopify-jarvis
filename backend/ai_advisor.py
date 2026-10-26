@@ -293,15 +293,15 @@ NATIVE LANGUAGE REQUIREMENT: The messages MUST be written 100% natively in {dete
 Do NOT use any English if the language is Italian, Spanish, German, French, or Romanian. Write with natural local idioms and warm, charismatic eCommerce courtesy.
 
 CART ITEMS: {items_str} (Total value: {total} {curr}).
-EXCLUSIVE DISCOUNT: 10% OFF with code 'JARVIS10'.
+EXCLUSIVE DISCOUNT: 10% OFF with code 'MG10'.
 RECOVERY LINK: {url}
 PSYCHOLOGICAL TRIGGERS: Cart reserved for only 6 hours, inventory is low/fast-selling.
 
 Return pure JSON with this exact format:
 {{
   "subject": "Irresistible email subject line in {detected_lang_name} (max 8 words)",
-  "body": "Engaging personalized email body in {detected_lang_name} addressing {cust_name}, highlighting {items_str}, mentioning the 6-hour reservation, offering 10% off with promo code 'JARVIS10', and providing the checkout link: {url}",
-  "whatsapp_message": "Warm, punchy WhatsApp message in {detected_lang_name} with emojis addressing {cust_name}, reminding about {items_str}, offering the 10% discount link ({url}) reserved for 6 hours, and offering friendly support."
+  "body": "Engaging personalized email body in {detected_lang_name} addressing {cust_name}, highlighting {items_str}, mentioning the 6-hour reservation, offering 10% off with promo code 'MG10', and providing the checkout link: {url}",
+  "whatsapp_message": "Warm, punchy WhatsApp message in {detected_lang_name} with emojis addressing {cust_name}, reminding about {items_str}, offering the 10% discount link ({url}) reserved for 6 hours with code 'MG10', and offering friendly support."
 }}"""
 
         try:
@@ -322,37 +322,37 @@ Return pure JSON with this exact format:
         if detected_lang == "it":
             return {
                 "subject": f"Lorenzo, i tuoi {item_sample} ti aspettano (-10%)! 🎁",
-                "body": f"Ciao {cust_name},\n\nAbbiamo notato che hai lasciato {items_str} nel tuo carrello su {shop_name}.\n\nPoiché le scorte sono limitate, abbiamo riservato i tuoi capi per sole 6 ore e attivato per te uno sconto esclusivo del 10%!\n\nUsa il codice JARVIS10 al checkout oppure clicca direttamente qui per applicarlo in automatico:\n👉 Completa il tuo ordine: {url}\n\nA presto,\nJARVIS di {shop_name}",
-                "whatsapp_message": f"Ciao {cust_name}! 👋 Sono Jarvis di {shop_name}. Ho visto che hai lasciato i tuoi {items_str} nel carrello. Visto che le scorte sono quasi esaurite, ti abbiamo riservato i capi per 6 ore e attivato il 10% di sconto con il codice JARVIS10! 🎁\n\nCompleta il tuo ordine con lo sconto già applicato qui:\n👉 {url}\n\nSe hai bisogno di qualsiasi info su taglie o spedizione, rispondi pure qui!"
+                "body": f"Ciao {cust_name},\n\nAbbiamo notato che hai lasciato {items_str} nel tuo carrello su {shop_name}.\n\nPoiché le scorte sono limitate, abbiamo riservato i tuoi capi per sole 6 ore e attivato per te uno sconto esclusivo del 10%!\n\nUsa il codice MG10 al checkout oppure clicca direttamente qui per applicarlo in automatico:\n👉 Completa il tuo ordine: {url}\n\nA presto,\nJARVIS di {shop_name}",
+                "whatsapp_message": f"Ciao {cust_name}! 👋 Sono Jarvis di {shop_name}. Ho visto che hai lasciato i tuoi {items_str} nel carrello. Visto che le scorte sono quasi esaurite, ti abbiamo riservato i capi per 6 ore e attivato il 10% di sconto con il codice MG10! 🎁\n\nCompleta il tuo ordine con lo sconto già applicato qui:\n👉 {url}\n\nSe hai bisogno di qualsiasi info su taglie o spedizione, rispondi pure qui!"
             }
         elif detected_lang == "es":
             return {
                 "subject": f"{cust_name}, ¡tus {item_sample} te esperan con 10% dto! 🎁",
-                "body": f"Hola {cust_name},\n\nNotamos que dejaste {items_str} en tu carrito en {shop_name}.\n\nComo el stock en tu talla es limitado, hemos reservado tus prendas por 6 horas y activado un descuento especial del 10% exclusivo para ti.\n\nUsa el código JARVIS10 al finalizar tu compra:\n👉 Completa tu pedido con descuento aquí: {url}\n\nUn cordial saludo,\nJARVIS — {shop_name}",
-                "whatsapp_message": f"¡Hola {cust_name}! 👋 Soy Jarvis de {shop_name}. Notamos que dejaste tus {items_str} en el carrito. Como el stock es limitado, te las reservamos por 6 horas y activamos un 10% de descuento exclusivo. 🎁\n\nFinaliza tu compra con el descuento directo aquí:\n👉 {url}\n\n¡Cualquier duda, escríbeme por aquí!"
+                "body": f"Hola {cust_name},\n\nNotamos que dejaste {items_str} en tu carrito en {shop_name}.\n\nComo el stock en tu talla es limitado, hemos reservado tus prendas por 6 horas y activado un descuento especial del 10% exclusivo para ti.\n\nUsa el código MG10 al finalizar tu compra:\n👉 Completa tu pedido con descuento aquí: {url}\n\nUn cordial saludo,\nJARVIS — {shop_name}",
+                "whatsapp_message": f"¡Hola {cust_name}! 👋 Soy Jarvis de {shop_name}. Notamos que dejaste tus {items_str} en el carrito. Como el stock es limitado, te las reservamos por 6 horas y activamos un 10% de descuento exclusivo con código MG10. 🎁\n\nFinaliza tu compra con el descuento directo aquí:\n👉 {url}\n\n¡Cualquier duda, escríbeme por aquí!"
             }
         elif detected_lang == "de":
             return {
                 "subject": f"{cust_name}, deine {item_sample} warten auf dich (-10%)! 🎁",
-                "body": f"Hallo {cust_name},\n\nwir haben bemerkt, dass du {items_str} in deinem Warenkorb bei {shop_name} hinterlassen hast.\n\nDa der Vorrat begrenzt ist, haben wir deine Artikel für 6 Stunden reserviert und einen exklusiven Rabatt von 10% freigeschaltet!\n\nNutze den Gutscheincode JARVIS10 an der Kasse:\n👉 Bestellung hier abschließen: {url}\n\nHerzliche Grüße,\nJARVIS von {shop_name}",
-                "whatsapp_message": f"Hallo {cust_name}! 👋 Hier ist Jarvis von {shop_name}. Wir haben bemerkt, dass du deine {items_str} im Warenkorb gelassen hast. Da der Vorrat begrenzt ist, haben wir deine Artikel für 6 Stunden reserviert und dir 10% Rabatt freigeschaltet! 🎁\n\nHier direkt mit Rabatt abschließen:\n👉 {url}\n\nBei Fragen sind wir jederzeit für dich da!"
+                "body": f"Hallo {cust_name},\n\nwir haben bemerkt, dass du {items_str} in deinem Warenkorb bei {shop_name} hinterlassen hast.\n\nDa der Vorrat begrenzt ist, haben wir deine Artikel für 6 Stunden reserviert und einen exklusiven Rabatt von 10% freigeschaltet!\n\nNutze den Gutscheincode MG10 an der Kasse:\n👉 Bestellung hier abschließen: {url}\n\nHerzliche Grüße,\nJARVIS von {shop_name}",
+                "whatsapp_message": f"Hallo {cust_name}! 👋 Hier ist Jarvis von {shop_name}. Wir haben bemerkt, dass du deine {items_str} im Warenkorb gelassen hast. Da der Vorrat begrenzt ist, haben wir deine Artikel für 6 Stunden reserviert und dir 10% Rabatt freigeschaltet mit Code MG10! 🎁\n\nHier direkt mit Rabatt abschließen:\n👉 {url}\n\nBei Fragen sind wir jederzeit für dich da!"
             }
         elif detected_lang == "fr":
             return {
                 "subject": f"{cust_name}, vos {item_sample} sont réservés (-10%) ! 🎁",
-                "body": f"Bonjour {cust_name},\n\nNous avons remarqué que vous avez laissé {items_str} dans votre panier chez {shop_name}.\n\nBonne nouvelle : vos articles sont réservés pendant 6 heures et nous vous offrons 10% de réduction immédiate avec le code JARVIS10 !\n\n👉 Finalisez votre commande ici : {url}\n\nBien cordialement,\nJARVIS | {shop_name}",
-                "whatsapp_message": f"Bonjour {cust_name} ! 👋 C'est Jarvis de chez {shop_name}. Vos articles {items_str} sont actuellement réservés pour 6 heures avec 10% de réduction immédiate ! 🎁\n\nFinalisez votre commande en 1 clic ici :\n👉 {url}\n\nBesoin d'aide ? Répondez directement à ce message !"
+                "body": f"Bonjour {cust_name},\n\nNous avons remarqué que vous avez laissé {items_str} dans votre panier chez {shop_name}.\n\nBonne nouvelle : vos articles sont réservés pendant 6 heures et nous vous offrons 10% de réduction immédiate avec le code MG10 !\n\n👉 Finalisez votre commande ici : {url}\n\nBien cordialement,\nJARVIS | {shop_name}",
+                "whatsapp_message": f"Bonjour {cust_name} ! 👋 C'est Jarvis de chez {shop_name}. Vos articles {items_str} sont actuellement réservés pour 6 heures avec 10% de réduction immédiate avec le code MG10 ! 🎁\n\nFinalisez votre commande en 1 clic ici :\n👉 {url}\n\nBesoin d'aide ? Répondez directement à ce message !"
             }
         elif detected_lang == "ro":
             return {
                 "subject": f"{cust_name}, {item_sample} te așteaptă (10% reducere)! 🎁",
-                "body": f"Salut {cust_name},\n\nAm observat că ai adăugat {items_str} în coș la {shop_name}, dar nu ai finalizat comanda.\n\nPentru că stocul este redus, ți-am păstrat selecția rezervată timp de 6 ore și ți-am deblocat un discount de 10% cu codul JARVIS10!\n\n👉 Finalizează comanda aici: {url}\n\nCu prietenie,\nJARVIS | {shop_name}",
-                "whatsapp_message": f"Salut {cust_name}! 👋 Sunt Jarvis de la {shop_name}. Am observat că ai lăsat {items_str} în coș. Pentru că stocul este limitat, ți-am rezervat selecția timp de 6 ore și ți-am activat 10% reducere cu codul JARVIS10! 🎁\n\nFinalizează comanda cu reducerea deja aplicată aici:\n👉 {url}\n\nDacă ai nevoie de ajutor cu mărimile sau livrarea, scrie-ne oricând!"
+                "body": f"Salut {cust_name},\n\nAm observat că ai adăugat {items_str} în coș la {shop_name}, dar nu ai finalizat comanda.\n\nPentru că stocul este redus, ți-am păstrat selecția rezervată timp de 6 ore și ți-am deblocat un discount de 10% cu codul MG10!\n\n👉 Finalizează comanda aici: {url}\n\nCu prietenie,\nJARVIS | {shop_name}",
+                "whatsapp_message": f"Salut {cust_name}! 👋 Sunt Jarvis de la {shop_name}. Am observat că ai lăsat {items_str} în coș. Pentru că stocul este limitat, ți-am rezervat selecția timp de 6 ore și ți-am activat 10% reducere cu codul MG10! 🎁\n\nFinalizează comanda cu reducerea deja aplicată aici:\n👉 {url}\n\nDacă ai nevoie de ajutor cu mărimile sau livrarea, scrie-ne oricând!"
             }
         else:
             return {
                 "subject": f"{cust_name}, your {item_sample} is reserved (10% off)! 🎁",
-                "body": f"Hi {cust_name},\n\nWe noticed you left {items_str} in your cart at {shop_name}.\n\nGood news: we reserved your selection for 6 hours and unlocked an exclusive 10% discount with code JARVIS10!\n\n👉 Complete your order here: {url}\n\nBest regards,\nJARVIS | {shop_name}",
-                "whatsapp_message": f"Hi {cust_name}! 👋 This is Jarvis from {shop_name}. Your items ({items_str}) are reserved for the next 6 hours with an exclusive 10% discount using code JARVIS10! 🎁\n\nComplete your order with discount auto-applied here:\n👉 {url}\n\nLet us know if you have any questions!"
+                "body": f"Hi {cust_name},\n\nWe noticed you left {items_str} in your cart at {shop_name}.\n\nGood news: we reserved your selection for 6 hours and unlocked an exclusive 10% discount with code MG10!\n\n👉 Complete your order here: {url}\n\nBest regards,\nJARVIS | {shop_name}",
+                "whatsapp_message": f"Hi {cust_name}! 👋 This is Jarvis from {shop_name}. Your items ({items_str}) are reserved for the next 6 hours with an exclusive 10% discount using code MG10! 🎁\n\nComplete your order with discount auto-applied here:\n👉 {url}\n\nLet us know if you have any questions!"
             }
 

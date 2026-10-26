@@ -14,7 +14,7 @@ class EmailDispatcher:
     """
 
     @staticmethod
-    def build_html_email(shop_name: str, customer_name: str, items_str: str, checkout_url: str, text_body: str, discount_code: str = "JARVIS10") -> str:
+    def build_html_email(shop_name: str, customer_name: str, items_str: str, checkout_url: str, text_body: str, discount_code: str = "MG10") -> str:
         formatted_body = text_body.replace("\n", "<br/>")
         return f"""<!DOCTYPE html>
 <html>

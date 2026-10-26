@@ -545,7 +545,7 @@ async def test_email_send(req: TestEmailRequest):
     test_body = (
         f"Salutare!\n\n"
         f"Acesta este un email real de test expediat direct de motorul autonom JARVIS pentru magazinul {shop_name}.\n\n"
-        f"Când un cumpărător abandonează un coș, Jarvis îi trimite un mesaj similar în limba lui maternă (Italiană, Spaniolă, Germană, Română etc.) cu reducerea de 10% (codul JARVIS10) și linkul direct de finalizare a comenzii!\n\n"
+        f"Când un cumpărător abandonează un coș, Jarvis îi trimite un mesaj similar în limba lui maternă (Italiană, Spaniolă, Germană, Română etc.) cu reducerea de 10% (codul MG10) și linkul direct de finalizare a comenzii!\n\n"
         f"Dacă citești acest email în inbox-ul tău, înseamnă că sistemul de expediere funcționează 100% ireproșabil!\n\n"
         f"Cu respect,\nJARVIS & Echipa {shop_name}"
     )
@@ -587,7 +587,7 @@ async def get_autopilot_status(shop: str = Query(...)):
             if phone and len(phone) >= 8:
                 c_name = c.get("customer_name") or "Client"
                 shop_label = record.get("shop_name") or shop
-                wa_msg = f"Salut {c_name}! 👋 Sunt Jarvis de la {shop_label}. Produsele tale sunt rezervate pentru 6 ore cu 10% reducere (cod JARVIS10)! 👉 {c.get('checkout_url')}"
+                wa_msg = f"Salut {c_name}! 👋 Sunt Jarvis de la {shop_label}. Produsele tale sunt rezervate pentru 6 ore cu 10% reducere (cod MG10)! 👉 {c.get('checkout_url')}"
                 c["wa_link"] = wa_dispatcher.generate_wa_me_link(phone, wa_msg)
 
         potential_revenue = sum(c["total_price"] for c in checkouts)

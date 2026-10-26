@@ -153,7 +153,7 @@ class ShopifyClient:
             raw_url = c.get("abandoned_checkout_url") or ""
             if raw_url and "discount=" not in raw_url:
                 delimiter = "&" if "?" in raw_url else "?"
-                checkout_link = f"{raw_url}{delimiter}discount=JARVIS10"
+                checkout_link = f"{raw_url}{delimiter}discount=MG10"
             else:
                 checkout_link = raw_url
 
