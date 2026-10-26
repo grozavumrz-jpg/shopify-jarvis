@@ -17,6 +17,7 @@ from shopify_auth import verify_hmac, build_install_url, exchange_code_for_token
 from shopify_api import ShopifyClient
 from ai_advisor import AIAdvisor
 from whatsapp_dispatcher import WhatsAppDispatcher
+from email_dispatcher import EmailDispatcher
 
 # ── Init ──────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Jarvis for Shopify")
@@ -33,6 +34,7 @@ APP_URL         = os.getenv("APP_URL") or os.getenv("APP URL") or "https://shopi
 
 ai = AIAdvisor()
 wa_dispatcher = WhatsAppDispatcher()
+email_dispatcher = EmailDispatcher()
 
 # Serve React frontend build
 FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
@@ -336,9 +338,50 @@ async def process_single_checkout_recovery(shop: str, client: ShopifyClient, sho
 
     lang = c.get("detected_lang") or "ro"
     recovery = await ai.generate_autonomous_recovery(shop_name, c, lang=lang)
+    settings = db.get_shop_settings(shop)
 
-    # 1. Trigger official Shopify recovery email
-    await client.send_recovery_email(cid)
+    # 1. Dispatch real Email directly to customer inbox
+    email_result = None
+    if email and "@" in email:
+        items_str = ", ".join(c.get("items", []))
+        html_content = EmailDispatcher.build_html_email(
+            shop_name=shop_name,
+            customer_name=c.get("customer_name") or "Client",
+            items_str=items_str,
+            checkout_url=c.get("checkout_url", ""),
+            text_body=recovery.get("body", "")
+        )
+        email_result = await email_dispatcher.send_email(
+            to_email=email,
+            subject=recovery.get("subject", ""),
+            body_text=recovery.get("body", ""),
+            body_html=html_content,
+            settings=settings
+        )
+
+        # Notify merchant on merchant_notify_email if configured
+        merchant_email = settings.get("merchant_notify_email") or "grozavumrz@gmail.com"
+        if settings.get("notify_merchant_on_cart") and merchant_email and merchant_email != email:
+            try:
+                alert_subj = f"🚀 [Jarvis Alert] Coș de {c.get('total_price')} {c.get('currency')} recuperat pentru {c.get('customer_name')}"
+                alert_text = (
+                    f"Jarvis a acționat automat în limba {c.get('detected_lang_name')} ({c.get('detected_country')})!\n\n"
+                    f"Client: {c.get('customer_name')}\n"
+                    f"Email: {email}\n"
+                    f"Produse: {items_str}\n"
+                    f"Valoare: {c.get('total_price')} {c.get('currency')}\n"
+                    f"Subiect trimis: {recovery.get('subject')}\n"
+                    f"Status expediere email: {'Expediat cu succes ✅' if email_result.get('success') else email_result.get('reason', 'În așteptare configurare')}\n\n"
+                    f"Link Checkout recuperare: {c.get('checkout_url')}"
+                )
+                await email_dispatcher.send_email(
+                    to_email=merchant_email,
+                    subject=alert_subj,
+                    body_text=alert_text,
+                    settings=settings
+                )
+            except Exception as notify_err:
+                print(f"[Merchant Notify Error] {notify_err}")
 
     # 2. Trigger Autonomous WhatsApp Dispatch if customer provided a phone number
     wa_result = None
@@ -354,6 +397,8 @@ async def process_single_checkout_recovery(shop: str, client: ShopifyClient, sho
     rev = float(c.get("total_price") or 0.0)
     action_type = "manual_autopilot_dispatch" if force else "autopilot_24_7_recovery"
     status_label = "executed_manual" if force else "executed_24_7"
+    if email_result and email_result.get("success"):
+        status_label += "_email_sent"
     if wa_result and wa_result.get("success"):
         status_label += "_wa_auto"
 
@@ -445,6 +490,81 @@ async def save_whatsapp_settings(req: WhatsAppConfigRequest):
         os.environ["WHATSAPP_WEBHOOK_URL"] = req.webhook_url
         wa_dispatcher.webhook_url = req.webhook_url
     return {"ok": True, "message": "Canal WhatsApp configurat cu succes"}
+
+
+# ── Delivery & Email Gateway Settings ────────────────────────────────────────
+
+@app.get("/api/settings/delivery")
+async def get_delivery_settings(shop: str = Query(...)):
+    settings = db.get_shop_settings(shop)
+    masked = dict(settings)
+    if masked.get("smtp_password"):
+        masked["smtp_password"] = "••••••••"
+    return masked
+
+
+class DeliverySettingsUpdateRequest(BaseModel):
+    shop: str
+    email_provider: Optional[str] = "resend"
+    resend_api_key: Optional[str] = None
+    smtp_host: Optional[str] = "smtp.gmail.com"
+    smtp_port: Optional[int] = 587
+    smtp_user: Optional[str] = None
+    smtp_password: Optional[str] = None
+    sender_email: Optional[str] = None
+    sender_name: Optional[str] = "Grozavu"
+    merchant_notify_email: Optional[str] = "grozavumrz@gmail.com"
+    notify_merchant_on_cart: Optional[bool] = True
+
+
+@app.post("/api/settings/delivery")
+async def save_delivery_settings(req: DeliverySettingsUpdateRequest):
+    current = db.get_shop_settings(req.shop)
+    data = req.dict(exclude_unset=True)
+    for k, v in data.items():
+        if v is not None:
+            if k == "smtp_password" and v == "••••••••":
+                continue
+            current[k] = v
+    db.save_shop_settings(req.shop, current)
+    return {"ok": True, "settings": current}
+
+
+class TestEmailRequest(BaseModel):
+    shop: str
+    to_email: str
+
+
+@app.post("/api/email/test")
+async def test_email_send(req: TestEmailRequest):
+    settings = db.get_shop_settings(req.shop)
+    record = get_shop_or_404(req.shop)
+    shop_name = record.get("shop_name") or req.shop
+
+    test_subject = f"🧪 [Jarvis Test] Salut de la {shop_name}! Sistemul tău autonom funcționează"
+    test_body = (
+        f"Salutare!\n\n"
+        f"Acesta este un email real de test expediat direct de motorul autonom JARVIS pentru magazinul {shop_name}.\n\n"
+        f"Când un cumpărător abandonează un coș, Jarvis îi trimite un mesaj similar în limba lui maternă (Italiană, Spaniolă, Germană, Română etc.) cu reducerea de 10% (codul JARVIS10) și linkul direct de finalizare a comenzii!\n\n"
+        f"Dacă citești acest email în inbox-ul tău, înseamnă că sistemul de expediere funcționează 100% ireproșabil!\n\n"
+        f"Cu respect,\nJARVIS & Echipa {shop_name}"
+    )
+    test_html = EmailDispatcher.build_html_email(
+        shop_name=shop_name,
+        customer_name="Comerciant Grozavu",
+        items_str="Pachet Test Recuperare Coș",
+        checkout_url="https://maisongrozavu.com",
+        text_body=test_body
+    )
+    res = await email_dispatcher.send_email(
+        to_email=req.to_email,
+        subject=test_subject,
+        body_text=test_body,
+        body_html=test_html,
+        settings=settings
+    )
+    return res
+
 
 
 class AutopilotDispatchRequest(BaseModel):

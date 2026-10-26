@@ -254,6 +254,90 @@ export default function App() {
   const [dispatchingAutopilot, setDispatchingAutopilot] = useState(false)
   const [autopilotLogs, setAutopilotLogs] = useState([])
 
+  // Delivery & Email Gateway State
+  const [deliverySettings, setDeliverySettings] = useState({
+    email_provider: 'resend',
+    resend_api_key: '',
+    smtp_host: 'smtp.gmail.com',
+    smtp_port: 587,
+    smtp_user: '',
+    smtp_password: '',
+    sender_email: 'onboarding@resend.dev',
+    sender_name: 'Maison Grozavu',
+    merchant_notify_email: 'grozavumrz@gmail.com',
+    notify_merchant_on_cart: true
+  })
+  const [savingDelivery, setSavingDelivery] = useState(false)
+  const [sendingTestEmail, setSendingTestEmail] = useState(false)
+  const [deliveryFeedback, setDeliveryFeedback] = useState(null)
+
+  const loadDeliverySettings = async () => {
+    try {
+      const res = await fetch(`/api/settings/delivery?shop=${encodeURIComponent(shop)}`)
+      if (res.ok) {
+        const data = await res.json()
+        setDeliverySettings(prev => ({ ...prev, ...data }))
+      }
+    } catch (e) {
+      console.error('Failed to load delivery settings', e)
+    }
+  }
+
+  const handleSaveDeliverySettings = async () => {
+    setSavingDelivery(true)
+    setDeliveryFeedback(null)
+    try {
+      const res = await fetch('/api/settings/delivery', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop, ...deliverySettings })
+      })
+      if (res.ok) {
+        setDeliveryFeedback({
+          type: 'success',
+          text: lang === 'ro' ? '✅ Setările canalului de expediere au fost salvate cu succes!' : '✅ Delivery gateway settings saved successfully!'
+        })
+      } else {
+        setDeliveryFeedback({ type: 'error', text: 'Eroare la salvare.' })
+      }
+    } catch (e) {
+      setDeliveryFeedback({ type: 'error', text: e.message })
+    } finally {
+      setSavingDelivery(false)
+    }
+  }
+
+  const handleSendTestEmail = async () => {
+    const targetEmail = deliverySettings.merchant_notify_email || 'grozavumrz@gmail.com'
+    setSendingTestEmail(true)
+    setDeliveryFeedback(null)
+    try {
+      const res = await fetch('/api/email/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop, to_email: targetEmail })
+      })
+      const data = await res.json()
+      if (data.success) {
+        setDeliveryFeedback({
+          type: 'success',
+          text: lang === 'ro'
+            ? `✅ Email de test expediat cu succes către ${targetEmail}! Verifică inbox-ul (și Spam/Promotions).`
+            : `✅ Test email successfully sent to ${targetEmail}! Check your inbox.`
+        })
+      } else {
+        setDeliveryFeedback({
+          type: 'error',
+          text: (lang === 'ro' ? '⚠️ Expediere eșuată: ' : '⚠️ Send failed: ') + (data.reason || data.error || 'Verifică setările API/SMTP')
+        })
+      }
+    } catch (e) {
+      setDeliveryFeedback({ type: 'error', text: 'Eroare de rețea: ' + e.message })
+    } finally {
+      setSendingTestEmail(false)
+    }
+  }
+
   const loadAutopilotStatus = async () => {
     try {
       const res = await fetch(`/api/autopilot/status?shop=${encodeURIComponent(shop)}`)
@@ -310,6 +394,7 @@ export default function App() {
           setChatMessages(hist)
         }
         loadAutopilotStatus()
+        loadDeliverySettings()
       } catch (e) {
         console.error('Failed to load Jarvis telemetry', e)
       } finally {
@@ -643,6 +728,7 @@ export default function App() {
           onClick={() => {
             setActiveTab('autopilot')
             loadAutopilotStatus()
+        loadDeliverySettings()
           }}
         >
           <span className="nav-icon">🤖</span> {t.tab_autopilot}
@@ -1108,6 +1194,160 @@ export default function App() {
                   )}
                 </div>
               </div>
+            </div>
+
+            {/* ════ CANAL DE EXPEDIERE DIRECTĂ (EMAIL & NOTIFICĂRI COMERCIANT) ════ */}
+            <div className="hud-card delivery-config-card">
+              <div className="card-title">
+                <span>⚙️ {lang === 'ro' ? 'CANAL DE EXPEDIERE DIRECTĂ (EMAIL & NOTIFICĂRI COMERCIANT)' : 'DIRECT DELIVERY GATEWAY (EMAIL & ALERTS)'}</span>
+                <span className="tag-live">{lang === 'ro' ? 'Inbox Garantat 100%' : 'Direct Inbox Delivery'}</span>
+              </div>
+              
+              <p className="delivery-desc">
+                {lang === 'ro' 
+                  ? 'Shopify nu expediază emailuri din backend-ul său pe cont propriu. Jarvis folosește propriul motor de livrare pentru a trimite emailuri personalizate direct în inbox-ul cumpărătorului și pentru a-ți trimite ție o notificare de fiecare dată când un coș este recuperat!'
+                  : 'Shopify does not natively send custom recovery emails. Jarvis uses its own delivery engine to reach customer inboxes and instantly alert you when a cart is targeted!'}
+              </p>
+
+              <div className="delivery-form-grid">
+                <div className="delivery-field">
+                  <label>{lang === 'ro' ? 'Metodă Expediere Email' : 'Email Provider'}</label>
+                  <select 
+                    value={deliverySettings.email_provider || 'resend'} 
+                    onChange={e => setDeliverySettings({...deliverySettings, email_provider: e.target.value})}
+                    className="delivery-input"
+                  >
+                    <option value="resend">Resend API (Recomandat - 3.000 emailuri/lună GRATUIT)</option>
+                    <option value="smtp">SMTP (Gmail / Brevo / SendGrid / Server Propriu)</option>
+                  </select>
+                </div>
+
+                <div className="delivery-field">
+                  <label>{lang === 'ro' ? 'Emailul Tău pt. Notificări Live (Comerciant)' : 'Merchant Alert Email'}</label>
+                  <input 
+                    type="email" 
+                    value={deliverySettings.merchant_notify_email || ''} 
+                    onChange={e => setDeliverySettings({...deliverySettings, merchant_notify_email: e.target.value})}
+                    placeholder="grozavumrz@gmail.com"
+                    className="delivery-input"
+                  />
+                  <span className="delivery-hint">
+                    {lang === 'ro' ? 'Vei primi o alertă instant la fiecare coș recuperat de Jarvis' : 'You will receive an instant alert for every recovered cart'}
+                  </span>
+                </div>
+
+                {deliverySettings.email_provider === 'resend' ? (
+                  <>
+                    <div className="delivery-field">
+                      <label>Resend API Key</label>
+                      <input 
+                        type="password" 
+                        value={deliverySettings.resend_api_key || ''} 
+                        onChange={e => setDeliverySettings({...deliverySettings, resend_api_key: e.target.value})}
+                        placeholder="re_123456789..."
+                        className="delivery-input"
+                      />
+                      <span className="delivery-hint">
+                        {lang === 'ro' 
+                          ? <>Obține gratuit o cheie pe <a href="https://resend.com" target="_blank" rel="noreferrer" style={{color: '#00f2fe'}}>resend.com</a> (durează 30 secunde)</>
+                          : <>Get a free API key at <a href="https://resend.com" target="_blank" rel="noreferrer" style={{color: '#00f2fe'}}>resend.com</a></>}
+                      </span>
+                    </div>
+                    <div className="delivery-field">
+                      <label>{lang === 'ro' ? 'Nume & Email Expeditor (From)' : 'Sender Name & Email'}</label>
+                      <div style={{display: 'flex', gap: '8px'}}>
+                        <input 
+                          type="text" 
+                          value={deliverySettings.sender_name || ''} 
+                          onChange={e => setDeliverySettings({...deliverySettings, sender_name: e.target.value})}
+                          placeholder="Maison Grozavu"
+                          style={{flex: 1}}
+                          className="delivery-input"
+                        />
+                        <input 
+                          type="text" 
+                          value={deliverySettings.sender_email || ''} 
+                          onChange={e => setDeliverySettings({...deliverySettings, sender_email: e.target.value})}
+                          placeholder="onboarding@resend.dev"
+                          style={{flex: 1.5}}
+                          className="delivery-input"
+                        />
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="delivery-field">
+                      <label>SMTP Host & Port</label>
+                      <div style={{display: 'flex', gap: '8px'}}>
+                        <input 
+                          type="text" 
+                          value={deliverySettings.smtp_host || ''} 
+                          onChange={e => setDeliverySettings({...deliverySettings, smtp_host: e.target.value})}
+                          placeholder="smtp.gmail.com"
+                          style={{flex: 2}}
+                          className="delivery-input"
+                        />
+                        <input 
+                          type="number" 
+                          value={deliverySettings.smtp_port || 587} 
+                          onChange={e => setDeliverySettings({...deliverySettings, smtp_port: parseInt(e.target.value) || 587})}
+                          placeholder="587"
+                          style={{flex: 1}}
+                          className="delivery-input"
+                        />
+                      </div>
+                    </div>
+                    <div className="delivery-field">
+                      <label>SMTP User & App Password</label>
+                      <div style={{display: 'flex', gap: '8px'}}>
+                        <input 
+                          type="text" 
+                          value={deliverySettings.smtp_user || ''} 
+                          onChange={e => setDeliverySettings({...deliverySettings, smtp_user: e.target.value})}
+                          placeholder="emailul.tau@gmail.com"
+                          style={{flex: 1}}
+                          className="delivery-input"
+                        />
+                        <input 
+                          type="password" 
+                          value={deliverySettings.smtp_password || ''} 
+                          onChange={e => setDeliverySettings({...deliverySettings, smtp_password: e.target.value})}
+                          placeholder="Parolă aplicație Gmail"
+                          style={{flex: 1}}
+                          className="delivery-input"
+                        />
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <div className="delivery-actions-bar">
+                <button 
+                  className="delivery-btn-save" 
+                  onClick={handleSaveDeliverySettings}
+                  disabled={savingDelivery}
+                >
+                  {savingDelivery ? 'Se salvează...' : (lang === 'ro' ? '💾 Salvează Setările de Expediere' : '💾 Save Delivery Settings')}
+                </button>
+
+                <button 
+                  className="delivery-btn-test" 
+                  onClick={handleSendTestEmail}
+                  disabled={sendingTestEmail}
+                >
+                  {sendingTestEmail 
+                    ? (lang === 'ro' ? '⏳ Se expediază testul în inbox...' : '⏳ Dispatching test email...') 
+                    : (lang === 'ro' ? '🧪 Trimite un Email de Test pe Adresa Mea' : '🧪 Send Test Email to My Address')}
+                </button>
+              </div>
+
+              {deliveryFeedback && (
+                <div className={`delivery-alert ${deliveryFeedback.type}`}>
+                  {deliveryFeedback.text}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -2495,6 +2735,141 @@ const styles = `
 .highlight-purple {
   color: #c084fc;
   font-size: 16px;
+}
+
+/* ── DELIVERY CONFIG CARD STYLES ── */
+.delivery-config-card {
+  margin-top: 24px;
+  background: var(--bg-card);
+  border: 1px solid rgba(0, 242, 254, 0.35);
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 4px 25px rgba(0, 242, 254, 0.08);
+}
+
+.delivery-desc {
+  font-size: 14px;
+  color: var(--text-dim);
+  line-height: 1.6;
+  margin-bottom: 20px;
+}
+
+.delivery-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+@media (max-width: 768px) {
+  .delivery-form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.delivery-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.delivery-field label {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #94a3b8;
+}
+
+.delivery-input {
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 10px 14px;
+  color: #f8fafc;
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.delivery-input:focus {
+  border-color: #00f2fe;
+  box-shadow: 0 0 12px rgba(0, 242, 254, 0.25);
+}
+
+.delivery-hint {
+  font-size: 11px;
+  color: #64748b;
+  margin-top: 2px;
+}
+
+.delivery-actions-bar {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.delivery-btn-save {
+  background: #0f172a;
+  border: 1px solid #00f2fe;
+  color: #00f2fe;
+  padding: 11px 24px;
+  border-radius: 8px;
+  font-weight: 700;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.2s;
+}
+
+.delivery-btn-save:hover:not(:disabled) {
+  background: rgba(0, 242, 254, 0.15);
+  box-shadow: 0 0 15px rgba(0, 242, 254, 0.3);
+}
+
+.delivery-btn-test {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  border: none;
+  color: #ffffff;
+  padding: 11px 24px;
+  border-radius: 8px;
+  font-weight: 700;
+  cursor: pointer;
+  font-size: 14px;
+  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.3);
+  transition: all 0.2s;
+}
+
+.delivery-btn-test:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(16, 185, 129, 0.45);
+}
+
+.delivery-btn-save:disabled, .delivery-btn-test:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.delivery-alert {
+  margin-top: 16px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.delivery-alert.success {
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  color: #34d399;
+}
+
+.delivery-alert.error {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #f87171;
 }
 `
 

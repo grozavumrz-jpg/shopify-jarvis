@@ -68,6 +68,21 @@ def init_db():
                 ALTER TABLE autopilot_logs ADD COLUMN IF NOT EXISTS checkout_id TEXT;
                 ALTER TABLE autopilot_logs ADD COLUMN IF NOT EXISTS country TEXT;
                 ALTER TABLE autopilot_logs ADD COLUMN IF NOT EXISTS lang TEXT;
+
+                CREATE TABLE IF NOT EXISTS shop_settings (
+                    shop TEXT PRIMARY KEY,
+                    email_provider TEXT DEFAULT 'resend',
+                    resend_api_key TEXT,
+                    smtp_host TEXT DEFAULT 'smtp.gmail.com',
+                    smtp_port INTEGER DEFAULT 587,
+                    smtp_user TEXT,
+                    smtp_password TEXT,
+                    sender_email TEXT DEFAULT 'onboarding@resend.dev',
+                    sender_name TEXT DEFAULT 'Grozavu',
+                    merchant_notify_email TEXT DEFAULT 'grozavumrz@gmail.com',
+                    notify_merchant_on_cart BOOLEAN DEFAULT TRUE,
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
             """)
         conn.commit()
 
@@ -236,3 +251,67 @@ def get_autopilot_logs(shop: str, limit: int = 20) -> List[Dict]:
                 item["revenue"] = float(item.get("revenue") or 0.0)
                 logs.append(item)
             return logs
+
+
+# ── Shop Settings (Email & Notification Config) ───────────────────────────────
+
+def get_shop_settings(shop: str) -> Dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM shop_settings WHERE shop=%s", (shop,))
+            row = cur.fetchone()
+            if row:
+                res = dict(row)
+                res["updated_at"] = str(res.get("updated_at") or "")
+                return res
+            return {
+                "shop": shop,
+                "email_provider": "resend",
+                "resend_api_key": "",
+                "smtp_host": "smtp.gmail.com",
+                "smtp_port": 587,
+                "smtp_user": "",
+                "smtp_password": "",
+                "sender_email": "onboarding@resend.dev",
+                "sender_name": "Grozavu",
+                "merchant_notify_email": "grozavumrz@gmail.com",
+                "notify_merchant_on_cart": True
+            }
+
+
+def save_shop_settings(shop: str, s: Dict):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO shop_settings (
+                    shop, email_provider, resend_api_key, smtp_host, smtp_port,
+                    smtp_user, smtp_password, sender_email, sender_name,
+                    merchant_notify_email, notify_merchant_on_cart, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT(shop) DO UPDATE SET
+                    email_provider=EXCLUDED.email_provider,
+                    resend_api_key=EXCLUDED.resend_api_key,
+                    smtp_host=EXCLUDED.smtp_host,
+                    smtp_port=EXCLUDED.smtp_port,
+                    smtp_user=EXCLUDED.smtp_user,
+                    smtp_password=EXCLUDED.smtp_password,
+                    sender_email=EXCLUDED.sender_email,
+                    sender_name=EXCLUDED.sender_name,
+                    merchant_notify_email=EXCLUDED.merchant_notify_email,
+                    notify_merchant_on_cart=EXCLUDED.notify_merchant_on_cart,
+                    updated_at=NOW()
+            """, (
+                shop,
+                s.get("email_provider", "resend"),
+                s.get("resend_api_key", ""),
+                s.get("smtp_host", "smtp.gmail.com"),
+                int(s.get("smtp_port") or 587),
+                s.get("smtp_user", ""),
+                s.get("smtp_password", ""),
+                s.get("sender_email", "onboarding@resend.dev"),
+                s.get("sender_name", "Grozavu"),
+                s.get("merchant_notify_email", "grozavumrz@gmail.com"),
+                s.get("notify_merchant_on_cart", True)
+            ))
+        conn.commit()
+
