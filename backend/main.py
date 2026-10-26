@@ -18,6 +18,9 @@ from shopify_api import ShopifyClient
 from ai_advisor import AIAdvisor
 from whatsapp_dispatcher import WhatsAppDispatcher
 from email_dispatcher import EmailDispatcher
+from cadence_manager import DripCadenceManager
+from mobile_notifier import MobileNotifier
+from post_delivery_service import PostDeliveryService
 
 # ── Init ──────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Jarvis for Shopify")
@@ -35,6 +38,9 @@ APP_URL         = os.getenv("APP_URL") or os.getenv("APP URL") or "https://shopi
 ai = AIAdvisor()
 wa_dispatcher = WhatsAppDispatcher()
 email_dispatcher = EmailDispatcher()
+cadence_mgr = DripCadenceManager()
+mobile_notifier = MobileNotifier()
+post_delivery_service = PostDeliveryService()
 
 # Serve React frontend build
 FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
@@ -320,36 +326,106 @@ AUTOPILOT_STATUS = {
 async def process_single_checkout_recovery(shop: str, client: ShopifyClient, shop_name: str, c: dict, force: bool = False) -> Optional[dict]:
     cid = str(c.get("id"))
     email = c.get("email") or ""
+    phone = c.get("phone") or ""
 
-    # Deduplication Guard: Never spam a customer twice within 48 hours
-    if not force and db.is_checkout_recently_processed(shop, checkout_id=cid, email=email, hours=48):
+    # 1. Check if checkout is already marked completed by Shopify
+    if c.get("completed_at"):
+        cadence_mgr.mark_order_converted(shop, {
+            "checkout_id": cid,
+            "email": email,
+            "total_price": c.get("total_price")
+        })
         return None
 
-    # Safety Timing Window: Wait at least 10 minutes from cart creation before sending
+    # 2. Upsert checkout in state machine table
+    state = db.upsert_checkout_drip_state(shop, c)
+    if not state or state.get("status") != "active":
+        return None
+
+    now_dt = datetime.now(timezone.utc)
+
+    # 3. Cadence Timing Evaluation
     if not force:
-        try:
-            cart_time_str = c.get("created_at", "").replace("Z", "+00:00")
-            cart_dt = datetime.fromisoformat(cart_time_str)
-            now_dt = datetime.now(timezone.utc)
-            if (now_dt - cart_dt).total_seconds() < 600:
-                return None
-        except Exception:
-            pass
+        stage = cadence_mgr.evaluate_drip_stage(c, state, now_dt)
+        if stage is None:
+            # Check for cadence expiration (> 72h)
+            cart_dt = DripCadenceManager.parse_datetime(c.get("created_at"))
+            if cart_dt and (now_dt - cart_dt).total_seconds() > DripCadenceManager.CADENCE_CUTOFF_SECONDS:
+                db.mark_drip_exhausted(cid)
+            return None
+    else:
+        # In manual forced test, advance to next logical stage
+        curr_stage = int(state.get("current_stage", 0) or 0)
+        stage = curr_stage + 1 if curr_stage < 3 else 3
+
+    # 4. Stage Configuration & URL Generation
+    meta = cadence_mgr.get_stage_metadata(stage)
+    discount_code = meta["discount_code"]
+    raw_checkout_url = c.get("abandoned_checkout_url") or c.get("checkout_url") or ""
+    stage_checkout_url = cadence_mgr.build_stage_checkout_url(raw_checkout_url, stage=stage)
+
+    # Update checkout dict copy for email & whatsapp
+    c_copy = dict(c)
+    c_copy["checkout_url"] = stage_checkout_url
 
     lang = c.get("detected_lang") or "ro"
-    recovery = await ai.generate_autonomous_recovery(shop_name, c, lang=lang)
+    recovery = await ai.generate_autonomous_recovery(shop_name, c_copy, lang=lang)
     settings = db.get_shop_settings(shop)
 
-    # 1. Dispatch real Email directly to customer inbox
+    # For Stage 1: enforce customer assistance copy with zero discount mentions
+    if stage == 1:
+        stage1_assistance_prompts = {
+            "ro": {
+                "subject": f"{c.get('customer_name', 'Client')}, ai nevoie de ajutor cu comanda ta? 🛍️",
+                "body": f"Salut {c.get('customer_name', 'Client')},\n\nAm observat că ai lăsat câteva articole în coș la {shop_name}.\n\nSelecția ta este rezervată în siguranță. Dacă ai întâmpinat dificultăți la finalizarea comenzii sau ai întrebări despre mărimi sau livrare, echipa noastră îți stă cu drag la dispoziție!\n\n👉 Finalizează comanda ta aici: {stage_checkout_url}\n\nCu respect,\nEchipa {shop_name}",
+                "whatsapp_message": f"Salut {c.get('customer_name', 'Client')}! 👋 Am observat că ai lăsat o selecție de produse în coș la {shop_name}. Produsele tale sunt rezervate. Dacă ai nevoie de ajutor la finalizare sau detalii despre livrare, răspunde direct la acest mesaj! 👉 {stage_checkout_url}"
+            },
+            "it": {
+                "subject": f"{c.get('customer_name', 'Cliente')}, hai bisogno di aiuto con il tuo ordine? 🛍️",
+                "body": f"Ciao {c.get('customer_name', 'Cliente')},\n\nAbbiamo notato che hai lasciato degli articoli nel tuo carrello su {shop_name}.\n\nI tuoi articoli sono riservati. Se hai riscontrato problemi durante il checkout o hai domande su taglie o spedizioni, siamo qui per aiutarti!\n\n👉 Completa il tuo ordine qui: {stage_checkout_url}\n\nA presto,\nIl team di {shop_name}",
+                "whatsapp_message": f"Ciao {c.get('customer_name', 'Cliente')}! 👋 Abbiamo riservato i tuoi articoli su {shop_name}. Se hai bisogno di assistenza per completare l'ordine, rispondi pure qui! 👉 {stage_checkout_url}"
+            },
+            "es": {
+                "subject": f"{c.get('customer_name', 'Cliente')}, ¿necesitas ayuda con tu pedido? 🛍️",
+                "body": f"Hola {c.get('customer_name', 'Cliente')},\n\nNotamos que dejaste algunos artículos en tu carrito en {shop_name}.\n\nTus prendas están reservadas. Si tuviste alguna dificultad al finalizar o tienes preguntas sobre envíos o tallas, ¡estamos a tu disposición!\n\n👉 Finaliza tu pedido aquí: {stage_checkout_url}\n\nUn saludo cordial,\nEl equipo de {shop_name}",
+                "whatsapp_message": f"¡Hola {c.get('customer_name', 'Cliente')}! 👋 Tus artículos están reservados en {shop_name}. Si necesitas ayuda para finalizar tu compra, escríbenos por aquí. 👉 {stage_checkout_url}"
+            },
+            "de": {
+                "subject": f"{c.get('customer_name', 'Kunde')}, benötigst du Hilfe bei deiner Bestellung? 🛍️",
+                "body": f"Hallo {c.get('customer_name', 'Kunde')},\n\nwir haben bemerkt, dass du Artikel in deinem Warenkorb bei {shop_name} hinterlassen hast.\n\nDeine Auswahl ist für dich reserviert. Wenn du Fragen zu Größen, Zahlung oder Versand hast, helfen wir dir gerne weiter!\n\n👉 Bestellung hier abschließen: {stage_checkout_url}\n\nHerzliche Grüße,\nDein Team von {shop_name}",
+                "whatsapp_message": f"Hallo {c.get('customer_name', 'Kunde')}! 👋 Deine Artikel bei {shop_name} sind reserviert. Benötigst du Unterstützung beim Abschluss? Antworte einfach auf diese Nachricht! 👉 {stage_checkout_url}"
+            },
+            "fr": {
+                "subject": f"{c.get('customer_name', 'Client')}, besoin d'aide pour votre commande ? 🛍️",
+                "body": f"Bonjour {c.get('customer_name', 'Client')},\n\nNous avons remarqué que vous avez laissé des articles dans votre panier sur {shop_name}.\n\nVotre sélection est bien réservée. Si vous avez rencontré un problème lors du paiement ou avez des questions, notre équipe est à votre écoute !\n\n👉 Finalisez votre commande ici : {stage_checkout_url}\n\nBien cordialement,\nL'équipe {shop_name}",
+                "whatsapp_message": f"Bonjour {c.get('customer_name', 'Client')} ! 👋 Vos articles sont réservés chez {shop_name}. Si vous avez besoin d'aide pour finaliser votre commande, répondez simplement ici ! 👉 {stage_checkout_url}"
+            },
+            "en": {
+                "subject": f"{c.get('customer_name', 'Customer')}, do you need help with your order? 🛍️",
+                "body": f"Hello {c.get('customer_name', 'Customer')},\n\nWe noticed you left some items in your cart at {shop_name}.\n\nYour reserved items are safely saved for you. If you experienced any issues during checkout or have questions about sizing or delivery, we're here to help!\n\n👉 Complete your order here: {stage_checkout_url}\n\nWarm regards,\nThe {shop_name} Team",
+                "whatsapp_message": f"Hello {c.get('customer_name', 'Customer')}! 👋 Your items are currently reserved at {shop_name}. If you need any assistance completing your order, let us know! 👉 {stage_checkout_url}"
+            }
+        }
+        # Unconditionally enforce zero-discount assistance copy for Stage 1
+        lang_template = stage1_assistance_prompts.get(lang, stage1_assistance_prompts["en"])
+        recovery["subject"] = lang_template["subject"]
+        recovery["body"] = lang_template["body"]
+        recovery["whatsapp_message"] = lang_template["whatsapp_message"]
+
+    # 5. Dispatch Email with Stage-Aware Template
     email_result = None
     if email and "@" in email:
+        line_items = c.get("line_items", [])
         items_str = ", ".join(c.get("items", []))
         html_content = EmailDispatcher.build_html_email(
             shop_name=shop_name,
             customer_name=c.get("customer_name") or "Client",
             items_str=items_str,
-            checkout_url=c.get("checkout_url", ""),
-            text_body=recovery.get("body", "")
+            checkout_url=stage_checkout_url,
+            text_body=recovery.get("body", ""),
+            line_items=line_items,
+            discount_code=discount_code,
+            lang=lang
         )
         email_result = await email_dispatcher.send_email(
             to_email=email,
@@ -363,16 +439,17 @@ async def process_single_checkout_recovery(shop: str, client: ShopifyClient, sho
         merchant_email = settings.get("merchant_notify_email") or "grozavumrz@gmail.com"
         if settings.get("notify_merchant_on_cart") and merchant_email and merchant_email != email:
             try:
-                alert_subj = f"🚀 [Jarvis Alert] Coș de {c.get('total_price')} {c.get('currency')} recuperat pentru {c.get('customer_name')}"
+                alert_subj = f"🚀 [Jarvis Alert] Coș de {c.get('total_price')} {c.get('currency')} - Etapa {stage} ({c.get('customer_name')})"
                 alert_text = (
-                    f"Jarvis a acționat automat în limba {c.get('detected_lang_name')} ({c.get('detected_country')})!\n\n"
+                    f"Jarvis a acționat automat în etapa {stage} în limba {c.get('detected_lang_name')} ({c.get('detected_country')})!\n\n"
                     f"Client: {c.get('customer_name')}\n"
                     f"Email: {email}\n"
                     f"Produse: {items_str}\n"
                     f"Valoare: {c.get('total_price')} {c.get('currency')}\n"
+                    f"Discount aplicat: {discount_code or 'Fără discount (Etapa 1)'}\n"
                     f"Subiect trimis: {recovery.get('subject')}\n"
                     f"Status expediere email: {'Expediat cu succes ✅' if email_result.get('success') else email_result.get('reason', 'În așteptare configurare')}\n\n"
-                    f"Link Checkout recuperare: {c.get('checkout_url')}"
+                    f"Link Checkout recuperare: {stage_checkout_url}"
                 )
                 await email_dispatcher.send_email(
                     to_email=merchant_email,
@@ -383,24 +460,48 @@ async def process_single_checkout_recovery(shop: str, client: ShopifyClient, sho
             except Exception as notify_err:
                 print(f"[Merchant Notify Error] {notify_err}")
 
-    # 2. Trigger Autonomous WhatsApp Dispatch if customer provided a phone number
+    # 6. Dispatch WhatsApp
     wa_result = None
     wa_text = recovery.get("whatsapp_message") or recovery.get("body", "")
-    phone = c.get("phone") or ""
     if phone:
-        wa_result = await wa_dispatcher.send_autonomous_whatsapp(
+        wa_result = await wa_dispatcher.send_message(
             phone=phone,
-            customer_name=c.get("customer_name") or "Client",
-            message=wa_text
+            message=wa_text,
+            settings=settings,
+            customer_name=c.get("customer_name") or "Client"
         )
 
     rev = float(c.get("total_price") or 0.0)
-    action_type = "manual_autopilot_dispatch" if force else "autopilot_24_7_recovery"
-    status_label = "executed_manual" if force else "executed_24_7"
+
+    # ── Merchant Mobile Notification Hook (Telegram / Discord) ──
+    try:
+        raw_items = c.get("items") or [item.get("title") for item in c.get("line_items", []) if isinstance(item, dict)] or ["Articole Coș"]
+        wa_recovery_link = wa_result.get("wa_me_url") or wa_result.get("wa_link") if wa_result else None
+        mobile_data = {
+            "customer_name": c.get("customer_name") or "Client",
+            "total_price": rev,
+            "currency": c.get("currency") or "EUR",
+            "items": raw_items,
+            "checkout_url": stage_checkout_url,
+            "stage": stage,
+            "discount_code": discount_code,
+            "phone": phone,
+            "email": email,
+            "wa_recovery_link": wa_recovery_link
+        }
+        await mobile_notifier.notify_merchant("abandoned_cart", mobile_data, settings)
+    except Exception as mobile_err:
+        print(f"[Mobile Notifier Cart Error]: {mobile_err}")
+
+    action_type = f"manual_stage_{stage}_dispatch" if force else f"autopilot_stage_{stage}_recovery"
+    status_label = f"stage_{stage}_manual" if force else f"stage_{stage}_executed"
     if email_result and email_result.get("success"):
         status_label += "_email_sent"
-    if wa_result and wa_result.get("success"):
+    if wa_result and (wa_result.get("success") or wa_result.get("ok")):
         status_label += "_wa_auto"
+
+    # 7. Update State Machine & Autopilot Log
+    db.update_drip_stage(checkout_id=cid, stage=stage, sent_at=now_dt)
 
     db.save_autopilot_log(
         shop=shop,
@@ -416,12 +517,16 @@ async def process_single_checkout_recovery(shop: str, client: ShopifyClient, sho
         lang=lang
     )
 
-    wa_link = wa_result.get("wa_link") if (wa_result and wa_result.get("wa_link")) else (wa_dispatcher.generate_wa_me_link(phone, wa_text) if phone else None)
+    wa_link = wa_result.get("wa_link") if (wa_result and wa_result.get("wa_link")) else (
+        wa_dispatcher.generate_wa_me_link(phone, wa_text) if phone else None
+    )
 
     return {
         "target": c.get("customer_name"),
         "email": email,
         "phone": phone,
+        "stage": stage,
+        "discount_code": discount_code,
         "subject": recovery.get("subject"),
         "message": recovery.get("body"),
         "whatsapp_message": wa_text,
@@ -436,7 +541,7 @@ async def process_single_checkout_recovery(shop: str, client: ShopifyClient, sho
 
 async def autopilot_daemon_loop():
     await asyncio.sleep(15)
-    print("🚀 [Jarvis Autopilot] Background 24/7 worker active.")
+    print("🚀 [Jarvis Autopilot] Background 24/7 worker active with 3-Step Drip Engine.")
     while True:
         try:
             shops = db.get_active_shops()
@@ -447,49 +552,324 @@ async def autopilot_daemon_loop():
                     token = s["access_token"]
                     shop_name = s.get("shop_name") or shop
                     client = ShopifyClient(shop, token)
+
+                    # Step 1: Reconcile recent orders to auto-cancel converted checkouts
+                    try:
+                        recent_orders = await client.get_recent_orders(days=2)
+                        for order in recent_orders:
+                            converted = cadence_mgr.mark_order_converted(shop, order)
+                            if converted:
+                                try:
+                                    order_settings = db.get_shop_settings(shop)
+                                    cust = order.get("customer") or {}
+                                    c_name = f"{cust.get('first_name', '')} {cust.get('last_name', '')}".strip() or "Client"
+                                    order_num = str(order.get("order_number") or order.get("name") or order.get("id"))
+                                    conv_rev = float(order.get("total_price") or 0.0)
+                                    curr = order.get("currency") or "EUR"
+                                    discount_codes = [d.get("code") for d in order.get("discount_codes", []) if isinstance(d, dict)]
+                                    disc_str = ", ".join(discount_codes) if discount_codes else "N/A"
+                                    conv_data = {
+                                        "customer_name": c_name,
+                                        "order_number": order_num,
+                                        "recovered_revenue": conv_rev,
+                                        "currency": curr,
+                                        "discount_code": disc_str
+                                    }
+                                    await mobile_notifier.notify_merchant("recovery_converted", conv_data, order_settings)
+                                except Exception as conv_notify_err:
+                                    print(f"[Mobile Conv Notify Error {shop}]: {conv_notify_err}")
+                    except Exception as order_sync_err:
+                        print(f"[Order Sync Error {shop}]: {order_sync_err}")
+
+                    # Step 2: Evaluate abandoned checkouts against cadence state machine
                     checkouts = await client.get_abandoned_checkouts_detailed()
                     for c in checkouts:
                         res = await process_single_checkout_recovery(shop, client, shop_name, c, force=False)
                         if res:
                             total_cycle += 1
+
+                    # Step 3: Sync fulfilled orders for 5-day post-delivery VIP review queue
+                    try:
+                        synced_vip = post_delivery_service.sync_fulfilled_orders(shop, days_back=14)
+                        if synced_vip > 0:
+                            print(f"[Autopilot VIP Sync] Enqueued {synced_vip} fulfilled orders for {shop}")
+                    except Exception as vip_sync_err:
+                        print(f"[Autopilot VIP Sync Error {shop}]: {vip_sync_err}")
+
+                    # Step 4: Dispatch due VIP review & upsell automations (5 days post fulfillment)
+                    try:
+                        shop_settings = db.get_shop_settings(shop)
+                        dispatched_vip = post_delivery_service.process_due_vip_automations(shop, shop_settings)
+                        if dispatched_vip > 0:
+                            print(f"[Autopilot VIP Dispatch] Sent {dispatched_vip} VIP reviews for {shop}")
+                    except Exception as vip_proc_err:
+                        print(f"[Autopilot VIP Process Error {shop}]: {vip_proc_err}")
                 except Exception as shop_err:
                     print(f"[Autopilot Shop Error {s.get('shop')}]: {shop_err}")
 
-            AUTOPILOT_STATUS["last_cycle_at"] = datetime.utcnow().isoformat()
+            AUTOPILOT_STATUS["last_cycle_at"] = datetime.now(timezone.utc).isoformat()
             AUTOPILOT_STATUS["last_recovered_count"] = total_cycle
             AUTOPILOT_STATUS["total_auto_recovered"] += total_cycle
         except Exception as e:
             print(f"[Autopilot Daemon Loop Error]: {e}")
 
-        await asyncio.sleep(900)  # Check every 15 minutes 24/7
+        await asyncio.sleep(300)  # Check every 5 minutes 24/7
 
 
-class WhatsAppConfigRequest(BaseModel):
+@app.post("/webhooks/orders/create")
+async def webhook_order_created(request: Request):
+    """Real-time conversion reconciliation: cancel pending drip stages immediately and alert merchant."""
+    shop = request.headers.get("x-shopify-shop-domain", "")
+    try:
+        body = await request.json()
+        if shop and body:
+            converted = cadence_mgr.mark_order_converted(shop, body)
+            if converted:
+                try:
+                    order_settings = db.get_shop_settings(shop)
+                    cust = body.get("customer") or {}
+                    c_name = f"{cust.get('first_name', '')} {cust.get('last_name', '')}".strip() or "Client"
+                    order_num = str(body.get("order_number") or body.get("name") or body.get("id"))
+                    conv_rev = float(body.get("total_price") or 0.0)
+                    curr = body.get("currency") or "EUR"
+                    discount_codes = [d.get("code") for d in body.get("discount_codes", []) if isinstance(d, dict)]
+                    disc_str = ", ".join(discount_codes) if discount_codes else "N/A"
+                    conv_data = {
+                        "customer_name": c_name,
+                        "order_number": order_num,
+                        "recovered_revenue": conv_rev,
+                        "currency": curr,
+                        "discount_code": disc_str
+                    }
+                    await mobile_notifier.notify_merchant("recovery_converted", conv_data, order_settings)
+                except Exception as conv_wh_err:
+                    print(f"[Webhook Mobile Conv Alert Error]: {conv_wh_err}")
+    except Exception as e:
+        print(f"[Webhook Order Error]: {e}")
+    return {"status": "ok"}
+
+
+@app.post("/webhooks/orders/cancelled")
+async def webhook_order_cancelled(request: Request):
+    """Order cancelled or refunded: suppress pending VIP automations."""
+    try:
+        body = await request.json()
+        order_id = str(body.get("id") or "")
+        if order_id:
+            db.cancel_post_delivery_automation(order_id)
+    except Exception as e:
+        print(f"[Webhook Order Cancelled Error]: {e}")
+    return {"status": "ok"}
+
+
+# ── Post-Delivery VIP Review & Upsell Endpoints ───────────────────────────────
+
+class PostDeliverySyncRequest(BaseModel):
     shop: str
-    meta_token: Optional[str] = None
-    meta_phone_id: Optional[str] = None
-    twilio_sid: Optional[str] = None
-    twilio_token: Optional[str] = None
-    webhook_url: Optional[str] = None
+    days_back: Optional[int] = 14
+
+
+@app.post("/api/post-delivery/sync")
+async def post_delivery_sync(req: PostDeliverySyncRequest):
+    """Manually trigger fulfillment ingestion for post-delivery VIP automation."""
+    get_shop_or_404(req.shop)
+    count = post_delivery_service.sync_fulfilled_orders(req.shop, days_back=req.days_back or 14)
+    return {"ok": True, "shop": req.shop, "synced_count": count}
+
+
+class PostDeliveryProcessRequest(BaseModel):
+    shop: str
+
+
+@app.post("/api/post-delivery/process")
+async def post_delivery_process(req: PostDeliveryProcessRequest):
+    """Manually trigger processing of due VIP review & upsell automations."""
+    get_shop_or_404(req.shop)
+    settings = db.get_shop_settings(req.shop)
+    count = post_delivery_service.process_due_vip_automations(req.shop, settings)
+    return {"ok": True, "shop": req.shop, "dispatched_count": count}
+
+
+@app.get("/api/post-delivery/queue")
+async def get_post_delivery_queue_endpoint(shop: str = Query(...), limit: int = Query(50)):
+    """Inspect current post-delivery automations queue."""
+    get_shop_or_404(shop)
+    queue = db.get_post_delivery_queue(shop, limit=limit)
+    formatted = []
+    for item in queue:
+        row = dict(item)
+        for k, v in row.items():
+            if isinstance(v, datetime):
+                row[k] = v.isoformat()
+        formatted.append(row)
+    return {"ok": True, "shop": shop, "queue": formatted, "total": len(formatted)}
+
+
+# ── WhatsApp Multi-Tenant Gateway Settings ────────────────────────────────────
+
+@app.get("/api/settings/whatsapp")
+async def get_whatsapp_settings(shop: str = Query(...)):
+    """Retrieve WhatsApp configuration for a specific store."""
+    settings = db.get_shop_settings(shop)
+    meta_tok = settings.get("whatsapp_api_token") or ""
+    tw_tok = settings.get("twilio_auth_token") or ""
+    masked = {
+        "shop": shop,
+        "whatsapp_provider": settings.get("whatsapp_provider") or "auto",
+        "whatsapp_api_token": "••••••••" if meta_tok else "",
+        "whatsapp_phone_number_id": settings.get("whatsapp_phone_number_id") or "",
+        "twilio_account_sid": settings.get("twilio_account_sid") or "",
+        "twilio_auth_token": "••••••••" if tw_tok else "",
+        "twilio_whatsapp_number": settings.get("twilio_whatsapp_number") or "whatsapp:+14155238886",
+        "whatsapp_webhook_url": settings.get("whatsapp_webhook_url") or "",
+        "updated_at": str(settings.get("updated_at") or "")
+    }
+    return masked
+
+
+class WhatsAppSettingsUpdateRequest(BaseModel):
+    shop: str
+    whatsapp_provider: Optional[str] = "auto"
+    whatsapp_api_token: Optional[str] = None
+    meta_token: Optional[str] = None  # alias
+    whatsapp_phone_number_id: Optional[str] = None
+    meta_phone_id: Optional[str] = None  # alias
+    twilio_account_sid: Optional[str] = None
+    twilio_sid: Optional[str] = None  # alias
+    twilio_auth_token: Optional[str] = None
+    twilio_token: Optional[str] = None  # alias
+    twilio_whatsapp_number: Optional[str] = "whatsapp:+14155238886"
+    whatsapp_webhook_url: Optional[str] = None
+    webhook_url: Optional[str] = None  # alias
+
 
 @app.post("/api/settings/whatsapp")
-async def save_whatsapp_settings(req: WhatsAppConfigRequest):
-    if req.meta_token:
-        os.environ["WHATSAPP_API_TOKEN"] = req.meta_token
-        wa_dispatcher.meta_token = req.meta_token
-    if req.meta_phone_id:
-        os.environ["WHATSAPP_PHONE_NUMBER_ID"] = req.meta_phone_id
-        wa_dispatcher.meta_phone_id = req.meta_phone_id
-    if req.twilio_sid:
-        os.environ["TWILIO_ACCOUNT_SID"] = req.twilio_sid
-        wa_dispatcher.twilio_sid = req.twilio_sid
-    if req.twilio_token:
-        os.environ["TWILIO_AUTH_TOKEN"] = req.twilio_token
-        wa_dispatcher.twilio_token = req.twilio_token
-    if req.webhook_url:
-        os.environ["WHATSAPP_WEBHOOK_URL"] = req.webhook_url
-        wa_dispatcher.webhook_url = req.webhook_url
-    return {"ok": True, "message": "Canal WhatsApp configurat cu succes"}
+async def save_whatsapp_settings(req: WhatsAppSettingsUpdateRequest):
+    """Save WhatsApp configuration in PostgreSQL shop_settings per shop."""
+    current = db.get_shop_settings(req.shop)
+
+    # Aliases
+    provider = req.whatsapp_provider
+    meta_tok = req.whatsapp_api_token if req.whatsapp_api_token is not None else req.meta_token
+    meta_pid = req.whatsapp_phone_number_id if req.whatsapp_phone_number_id is not None else req.meta_phone_id
+    tw_sid = req.twilio_account_sid if req.twilio_account_sid is not None else req.twilio_sid
+    tw_tok = req.twilio_auth_token if req.twilio_auth_token is not None else req.twilio_token
+    tw_num = req.twilio_whatsapp_number
+    webhook = req.whatsapp_webhook_url if req.whatsapp_webhook_url is not None else req.webhook_url
+
+    if provider is not None:
+        current["whatsapp_provider"] = provider
+    if meta_tok is not None and meta_tok != "••••••••":
+        current["whatsapp_api_token"] = meta_tok
+        wa_dispatcher.meta_token = meta_tok
+    if meta_pid is not None:
+        current["whatsapp_phone_number_id"] = meta_pid
+        wa_dispatcher.meta_phone_id = meta_pid
+    if tw_sid is not None:
+        current["twilio_account_sid"] = tw_sid
+        wa_dispatcher.twilio_sid = tw_sid
+    if tw_tok is not None and tw_tok != "••••••••":
+        current["twilio_auth_token"] = tw_tok
+        wa_dispatcher.twilio_token = tw_tok
+    if tw_num is not None:
+        current["twilio_whatsapp_number"] = tw_num
+        wa_dispatcher.twilio_from = tw_num
+    if webhook is not None:
+        current["whatsapp_webhook_url"] = webhook
+        wa_dispatcher.webhook_url = webhook
+
+    db.save_shop_settings(req.shop, current)
+    return {"ok": True, "message": "Canal WhatsApp configurat cu succes", "settings": current}
+
+
+class TestWhatsAppRequest(BaseModel):
+    shop: str
+    to_phone: str
+    message: Optional[str] = None
+
+
+@app.post("/api/whatsapp/test")
+async def test_whatsapp_send(req: TestWhatsAppRequest):
+    """Test WhatsApp dispatch for merchant settings."""
+    settings = db.get_shop_settings(req.shop)
+    record = get_shop_or_404(req.shop)
+    shop_name = record.get("shop_name") or req.shop
+    test_msg = req.message or f"🧪 [Jarvis Test] Salut de la {shop_name}! Sistemul tău WhatsApp funcționează."
+    res = await wa_dispatcher.send_message(
+        phone=req.to_phone,
+        message=test_msg,
+        settings=settings
+    )
+    return res
+
+
+# ── Mobile Notification Settings Endpoints ────────────────────────────────────
+
+@app.get("/api/settings/notifications")
+async def get_notification_settings(shop: str = Query(...)):
+    """Retrieves current mobile notification settings with masked credentials."""
+    settings = db.get_shop_settings(shop)
+    token = settings.get("telegram_bot_token") or ""
+    masked_token = f"{token[:6]}...{token[-4:]}" if len(token) > 12 else ("••••••••" if token else "")
+
+    return {
+        "shop": shop,
+        "telegram_bot_token": masked_token,
+        "telegram_chat_id": settings.get("telegram_chat_id", ""),
+        "notify_telegram": bool(settings.get("notify_telegram", False)),
+        "discord_webhook_url": settings.get("discord_webhook_url", ""),
+        "notify_discord": bool(settings.get("notify_discord", False)),
+        "merchant_notify_email": settings.get("merchant_notify_email", ""),
+        "notify_merchant_on_cart": bool(settings.get("notify_merchant_on_cart", True))
+    }
+
+
+class NotificationSettingsUpdateRequest(BaseModel):
+    shop: str
+    telegram_bot_token: Optional[str] = None
+    telegram_chat_id: Optional[str] = None
+    notify_telegram: Optional[bool] = None
+    discord_webhook_url: Optional[str] = None
+    notify_discord: Optional[bool] = None
+    merchant_notify_email: Optional[str] = None
+    notify_merchant_on_cart: Optional[bool] = None
+
+
+@app.post("/api/settings/notifications")
+async def save_notification_settings(req: NotificationSettingsUpdateRequest):
+    """Saves merchant notification preferences."""
+    current = db.get_shop_settings(req.shop)
+    data = req.dict(exclude_unset=True)
+    for k, v in data.items():
+        if v is not None:
+            # Preserve existing token if client sent back masked token
+            if k == "telegram_bot_token" and ("••••" in str(v) or "..." in str(v)):
+                continue
+            current[k] = v
+    db.save_shop_settings(req.shop, current)
+    return {"ok": True, "settings": current}
+
+
+class NotificationTestRequest(BaseModel):
+    shop: str
+    channel: Optional[str] = "all"
+
+
+@app.post("/api/notifications/test")
+async def test_notification_alert(req: NotificationTestRequest):
+    """Triggers an instant sample notification to test Telegram and Discord connectivity."""
+    settings = db.get_shop_settings(req.shop)
+    sample_data = {
+        "customer_name": "Test Merchant",
+        "total_price": 99.00,
+        "currency": "EUR",
+        "items": ["Articol Test Notificare Instantanee"],
+        "checkout_url": f"https://{req.shop}",
+        "stage": 1,
+        "discount_code": None
+    }
+    res = await mobile_notifier.notify_merchant("abandoned_cart", sample_data, settings)
+    return {"ok": True, "result": res}
 
 
 # ── Delivery & Email Gateway Settings ────────────────────────────────────────

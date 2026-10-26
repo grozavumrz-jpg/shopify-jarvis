@@ -271,6 +271,200 @@ export default function App() {
   const [sendingTestEmail, setSendingTestEmail] = useState(false)
   const [deliveryFeedback, setDeliveryFeedback] = useState(null)
 
+  // ── WhatsApp Settings State ────────────────────────────────────────────────
+  const [waSettings, setWaSettings] = useState({
+    whatsapp_provider: 'auto',
+    whatsapp_api_token: '',
+    whatsapp_phone_number_id: '',
+    twilio_account_sid: '',
+    twilio_auth_token: '',
+    twilio_whatsapp_number: 'whatsapp:+14155238886',
+    whatsapp_webhook_url: ''
+  })
+  const [savingWa, setSavingWa] = useState(false)
+  const [waFeedback, setWaFeedback] = useState(null)
+  const [testPhone, setTestPhone] = useState('')
+  const [sendingTestWa, setSendingTestWa] = useState(false)
+
+  const loadWaSettings = async () => {
+    try {
+      const res = await fetch(`/api/settings/whatsapp?shop=${encodeURIComponent(shop)}`)
+      if (res.ok) {
+        const data = await res.json()
+        setWaSettings(prev => ({ ...prev, ...data }))
+      }
+    } catch (e) {
+      console.error('Failed to load WhatsApp settings', e)
+    }
+  }
+
+  const handleSaveWaSettings = async () => {
+    setSavingWa(true)
+    setWaFeedback(null)
+    try {
+      const res = await fetch('/api/settings/whatsapp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop, ...waSettings })
+      })
+      if (res.ok) {
+        setWaFeedback({
+          type: 'success',
+          text: lang === 'ro' ? '✅ Setările WhatsApp au fost salvate cu succes!' : '✅ WhatsApp settings saved successfully!'
+        })
+      } else {
+        setWaFeedback({ type: 'error', text: 'Eroare la salvare WhatsApp.' })
+      }
+    } catch (e) {
+      setWaFeedback({ type: 'error', text: e.message })
+    } finally {
+      setSavingWa(false)
+    }
+  }
+
+  const handleSendTestWa = async () => {
+    if (!testPhone) return
+    setSendingTestWa(true)
+    setWaFeedback(null)
+    try {
+      const res = await fetch('/api/whatsapp/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop, to_phone: testPhone })
+      })
+      const data = await res.json()
+      if (data.ok) {
+        setWaFeedback({
+          type: 'success',
+          text: lang === 'ro' ? `✅ Mesaj WhatsApp de test expediat către ${testPhone}!` : `✅ Test WhatsApp message dispatched to ${testPhone}!`
+        })
+      } else {
+        setWaFeedback({
+          type: 'error',
+          text: (data.error || 'Eroare la expediere WhatsApp') + (data.wa_me_url ? ` - Fallback: ${data.wa_me_url}` : '')
+        })
+      }
+    } catch (e) {
+      setWaFeedback({ type: 'error', text: e.message })
+    } finally {
+      setSendingTestWa(false)
+    }
+  }
+
+  // ── Mobile Notifications Settings State ────────────────────────────────────
+  const [notifySettings, setNotifySettings] = useState({
+    telegram_bot_token: '',
+    telegram_chat_id: '',
+    notify_telegram: false,
+    discord_webhook_url: '',
+    notify_discord: false
+  })
+  const [savingNotify, setSavingNotify] = useState(false)
+  const [notifyFeedback, setNotifyFeedback] = useState(null)
+  const [testingAlert, setTestingAlert] = useState(false)
+
+  const loadNotifySettings = async () => {
+    try {
+      const res = await fetch(`/api/settings/notifications?shop=${encodeURIComponent(shop)}`)
+      if (res.ok) {
+        const data = await res.json()
+        setNotifySettings(prev => ({ ...prev, ...data }))
+      }
+    } catch (e) {
+      console.error('Failed to load notification settings', e)
+    }
+  }
+
+  const handleSaveNotifySettings = async () => {
+    setSavingNotify(true)
+    setNotifyFeedback(null)
+    try {
+      const res = await fetch('/api/settings/notifications', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop, ...notifySettings })
+      })
+      if (res.ok) {
+        setNotifyFeedback({
+          type: 'success',
+          text: lang === 'ro' ? '✅ Canalele de alerte mobile au fost salvate!' : '✅ Mobile alert channels saved successfully!'
+        })
+      } else {
+        setNotifyFeedback({ type: 'error', text: 'Eroare la salvare alerte.' })
+      }
+    } catch (e) {
+      setNotifyFeedback({ type: 'error', text: e.message })
+    } finally {
+      setSavingNotify(false)
+    }
+  }
+
+  const handleTestAlert = async (channel) => {
+    setTestingAlert(true)
+    setNotifyFeedback(null)
+    try {
+      const res = await fetch('/api/notifications/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop, channel })
+      })
+      const data = await res.json()
+      if (data.ok) {
+        setNotifyFeedback({
+          type: 'success',
+          text: lang === 'ro' ? `✅ Alertă de test expediată pe ${channel}!` : `✅ Test alert dispatched to ${channel}!`
+        })
+      } else {
+        setNotifyFeedback({ type: 'error', text: data.error || 'Eroare la test alertă' })
+      }
+    } catch (e) {
+      setNotifyFeedback({ type: 'error', text: e.message })
+    } finally {
+      setTestingAlert(false)
+    }
+  }
+
+  // ── Post-Delivery VIP Review & Upsell State ─────────────────────────────────
+  const [vipQueue, setVipQueue] = useState([])
+  const [syncingVip, setSyncingVip] = useState(false)
+  const [vipFeedback, setVipFeedback] = useState(null)
+
+  const loadVipQueue = async () => {
+    try {
+      const res = await fetch(`/api/post-delivery/queue?shop=${encodeURIComponent(shop)}&limit=10`)
+      if (res.ok) {
+        const data = await res.json()
+        setVipQueue(data.queue || [])
+      }
+    } catch (e) {
+      console.error('Failed to load VIP queue', e)
+    }
+  }
+
+  const handleSyncVip = async () => {
+    setSyncingVip(true)
+    setVipFeedback(null)
+    try {
+      const res = await fetch('/api/post-delivery/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop, days_back: 14 })
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setVipFeedback({
+          type: 'success',
+          text: lang === 'ro' ? `✅ Sincronizat: ${data.synced_count} comenzi programate pentru recenzie VIP!` : `✅ Synced: ${data.synced_count} orders scheduled for VIP review!`
+        })
+        loadVipQueue()
+      }
+    } catch (e) {
+      setVipFeedback({ type: 'error', text: e.message })
+    } finally {
+      setSyncingVip(false)
+    }
+  }
+
   const loadDeliverySettings = async () => {
     try {
       const res = await fetch(`/api/settings/delivery?shop=${encodeURIComponent(shop)}`)
@@ -395,6 +589,9 @@ export default function App() {
         }
         loadAutopilotStatus()
         loadDeliverySettings()
+        loadWaSettings()
+        loadNotifySettings()
+        loadVipQueue()
       } catch (e) {
         console.error('Failed to load Jarvis telemetry', e)
       } finally {
@@ -729,6 +926,9 @@ export default function App() {
             setActiveTab('autopilot')
             loadAutopilotStatus()
         loadDeliverySettings()
+        loadWaSettings()
+        loadNotifySettings()
+        loadVipQueue()
           }}
         >
           <span className="nav-icon">🤖</span> {t.tab_autopilot}
@@ -1135,7 +1335,13 @@ export default function App() {
                             <span className="queue-lang-note">
                               🗣️ {lang === 'ro' ? 'Limbă maternă:' : 'Native copy:'} <strong>{item.detected_lang_name || item.detected_lang}</strong>
                             </span>
-                            <span className="fomo-badge">⏳ Rezervat 6h (-10%)</span>
+                            <span className="fomo-badge">
+                              {item.stage === 1 
+                                ? (lang === 'ro' ? '⏳ Pasul 1: Asistență (0% Discount)' : '⏳ Stage 1: Assistance (No Discount)')
+                                : item.stage === 2 
+                                  ? (lang === 'ro' ? '🔥 Pasul 2: Urgență (Cod MG10 • -10%)' : '🔥 Stage 2: Urgency (Code MG10 • -10%)')
+                                  : (lang === 'ro' ? '🚨 Pasul 3: Ultima Șansă (Cod MG10 • -10%)' : '🚨 Stage 3: Last Chance (Code MG10 • -10%)')}
+                            </span>
                           </div>
                           <div className="queue-actions-row">
                             {item.wa_link && (
@@ -1145,7 +1351,7 @@ export default function App() {
                             )}
                             {item.checkout_url && (
                               <a href={item.checkout_url} target="_blank" rel="noreferrer" className="queue-link">
-                                🔗 Link Coș (-10% Auto)
+                                🔗 {lang === 'ro' ? 'Link Coș (Cod MG10)' : 'Checkout Link (Code MG10)'}
                               </a>
                             )}
                           </div>
@@ -1346,6 +1552,305 @@ export default function App() {
               {deliveryFeedback && (
                 <div className={`delivery-alert ${deliveryFeedback.type}`}>
                   {deliveryFeedback.text}
+                </div>
+              )}
+            </div>
+
+            {/* ════ CANAL WHATSAPP AUTONOM ════ */}
+            <div className="hud-card delivery-config-card" style={{marginTop: '24px'}}>
+              <div className="card-title">
+                <span>💬 {lang === 'ro' ? 'DISPATCHER AUTONOM WHATSAPP' : 'AUTONOMOUS WHATSAPP DISPATCHER'}</span>
+                <span className="tag-live">{waSettings.whatsapp_provider === 'auto' ? '⚡ AUTO WATERFALL' : waSettings.whatsapp_provider.toUpperCase()}</span>
+              </div>
+              <p className="delivery-desc">
+                {lang === 'ro'
+                  ? 'Jarvis expediază mesaje de recuperare și link-uri pre-populate direct pe WhatsApp-ul clientului. Suportă Meta Cloud API, Twilio API sau fallback canonic wa.me garantat 100% fără costuri.'
+                  : 'Jarvis dispatches abandoned cart recovery messages directly to customer WhatsApp. Supports Meta Cloud API, Twilio API, or 100% free canonical wa.me link fallback.'}
+              </p>
+
+              <div className="delivery-form-grid">
+                <div className="delivery-field">
+                  <label>{lang === 'ro' ? 'Furnizor WhatsApp' : 'WhatsApp Provider'}</label>
+                  <select 
+                    value={waSettings.whatsapp_provider || 'auto'} 
+                    onChange={e => setWaSettings({...waSettings, whatsapp_provider: e.target.value})}
+                    className="delivery-input"
+                  >
+                    <option value="auto">Auto Waterfall (Meta → Twilio → Webhook → wa.me)</option>
+                    <option value="meta">Meta Cloud API (Official WhatsApp Business API)</option>
+                    <option value="twilio">Twilio Programmable Messaging API</option>
+                    <option value="webhook">Custom External Webhook</option>
+                  </select>
+                </div>
+
+                {waSettings.whatsapp_provider === 'meta' && (
+                  <>
+                    <div className="delivery-field">
+                      <label>WhatsApp Phone Number ID (Meta)</label>
+                      <input 
+                        type="text" 
+                        value={waSettings.whatsapp_phone_number_id || ''} 
+                        onChange={e => setWaSettings({...waSettings, whatsapp_phone_number_id: e.target.value})}
+                        placeholder="100609349424083"
+                        className="delivery-input"
+                      />
+                    </div>
+                    <div className="delivery-field">
+                      <label>Meta API Access Token</label>
+                      <input 
+                        type="password" 
+                        value={waSettings.whatsapp_api_token || ''} 
+                        onChange={e => setWaSettings({...waSettings, whatsapp_api_token: e.target.value})}
+                        placeholder="EAA..."
+                        className="delivery-input"
+                      />
+                    </div>
+                  </>
+                )}
+
+                {waSettings.whatsapp_provider === 'twilio' && (
+                  <>
+                    <div className="delivery-field">
+                      <label>Twilio Account SID</label>
+                      <input 
+                        type="text" 
+                        value={waSettings.twilio_account_sid || ''} 
+                        onChange={e => setWaSettings({...waSettings, twilio_account_sid: e.target.value})}
+                        placeholder="AC..."
+                        className="delivery-input"
+                      />
+                    </div>
+                    <div className="delivery-field">
+                      <label>Twilio Auth Token</label>
+                      <input 
+                        type="password" 
+                        value={waSettings.twilio_auth_token || ''} 
+                        onChange={e => setWaSettings({...waSettings, twilio_auth_token: e.target.value})}
+                        placeholder="Auth Token"
+                        className="delivery-input"
+                      />
+                    </div>
+                    <div className="delivery-field">
+                      <label>Twilio Sender Number</label>
+                      <input 
+                        type="text" 
+                        value={waSettings.twilio_whatsapp_number || 'whatsapp:+14155238886'} 
+                        onChange={e => setWaSettings({...waSettings, twilio_whatsapp_number: e.target.value})}
+                        className="delivery-input"
+                      />
+                    </div>
+                  </>
+                )}
+
+                {waSettings.whatsapp_provider === 'webhook' && (
+                  <div className="delivery-field" style={{gridColumn: '1 / -1'}}>
+                    <label>WhatsApp Webhook URL</label>
+                    <input 
+                      type="url" 
+                      value={waSettings.whatsapp_webhook_url || ''} 
+                      onChange={e => setWaSettings({...waSettings, whatsapp_webhook_url: e.target.value})}
+                      placeholder="https://n8n.example.com/webhook/wa"
+                      className="delivery-input"
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="delivery-actions-bar">
+                <button 
+                  className="delivery-btn-save" 
+                  onClick={handleSaveWaSettings}
+                  disabled={savingWa}
+                >
+                  {savingWa ? 'Se salvează...' : (lang === 'ro' ? '💾 Salvează Setările WhatsApp' : '💾 Save WhatsApp Settings')}
+                </button>
+
+                <div style={{display: 'flex', gap: '8px', flex: 1, justifyContent: 'flex-end'}}>
+                  <input 
+                    type="tel" 
+                    value={testPhone} 
+                    onChange={e => setTestPhone(e.target.value)}
+                    placeholder="+40721123456" 
+                    className="delivery-input"
+                    style={{maxWidth: '180px'}}
+                  />
+                  <button 
+                    className="delivery-btn-test" 
+                    onClick={handleSendTestWa}
+                    disabled={sendingTestWa || !testPhone}
+                  >
+                    {sendingTestWa 
+                      ? (lang === 'ro' ? '⏳ Expediere WhatsApp...' : '⏳ Dispatching WhatsApp...') 
+                      : (lang === 'ro' ? '📱 Test WhatsApp' : '📱 Test WhatsApp')}
+                  </button>
+                </div>
+              </div>
+
+              {waFeedback && (
+                <div className={`delivery-alert ${waFeedback.type}`}>
+                  {waFeedback.text}
+                </div>
+              )}
+            </div>
+
+            {/* ════ ALERTE MOBILE INSTANTANEE (TELEGRAM & DISCORD) ════ */}
+            <div className="hud-card delivery-config-card" style={{marginTop: '24px'}}>
+              <div className="card-title">
+                <span>📱 {lang === 'ro' ? 'ALERTE MOBILE INSTANTANEE (TELEGRAM & DISCORD)' : 'INSTANT MOBILE ALERTS (TELEGRAM & DISCORD)'}</span>
+                <span className="tag-live">REAL-TIME PUSH</span>
+              </div>
+              <p className="delivery-desc">
+                {lang === 'ro'
+                  ? 'Fii notificat instantaneu pe telefonul tău la fiecare coș abandonat detectat, conversie recuperată cu venit generat și invitație VIP expediată.'
+                  : 'Get instant push alerts on your phone whenever a cart is abandoned, a conversion is recovered with generated revenue, or a VIP review is dispatched.'}
+              </p>
+
+              <div className="delivery-form-grid">
+                {/* Telegram Column */}
+                <div style={{background: 'rgba(30, 41, 59, 0.5)', padding: '16px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.06)'}}>
+                  <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px'}}>
+                    <strong style={{color: '#38bdf8'}}>✈️ Telegram Bot API</strong>
+                    <label style={{display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', cursor: 'pointer'}}>
+                      <input 
+                        type="checkbox" 
+                        checked={notifySettings.notify_telegram} 
+                        onChange={e => setNotifySettings({...notifySettings, notify_telegram: e.target.checked})} 
+                      />
+                      {lang === 'ro' ? 'Activat' : 'Enabled'}
+                    </label>
+                  </div>
+                  <div className="delivery-field" style={{marginBottom: '10px'}}>
+                    <label>Telegram Bot Token</label>
+                    <input 
+                      type="password" 
+                      value={notifySettings.telegram_bot_token || ''} 
+                      onChange={e => setNotifySettings({...notifySettings, telegram_bot_token: e.target.value})}
+                      placeholder="123456:ABC-DEF1234..."
+                      className="delivery-input"
+                    />
+                  </div>
+                  <div className="delivery-field" style={{marginBottom: '12px'}}>
+                    <label>Telegram Chat ID</label>
+                    <input 
+                      type="text" 
+                      value={notifySettings.telegram_chat_id || ''} 
+                      onChange={e => setNotifySettings({...notifySettings, telegram_chat_id: e.target.value})}
+                      placeholder="987654321"
+                      className="delivery-input"
+                    />
+                  </div>
+                  <button 
+                    className="delivery-btn-test" 
+                    style={{width: '100%'}}
+                    onClick={() => handleTestAlert('telegram')}
+                    disabled={testingAlert}
+                  >
+                    🧪 Test Alertă Telegram
+                  </button>
+                </div>
+
+                {/* Discord Column */}
+                <div style={{background: 'rgba(30, 41, 59, 0.5)', padding: '16px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.06)'}}>
+                  <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px'}}>
+                    <strong style={{color: '#818cf8'}}>👾 Discord Rich Embeds</strong>
+                    <label style={{display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', cursor: 'pointer'}}>
+                      <input 
+                        type="checkbox" 
+                        checked={notifySettings.notify_discord} 
+                        onChange={e => setNotifySettings({...notifySettings, notify_discord: e.target.checked})} 
+                      />
+                      {lang === 'ro' ? 'Activat' : 'Enabled'}
+                    </label>
+                  </div>
+                  <div className="delivery-field" style={{marginBottom: '12px'}}>
+                    <label>Discord Webhook URL</label>
+                    <input 
+                      type="url" 
+                      value={notifySettings.discord_webhook_url || ''} 
+                      onChange={e => setNotifySettings({...notifySettings, discord_webhook_url: e.target.value})}
+                      placeholder="https://discord.com/api/webhooks/..."
+                      className="delivery-input"
+                    />
+                  </div>
+                  <div style={{marginTop: '38px'}}>
+                    <button 
+                      className="delivery-btn-test" 
+                      style={{width: '100%'}}
+                      onClick={() => handleTestAlert('discord')}
+                      disabled={testingAlert}
+                    >
+                      🧪 Test Alertă Discord Embed
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="delivery-actions-bar" style={{marginTop: '16px'}}>
+                <button 
+                  className="delivery-btn-save" 
+                  onClick={handleSaveNotifySettings}
+                  disabled={savingNotify}
+                >
+                  {savingNotify ? 'Se salvează...' : (lang === 'ro' ? '💾 Salvează Canalele de Notificare' : '💾 Save Notification Channels')}
+                </button>
+              </div>
+
+              {notifyFeedback && (
+                <div className={`delivery-alert ${notifyFeedback.type}`}>
+                  {notifyFeedback.text}
+                </div>
+              )}
+            </div>
+
+            {/* ════ AUTOMATIZARE RECENZII VIP & UPSELL (5 ZILE POST-LIVRARE) ════ */}
+            <div className="hud-card delivery-config-card" style={{marginTop: '24px'}}>
+              <div className="card-title">
+                <span>👑 {lang === 'ro' ? 'POST-DELIVERY VIP REVIEW & UPSELL AUTOMATION' : 'POST-DELIVERY VIP REVIEW & UPSELL AUTOMATION'}</span>
+                <span className="tag-live">COD MGVIP15 • 15% OFF</span>
+              </div>
+              <p className="delivery-desc">
+                {lang === 'ro'
+                  ? 'La 5 zile după livrarea comenzii, Jarvis contactează automat clientul mulțumindu-i pentru achiziție, solicitându-i o recenzie de 5 stele și oferindu-i codul exclusiv de loialitate MGVIP15 (15% reducere la următoarea comandă).'
+                  : '5 days post fulfillment, Jarvis automatically follows up with the buyer to express gratitude, request an honest 5-star review, and grant exclusive VIP discount code MGVIP15 (15% OFF next purchase).'}
+              </p>
+
+              <div className="queue-list" style={{marginTop: '16px'}}>
+                {vipQueue && vipQueue.length > 0 ? (
+                  vipQueue.map((item, idx) => (
+                    <div key={idx} className="queue-item" style={{borderLeftColor: '#8b5cf6'}}>
+                      <div className="queue-item-header">
+                        <div className="queue-name-group">
+                          <span className="queue-flag">👑</span>
+                          <span className="queue-name">{item.customer_name}</span>
+                          <span className="queue-country-tag">Comandă #{item.order_number}</span>
+                        </div>
+                        <span className="queue-price" style={{color: '#a78bfa'}}>MGVIP15</span>
+                      </div>
+                      <div className="queue-details">
+                        📅 Programat pentru: <strong>{item.scheduled_for ? item.scheduled_for.slice(0, 10) : 'T + 5 zile'}</strong> • Status: <span style={{color: item.status === 'sent' ? '#10b981' : '#f59e0b'}}>{item.status.toUpperCase()}</span>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="empty-notice">
+                    {lang === 'ro' ? 'Nicio comandă în coada VIP în acest moment. Comenzile livrate se programează automat la 5 zile.' : 'No orders in VIP queue yet. Fulfilled orders are scheduled automatically 5 days post delivery.'}
+                  </div>
+                )}
+              </div>
+
+              <div className="delivery-actions-bar" style={{marginTop: '16px'}}>
+                <button 
+                  className="delivery-btn-test" 
+                  onClick={handleSyncVip}
+                  disabled={syncingVip}
+                >
+                  {syncingVip ? 'Se sincronizează din Shopify...' : '🔄 Sincronizează Comenzile Recente din Shopify'}
+                </button>
+              </div>
+
+              {vipFeedback && (
+                <div className={`delivery-alert ${vipFeedback.type}`}>
+                  {vipFeedback.text}
                 </div>
               )}
             </div>

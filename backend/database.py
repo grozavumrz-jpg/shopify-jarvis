@@ -83,6 +83,73 @@ def init_db():
                     notify_merchant_on_cart BOOLEAN DEFAULT TRUE,
                     updated_at TIMESTAMP DEFAULT NOW()
                 );
+
+                ALTER TABLE shop_settings ADD COLUMN IF NOT EXISTS whatsapp_provider VARCHAR(32) DEFAULT 'auto';
+                ALTER TABLE shop_settings ADD COLUMN IF NOT EXISTS whatsapp_api_token TEXT;
+                ALTER TABLE shop_settings ADD COLUMN IF NOT EXISTS whatsapp_phone_number_id VARCHAR(64);
+                ALTER TABLE shop_settings ADD COLUMN IF NOT EXISTS twilio_account_sid VARCHAR(64);
+                ALTER TABLE shop_settings ADD COLUMN IF NOT EXISTS twilio_auth_token VARCHAR(64);
+                ALTER TABLE shop_settings ADD COLUMN IF NOT EXISTS twilio_whatsapp_number VARCHAR(64) DEFAULT 'whatsapp:+14155238886';
+                ALTER TABLE shop_settings ADD COLUMN IF NOT EXISTS whatsapp_webhook_url TEXT;
+
+                ALTER TABLE shop_settings ADD COLUMN IF NOT EXISTS telegram_bot_token VARCHAR(128);
+                ALTER TABLE shop_settings ADD COLUMN IF NOT EXISTS telegram_chat_id VARCHAR(64);
+                ALTER TABLE shop_settings ADD COLUMN IF NOT EXISTS notify_telegram BOOLEAN DEFAULT FALSE;
+                ALTER TABLE shop_settings ADD COLUMN IF NOT EXISTS discord_webhook_url TEXT;
+                ALTER TABLE shop_settings ADD COLUMN IF NOT EXISTS notify_discord BOOLEAN DEFAULT FALSE;
+
+                CREATE TABLE IF NOT EXISTS checkout_drip_states (
+                    id SERIAL PRIMARY KEY,
+                    shop_domain TEXT NOT NULL,
+                    checkout_id TEXT NOT NULL UNIQUE,
+                    checkout_token TEXT,
+                    email TEXT,
+                    phone TEXT,
+                    customer_name TEXT,
+                    checkout_url TEXT NOT NULL,
+                    total_price NUMERIC DEFAULT 0.0,
+                    currency VARCHAR(16) DEFAULT 'EUR',
+                    items JSONB DEFAULT '[]'::jsonb,
+                    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                    current_stage INTEGER DEFAULT 0,
+                    stage_1_sent_at TIMESTAMP WITH TIME ZONE,
+                    stage_2_sent_at TIMESTAMP WITH TIME ZONE,
+                    stage_3_sent_at TIMESTAMP WITH TIME ZONE,
+                    status VARCHAR(32) DEFAULT 'active',
+                    converted_at TIMESTAMP WITH TIME ZONE,
+                    converted_order_id TEXT,
+                    revenue_recovered NUMERIC DEFAULT 0.0,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_drip_states_active_cadence 
+                ON checkout_drip_states(shop_domain, status, current_stage, created_at);
+
+                CREATE INDEX IF NOT EXISTS idx_drip_states_conversion_lookup 
+                ON checkout_drip_states(shop_domain, email, checkout_token);
+
+                CREATE TABLE IF NOT EXISTS post_delivery_automations (
+                    id SERIAL PRIMARY KEY,
+                    shop_domain VARCHAR(255) NOT NULL,
+                    order_id VARCHAR(64) NOT NULL UNIQUE,
+                    order_number VARCHAR(64),
+                    customer_email VARCHAR(255),
+                    customer_phone VARCHAR(64),
+                    customer_name VARCHAR(255),
+                    fulfilled_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                    scheduled_for TIMESTAMP WITH TIME ZONE NOT NULL,
+                    items_summary JSONB DEFAULT '[]'::jsonb,
+                    status VARCHAR(32) DEFAULT 'pending',
+                    sent_at TIMESTAMP WITH TIME ZONE,
+                    discount_code VARCHAR(32) DEFAULT 'MGVIP15',
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_post_delivery_due 
+                ON post_delivery_automations(shop_domain, status, scheduled_for);
+
+                CREATE INDEX IF NOT EXISTS idx_post_delivery_order 
+                ON post_delivery_automations(shop_domain, order_id);
             """)
         conn.commit()
 
@@ -263,6 +330,12 @@ def get_shop_settings(shop: str) -> Dict:
             if row:
                 res = dict(row)
                 res["updated_at"] = str(res.get("updated_at") or "")
+                if not res.get("whatsapp_provider"):
+                    res["whatsapp_provider"] = "auto"
+                if not res.get("twilio_whatsapp_number"):
+                    res["twilio_whatsapp_number"] = "whatsapp:+14155238886"
+                res["notify_telegram"] = bool(res.get("notify_telegram"))
+                res["notify_discord"] = bool(res.get("notify_discord"))
                 return res
             return {
                 "shop": shop,
@@ -275,7 +348,22 @@ def get_shop_settings(shop: str) -> Dict:
                 "sender_email": "onboarding@resend.dev",
                 "sender_name": "Grozavu",
                 "merchant_notify_email": "grozavumrz@gmail.com",
-                "notify_merchant_on_cart": True
+                "notify_merchant_on_cart": True,
+                # WhatsApp settings
+                "whatsapp_provider": "auto",
+                "whatsapp_api_token": "",
+                "whatsapp_phone_number_id": "",
+                "twilio_account_sid": "",
+                "twilio_auth_token": "",
+                "twilio_whatsapp_number": "whatsapp:+14155238886",
+                "whatsapp_webhook_url": "",
+                # Mobile notification settings
+                "telegram_bot_token": "",
+                "telegram_chat_id": "",
+                "notify_telegram": False,
+                "discord_webhook_url": "",
+                "notify_discord": False,
+                "updated_at": ""
             }
 
 
@@ -286,8 +374,24 @@ def save_shop_settings(shop: str, s: Dict):
                 INSERT INTO shop_settings (
                     shop, email_provider, resend_api_key, smtp_host, smtp_port,
                     smtp_user, smtp_password, sender_email, sender_name,
-                    merchant_notify_email, notify_merchant_on_cart, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    merchant_notify_email, notify_merchant_on_cart,
+                    whatsapp_provider, whatsapp_api_token, whatsapp_phone_number_id,
+                    twilio_account_sid, twilio_auth_token, twilio_whatsapp_number,
+                    whatsapp_webhook_url,
+                    telegram_bot_token, telegram_chat_id, notify_telegram,
+                    discord_webhook_url, notify_discord,
+                    updated_at
+                ) VALUES (
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s,
+                    %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s,
+                    %s,
+                    %s, %s, %s,
+                    %s, %s,
+                    NOW()
+                )
                 ON CONFLICT(shop) DO UPDATE SET
                     email_provider=EXCLUDED.email_provider,
                     resend_api_key=EXCLUDED.resend_api_key,
@@ -299,6 +403,18 @@ def save_shop_settings(shop: str, s: Dict):
                     sender_name=EXCLUDED.sender_name,
                     merchant_notify_email=EXCLUDED.merchant_notify_email,
                     notify_merchant_on_cart=EXCLUDED.notify_merchant_on_cart,
+                    whatsapp_provider=EXCLUDED.whatsapp_provider,
+                    whatsapp_api_token=EXCLUDED.whatsapp_api_token,
+                    whatsapp_phone_number_id=EXCLUDED.whatsapp_phone_number_id,
+                    twilio_account_sid=EXCLUDED.twilio_account_sid,
+                    twilio_auth_token=EXCLUDED.twilio_auth_token,
+                    twilio_whatsapp_number=EXCLUDED.twilio_whatsapp_number,
+                    whatsapp_webhook_url=EXCLUDED.whatsapp_webhook_url,
+                    telegram_bot_token=EXCLUDED.telegram_bot_token,
+                    telegram_chat_id=EXCLUDED.telegram_chat_id,
+                    notify_telegram=EXCLUDED.notify_telegram,
+                    discord_webhook_url=EXCLUDED.discord_webhook_url,
+                    notify_discord=EXCLUDED.notify_discord,
                     updated_at=NOW()
             """, (
                 shop,
@@ -311,7 +427,381 @@ def save_shop_settings(shop: str, s: Dict):
                 s.get("sender_email", "onboarding@resend.dev"),
                 s.get("sender_name", "Grozavu"),
                 s.get("merchant_notify_email", "grozavumrz@gmail.com"),
-                s.get("notify_merchant_on_cart", True)
+                s.get("notify_merchant_on_cart", True),
+                s.get("whatsapp_provider", "auto"),
+                s.get("whatsapp_api_token", ""),
+                s.get("whatsapp_phone_number_id", ""),
+                s.get("twilio_account_sid", ""),
+                s.get("twilio_auth_token", ""),
+                s.get("twilio_whatsapp_number", "whatsapp:+14155238886"),
+                s.get("whatsapp_webhook_url", ""),
+                s.get("telegram_bot_token", ""),
+                s.get("telegram_chat_id", ""),
+                bool(s.get("notify_telegram", False)),
+                s.get("discord_webhook_url", ""),
+                bool(s.get("notify_discord", False))
             ))
         conn.commit()
+
+
+# ── Checkout Drip States & Cadence Persistence ───────────────────────────────
+
+def upsert_checkout_drip_state(shop: str, checkout: Dict) -> Dict:
+    """
+    Inserts a newly discovered checkout or updates existing record.
+    Preserves converted/canceled terminal states (never reverts them to active).
+    """
+    import json
+    from datetime import datetime, timezone
+
+    cid = str(checkout.get("id"))
+    token = str(checkout.get("token") or "")
+    email = checkout.get("email") or ""
+    phone = checkout.get("phone") or ""
+    c_name = checkout.get("customer_name") or "Client"
+    raw_url = checkout.get("checkout_url") or checkout.get("abandoned_checkout_url") or ""
+    total_price = float(checkout.get("total_price") or 0.0)
+    currency = checkout.get("currency") or "EUR"
+    items_data = json.dumps(checkout.get("line_items") or checkout.get("items") or [])
+    
+    # Parse created_at safely to UTC
+    raw_created = checkout.get("created_at")
+    if isinstance(raw_created, str):
+        cart_created = datetime.fromisoformat(raw_created.replace("Z", "+00:00"))
+    elif isinstance(raw_created, datetime):
+        cart_created = raw_created if raw_created.tzinfo else raw_created.replace(tzinfo=timezone.utc)
+    else:
+        cart_created = datetime.now(timezone.utc)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO checkout_drip_states (
+                    shop_domain, checkout_id, checkout_token, email, phone,
+                    customer_name, checkout_url, total_price, currency, items,
+                    created_at, current_stage, status, updated_at
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, 'active', NOW()
+                )
+                ON CONFLICT (checkout_id) DO UPDATE SET
+                    checkout_url = EXCLUDED.checkout_url,
+                    total_price = EXCLUDED.total_price,
+                    items = EXCLUDED.items,
+                    phone = COALESCE(NULLIF(EXCLUDED.phone, ''), checkout_drip_states.phone),
+                    email = COALESCE(NULLIF(EXCLUDED.email, ''), checkout_drip_states.email),
+                    updated_at = NOW()
+                WHERE checkout_drip_states.status NOT IN ('converted', 'canceled')
+                RETURNING *;
+            """, (
+                shop, cid, token, email, phone, c_name, raw_url,
+                total_price, currency, items_data, cart_created
+            ))
+            row = cur.fetchone()
+            if row:
+                conn.commit()
+                return dict(row)
+            
+            # If not returned due to WHERE condition (e.g. status was already converted), fetch existing
+            cur.execute("SELECT * FROM checkout_drip_states WHERE checkout_id = %s", (cid,))
+            existing = cur.fetchone()
+            conn.commit()
+            return dict(existing) if existing else {}
+
+
+def get_checkout_drip_state(shop: str, checkout_id: str) -> Optional[Dict]:
+    """Retrieve drip state record for a checkout."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT * FROM checkout_drip_states
+                WHERE shop_domain = %s AND checkout_id = %s
+            """, (shop, str(checkout_id)))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def get_active_drip_states(shop: Optional[str] = None) -> List[Dict]:
+    """Retrieve all active checkouts that may be eligible for cadence evaluation."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if shop:
+                cur.execute("""
+                    SELECT * FROM checkout_drip_states
+                    WHERE shop_domain = %s AND status = 'active' AND current_stage < 3
+                    ORDER BY created_at ASC
+                """, (shop,))
+            else:
+                cur.execute("""
+                    SELECT * FROM checkout_drip_states
+                    WHERE status = 'active' AND current_stage < 3
+                    ORDER BY created_at ASC
+                """)
+            return [dict(r) for r in cur.fetchall()]
+
+
+def update_drip_stage(checkout_id: str, stage: int, sent_at: Optional[datetime] = None) -> bool:
+    """Advance the stage of a checkout and record stage dispatch timestamp."""
+    from datetime import datetime, timezone
+    if sent_at is None:
+        sent_at = datetime.now(timezone.utc)
+
+    stage_col = f"stage_{stage}_sent_at"
+    # Stage 3 marks state as exhausted after sending
+    status_clause = ", status = 'exhausted'" if stage >= 3 else ""
+
+    query = f"""
+        UPDATE checkout_drip_states
+        SET current_stage = %s, {stage_col} = %s, updated_at = NOW(){status_clause}
+        WHERE checkout_id = %s
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, (stage, sent_at, str(checkout_id)))
+        conn.commit()
+    return True
+
+
+def mark_drip_converted(
+    shop: str,
+    checkout_id: Optional[str] = None,
+    email: Optional[str] = None,
+    checkout_token: Optional[str] = None,
+    order_id: Optional[str] = None,
+    revenue: float = 0.0
+) -> int:
+    """
+    Reconciles an order by marking matching active drip records as converted.
+    Stops all pending stages. Returns number of rows updated.
+    """
+    cid_str = str(checkout_id) if checkout_id else None
+    token_str = str(checkout_token) if checkout_token else None
+    email_clean = email.strip().lower() if email else None
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE checkout_drip_states
+                SET status = 'converted',
+                    converted_at = NOW(),
+                    converted_order_id = %s,
+                    revenue_recovered = %s,
+                    updated_at = NOW()
+                WHERE shop_domain = %s
+                  AND status = 'active'
+                  AND (
+                      (%s IS NOT NULL AND checkout_id = %s)
+                      OR (%s IS NOT NULL AND checkout_token = %s)
+                      OR (%s IS NOT NULL AND LOWER(email) = %s AND email != '')
+                  )
+            """, (str(order_id or ""), revenue, shop, cid_str, cid_str, token_str, token_str, email_clean, email_clean))
+            rows_updated = cur.rowcount
+        conn.commit()
+    return rows_updated
+
+
+def mark_drip_exhausted(checkout_id: str) -> bool:
+    """Marks checkout as exhausted when cadence window (>72h) has expired."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE checkout_drip_states
+                SET status = 'exhausted', updated_at = NOW()
+                WHERE checkout_id = %s AND status = 'active'
+            """, (str(checkout_id),))
+        conn.commit()
+    return True
+
+
+# ── Post-Delivery VIP Automations Persistence ────────────────────────────────
+
+def enqueue_post_delivery_automation(
+    shop: str = "",
+    order_id: str = "",
+    order_number: str = "",
+    customer_email: Optional[str] = None,
+    customer_phone: Optional[str] = None,
+    customer_name: Optional[str] = None,
+    fulfilled_at: Optional[datetime] = None,
+    scheduled_for: Optional[datetime] = None,
+    items_summary: Any = None,
+    discount_code: str = "MGVIP15",
+    order_data: Optional[Dict[str, Any]] = None,
+    shop_domain: Optional[str] = None
+) -> bool:
+    """
+    Enqueues a fulfilled order into post_delivery_automations for VIP review & upsell.
+    Idempotent on order_id. Does not overwrite already sent or canceled automations.
+    """
+    import json
+    from datetime import datetime, timezone, timedelta
+
+    target_shop = shop_domain or shop
+    if order_data and isinstance(order_data, dict):
+        target_shop = target_shop or order_data.get("shop_domain") or order_data.get("shop") or ""
+        order_id = str(order_data.get("order_id") or order_data.get("id") or order_id)
+        order_number = str(order_data.get("order_number") or order_data.get("name") or order_id).lstrip("#")
+        customer = order_data.get("customer") or {}
+        first = customer.get("first_name", "") if isinstance(customer, dict) else ""
+        last = customer.get("last_name", "") if isinstance(customer, dict) else ""
+        customer_name = customer_name or (f"{first} {last}".strip() or order_data.get("customer_name") or "Client")
+        customer_email = customer_email or order_data.get("customer_email") or order_data.get("email") or (customer.get("email") if isinstance(customer, dict) else None)
+        customer_phone = customer_phone or order_data.get("customer_phone") or order_data.get("phone") or (customer.get("phone") if isinstance(customer, dict) else None)
+        raw_f = order_data.get("fulfilled_at")
+        if raw_f and fulfilled_at is None:
+            if isinstance(raw_f, str):
+                fulfilled_at = datetime.fromisoformat(raw_f.replace("Z", "+00:00"))
+            elif isinstance(raw_f, datetime):
+                fulfilled_at = raw_f
+        raw_s = order_data.get("scheduled_for")
+        if raw_s and scheduled_for is None:
+            if isinstance(raw_s, str):
+                scheduled_for = datetime.fromisoformat(raw_s.replace("Z", "+00:00"))
+            elif isinstance(raw_s, datetime):
+                scheduled_for = raw_s
+        items_summary = items_summary if items_summary is not None else (order_data.get("items_summary") or order_data.get("line_items"))
+
+    if not fulfilled_at:
+        fulfilled_at = datetime.now(timezone.utc)
+    elif fulfilled_at.tzinfo is None:
+        fulfilled_at = fulfilled_at.replace(tzinfo=timezone.utc)
+
+    if not scheduled_for:
+        scheduled_for = fulfilled_at + timedelta(days=5)
+    elif scheduled_for.tzinfo is None:
+        scheduled_for = scheduled_for.replace(tzinfo=timezone.utc)
+
+    items_json = json.dumps(items_summary) if isinstance(items_summary, (list, dict)) else json.dumps([])
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO post_delivery_automations (
+                    shop_domain, order_id, order_number, customer_email,
+                    customer_phone, customer_name, fulfilled_at, scheduled_for,
+                    items_summary, status, discount_code, created_at
+                ) VALUES (
+                    %s, %s, %s, %s,
+                    %s, %s, %s, %s,
+                    %s::jsonb, 'pending', %s, NOW()
+                )
+                ON CONFLICT (order_id) DO NOTHING
+            """, (
+                target_shop, str(order_id), str(order_number or "").lstrip("#"),
+                (customer_email or "").strip() or None,
+                (customer_phone or "").strip() or None,
+                (customer_name or "Client").strip(),
+                fulfilled_at, scheduled_for, items_json,
+                discount_code or "MGVIP15"
+            ))
+            inserted = cur.rowcount > 0
+        conn.commit()
+    return inserted
+
+
+def get_due_post_delivery_automations(
+    shop: Optional[str] = None,
+    now_dt: Optional[datetime] = None
+) -> List[Dict[str, Any]]:
+    """Retrieve pending post-delivery automations where scheduled_for <= now_dt."""
+    from datetime import datetime, timezone
+    now = now_dt or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if shop:
+                cur.execute("""
+                    SELECT * FROM post_delivery_automations
+                    WHERE shop_domain = %s
+                      AND status = 'pending'
+                      AND scheduled_for <= %s
+                    ORDER BY scheduled_for ASC
+                """, (shop, now))
+            else:
+                cur.execute("""
+                    SELECT * FROM post_delivery_automations
+                    WHERE status = 'pending'
+                      AND scheduled_for <= %s
+                    ORDER BY scheduled_for ASC
+                """, (now,))
+            rows = cur.fetchall()
+            return [dict(r) for r in rows]
+
+
+def mark_post_delivery_sent(
+    order_id: Union[int, str],
+    sent_at: Optional[datetime] = None
+) -> bool:
+    """Marks a post-delivery automation record as 'sent' with timestamp."""
+    from datetime import datetime, timezone
+    sent = sent_at or datetime.now(timezone.utc)
+    if sent.tzinfo is None:
+        sent = sent.replace(tzinfo=timezone.utc)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if isinstance(order_id, int) or str(order_id).isdigit():
+                cur.execute("""
+                    UPDATE post_delivery_automations
+                    SET status = 'sent', sent_at = %s
+                    WHERE (id = %s OR order_id = %s) AND status = 'pending'
+                """, (sent, int(order_id), str(order_id)))
+            else:
+                cur.execute("""
+                    UPDATE post_delivery_automations
+                    SET status = 'sent', sent_at = %s
+                    WHERE order_id = %s AND status = 'pending'
+                """, (sent, str(order_id)))
+            updated = cur.rowcount > 0
+        conn.commit()
+    return updated
+
+
+def mark_post_delivery_automation_sent(
+    automation_id: Union[int, str],
+    channel: Optional[str] = None,
+    sent_at: Optional[datetime] = None
+) -> bool:
+    """Alias for mark_post_delivery_sent."""
+    return mark_post_delivery_sent(order_id=automation_id, sent_at=sent_at)
+
+
+def cancel_post_delivery_automation(order_id: str) -> bool:
+    """Cancels any pending post-delivery automation for an order (e.g. on refund or cancel)."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE post_delivery_automations
+                SET status = 'canceled'
+                WHERE order_id = %s AND status = 'pending'
+            """, (str(order_id),))
+            canceled = cur.rowcount > 0
+        conn.commit()
+    return canceled
+
+
+def get_post_delivery_queue(shop: str, limit: int = 50) -> List[Dict[str, Any]]:
+    """Retrieve post-delivery automations queue for a shop."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT * FROM post_delivery_automations
+                WHERE shop_domain = %s
+                ORDER BY scheduled_for DESC
+                LIMIT %s
+            """, (shop, limit))
+            rows = cur.fetchall()
+            return [dict(r) for r in rows]
+
+
+def get_post_delivery_automation(order_id: str) -> Optional[Dict[str, Any]]:
+    """Helper to inspect post delivery record by order_id."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM post_delivery_automations WHERE order_id = %s", (str(order_id),))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
 

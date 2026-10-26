@@ -1,5 +1,5 @@
 import httpx
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Union
 
 
 def detect_customer_language_and_country(c_name: str, email: str, phone: str, country_code: str, country_name: str) -> dict:
@@ -31,7 +31,8 @@ def detect_customer_language_and_country(c_name: str, email: str, phone: str, co
     if cc in COUNTRY_MAP:
         return COUNTRY_MAP[cc]
 
-    clean_p = (phone or "").replace(" ", "").replace("-", "")
+    raw_p = str(phone).strip() if phone is not None else ""
+    clean_p = raw_p.replace(" ", "").replace("-", "")
     if clean_p.startswith("+39") or clean_p.startswith("0039"):
         return COUNTRY_MAP["IT"]
     if clean_p.startswith("+34") or clean_p.startswith("0034"):
@@ -80,6 +81,7 @@ class ShopifyClient:
             "X-Shopify-Access-Token": token,
             "Content-Type": "application/json",
         }
+        self._img_cache: Dict[str, Optional[str]] = {}
 
     async def _get(self, path: str, params: dict = None) -> Dict:
         async with httpx.AsyncClient(timeout=20) as client:
@@ -103,35 +105,168 @@ class ShopifyClient:
     # ── Orders ────────────────────────────────────────────────────────────────
 
     async def get_recent_orders(self, days: int = 30) -> List[Dict]:
-        from datetime import datetime, timedelta
-        since = (datetime.utcnow() - timedelta(days=days)).isoformat() + "Z"
+        from datetime import datetime, timezone, timedelta
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        fields = (
+            "id,name,order_number,created_at,updated_at,total_price,currency,"
+            "financial_status,fulfillment_status,line_items,customer,checkout_id,"
+            "checkout_token,cart_token,email,phone,billing_address,shipping_address,"
+            "fulfillments,cancelled_at,cancel_reason"
+        )
         data = await self._get("/orders.json", {
             "status":          "any",
             "created_at_min":  since,
             "limit":           250,
-            "fields":          "id,created_at,total_price,financial_status,fulfillment_status,line_items,customer",
+            "fields":          fields,
+        })
+        return data.get("orders", [])
+
+    async def get_fulfilled_orders(
+        self,
+        days_back: int = 14,
+        limit: int = 250,
+        fulfillment_status: str = "shipped"
+    ) -> List[Dict[str, Any]]:
+        from datetime import datetime, timezone, timedelta
+        since = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
+        fields = (
+            "id,name,order_number,created_at,updated_at,total_price,currency,"
+            "financial_status,fulfillment_status,line_items,customer,email,phone,"
+            "billing_address,shipping_address,fulfillments,cancelled_at,cancel_reason"
+        )
+        data = await self._get("/orders.json", {
+            "status": "any",
+            "fulfillment_status": fulfillment_status,
+            "updated_at_min": since,
+            "limit": limit,
+            "fields": fields,
         })
         return data.get("orders", [])
 
     async def get_abandoned_checkouts(self) -> List[Dict]:
-        from datetime import datetime, timedelta
-        since = (datetime.utcnow() - timedelta(days=7)).isoformat() + "Z"
+        from datetime import datetime, timezone, timedelta
+        since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
         data = await self._get("/checkouts.json", {
             "created_at_min": since,
             "limit":          50,
         })
-        return data.get("checkouts", [])
+        return (data or {}).get("checkouts") or []
 
-    async def get_abandoned_checkouts_detailed(self) -> List[Dict]:
-        from datetime import datetime, timedelta
-        since = (datetime.utcnow() - timedelta(days=14)).isoformat() + "Z"
+    async def get_product_image_url(
+        self,
+        product_id: Optional[Union[int, str]],
+        variant_id: Optional[Union[int, str]] = None
+    ) -> Optional[str]:
+        """
+        Fetch product or variant image URL with in-memory caching.
+        Prioritizes variant-specific image if variant_id is provided and has an image_id.
+        Falls back to product primary image, then first gallery image.
+        Caches both positive and negative results to avoid redundant network calls.
+        """
+        if not product_id:
+            return None
+
+        pid_str = str(product_id).strip()
+        vid_str = str(variant_id).strip() if variant_id else None
+
+        if not hasattr(self, "_img_cache"):
+            self._img_cache = {}
+
+        # 1. Check variant-specific cache hit
+        if vid_str:
+            var_cache_key = f"var_{pid_str}_{vid_str}"
+            if var_cache_key in self._img_cache:
+                return self._img_cache[var_cache_key]
+
+        # 2. Check product-level cache hit (if product was already fetched, reuse for variant or product)
+        prod_cache_key = f"prod_{pid_str}"
+        if prod_cache_key in self._img_cache:
+            cached_prod_img = self._img_cache[prod_cache_key]
+            if vid_str:
+                self._img_cache[f"var_{pid_str}_{vid_str}"] = cached_prod_img
+            return cached_prod_img
+
+        # Also support legacy int/str keys in cache
+        if product_id in self._img_cache:
+            cached_legacy = self._img_cache[product_id]
+            if vid_str:
+                self._img_cache[f"var_{pid_str}_{vid_str}"] = cached_legacy
+            return cached_legacy
+
+        try:
+            res = await self._get(f"/products/{pid_str}.json", {"fields": "id,image,images,variants"})
+            prod = (res or {}).get("product") or {}
+
+            # Map image IDs to image source URLs
+            images = prod.get("images") or []
+            img_map = {}
+            for img in images:
+                if isinstance(img, dict) and img.get("id") and img.get("src"):
+                    img_map[str(img["id"])] = img["src"]
+
+            # Cache variant images if available
+            variants = prod.get("variants") or []
+            for v in variants:
+                if isinstance(v, dict) and v.get("id"):
+                    v_key = f"var_{pid_str}_{str(v['id'])}"
+                    v_img_id = str(v.get("image_id")) if v.get("image_id") else None
+                    if v_img_id and v_img_id in img_map:
+                        self._img_cache[v_key] = img_map[v_img_id]
+
+            # Primary product image
+            main_img = prod.get("image") or {}
+            src = main_img.get("src") if isinstance(main_img, dict) else None
+            if not src and images:
+                first = images[0]
+                src = first.get("src") if isinstance(first, dict) else (first if isinstance(first, str) else None)
+
+            # Store in product-level cache (normalized str and original key)
+            self._img_cache[prod_cache_key] = src
+            self._img_cache[pid_str] = src
+            if product_id != pid_str:
+                self._img_cache[product_id] = src
+
+            # Return variant image if requested and found, otherwise fall back to product image
+            if vid_str:
+                var_key = f"var_{pid_str}_{vid_str}"
+                if var_key not in self._img_cache:
+                    self._img_cache[var_key] = src
+                return self._img_cache[var_key]
+
+            return src
+        except Exception:
+            # Negative caching to prevent repeated network failures for missing/deleted products
+            self._img_cache[prod_cache_key] = None
+            self._img_cache[pid_str] = None
+            if vid_str:
+                self._img_cache[f"var_{pid_str}_{vid_str}"] = None
+            return None
+
+    async def get_abandoned_checkouts_detailed(
+        self,
+        created_at_min: Optional[str] = None,
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch abandoned checkouts with enriched line items including product/variant images.
+        Preserves clean raw checkout_url without premature discount parameters.
+        Returns comprehensive metadata including multi-language customer detection.
+        """
+        from datetime import datetime, timezone, timedelta
+        if not created_at_min:
+            created_at_min = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
+
         data = await self._get("/checkouts.json", {
-            "created_at_min": since,
-            "limit":          50,
+            "created_at_min": created_at_min,
+            "limit":          limit,
         })
-        checkouts = data.get("checkouts", [])
+        checkouts = (data or {}).get("checkouts") or []
         detailed = []
+
         for c in checkouts:
+            if not isinstance(c, dict):
+                continue
+
             cust = c.get("customer") or {}
             first = cust.get("first_name", "") or ""
             last = cust.get("last_name", "") or ""
@@ -142,40 +277,122 @@ class ShopifyClient:
                 c_name = f"{bill.get('first_name', '')} {bill.get('last_name', '')}".strip() or "Client"
 
             email = c.get("email") or cust.get("email") or ""
-            items = [item.get("title") for item in c.get("line_items", []) if item.get("title")]
+            raw_line_items = c.get("line_items") or []
 
+            # ── Line items enrichment & image resolution ──────────────────────
+            enriched_line_items = []
+            item_titles = []
+
+            for li in raw_line_items:
+                if not isinstance(li, dict):
+                    continue
+
+                title = li.get("title") or "Articol"
+                item_titles.append(title)
+
+                p_id = li.get("product_id")
+                v_id = li.get("variant_id")
+                img_url = li.get("image_url")
+
+                # If line item lacks image_url, resolve via Product API
+                if not img_url or not str(img_url).strip().startswith("http"):
+                    if p_id:
+                        img_url = await self.get_product_image_url(p_id, v_id)
+                    else:
+                        img_url = None
+
+                # Format price safely as standard string
+                raw_price = li.get("price")
+                if raw_price is not None:
+                    try:
+                        price_str = f"{float(raw_price):.2f}"
+                    except (ValueError, TypeError):
+                        price_str = str(raw_price)
+                else:
+                    price_str = "0.00"
+
+                # Parse quantity safely
+                try:
+                    qty = int(li.get("quantity") or 1)
+                except (ValueError, TypeError):
+                    qty = 1
+
+                enriched_line_items.append({
+                    "title": title,
+                    "variant_title": li.get("variant_title") or "",
+                    "quantity": qty,
+                    "price": price_str,
+                    "image_url": img_url,
+                    "product_id": p_id,
+                    "variant_id": v_id,
+                    "sku": str(li.get("sku") or ""),
+                })
+
+            # Primary image for backward compatibility
+            primary_image_url = next(
+                (item["image_url"] for item in enriched_line_items if item.get("image_url")),
+                None
+            )
+
+            # Country & language detection
             country_code = ship.get("country_code") or bill.get("country_code") or c.get("country_code") or ""
             country_name = ship.get("country") or bill.get("country") or ""
-            phone = c.get("phone") or bill.get("phone") or ship.get("phone") or ""
+            raw_phone = c.get("phone") or bill.get("phone") or ship.get("phone") or ""
+            phone = str(raw_phone).strip() if raw_phone is not None else ""
 
             geo = detect_customer_language_and_country(c_name, email, phone, country_code, country_name)
 
-            raw_url = c.get("abandoned_checkout_url") or ""
-            if raw_url and "discount=" not in raw_url:
-                delimiter = "&" if "?" in raw_url else "?"
-                checkout_link = f"{raw_url}{delimiter}discount=MG10"
-            else:
-                checkout_link = raw_url
+            # Preserve raw checkout URL without premature discount injection
+            raw_url = (c.get("abandoned_checkout_url") or "").strip()
+
+            try:
+                total_price = float(c.get("total_price") or 0.0)
+            except (ValueError, TypeError):
+                total_price = 0.0
+
+            clean_phone_digits = "".join(ch for ch in phone if ch.isdigit())
 
             detailed.append({
                 "id": str(c.get("id")),
                 "token": c.get("token") or "",
                 "email": email,
                 "customer_name": c_name,
-                "total_price": float(c.get("total_price") or 0.0),
+                "total_price": total_price,
                 "currency": c.get("currency") or "EUR",
-                "items": items or ["Produse din coș"],
-                "checkout_url": checkout_link,
+                "items": item_titles or ["Produse din coș"],
+                "line_items": enriched_line_items,
+                "image_url": primary_image_url,
+                "checkout_url": raw_url,
+                "abandoned_checkout_url": raw_url,
                 "created_at": c.get("created_at") or "",
                 "phone": phone,
-                "clean_phone": "".join(ch for ch in phone if ch.isdigit()),
-                "has_phone": bool(phone and len("".join(ch for ch in phone if ch.isdigit())) >= 8),
+                "clean_phone": clean_phone_digits,
+                "has_phone": bool(phone and len(clean_phone_digits) >= 8),
                 "detected_lang": geo["lang"],
                 "detected_lang_name": geo["lang_name"],
                 "detected_country": geo["country"],
                 "detected_flag": geo["flag"],
             })
+
         return detailed
+
+    @staticmethod
+    def append_discount_to_url(checkout_url: str, discount_code: Optional[str] = None) -> str:
+        """
+        Safely append a discount code parameter to a Shopify checkout URL.
+        Returns the unmodified URL if discount_code is None or empty.
+        Avoids duplicating discount parameters if already present.
+        """
+        if not checkout_url:
+            return ""
+        if not discount_code or not str(discount_code).strip():
+            return checkout_url
+        clean_code = str(discount_code).strip()
+        if f"discount={clean_code}" in checkout_url:
+            return checkout_url
+        delimiter = "&" if "?" in checkout_url else "?"
+        return f"{checkout_url}{delimiter}discount={clean_code}"
+
 
     async def send_recovery_email(self, checkout_id: str) -> bool:
         """Trigger Shopify's native abandoned checkout recovery email if supported."""
@@ -227,6 +444,13 @@ class ShopifyClient:
         })
         return data.get("count", 0)
 
+    @staticmethod
+    def _safe_float(val: Any) -> float:
+        try:
+            return float(val or 0.0)
+        except (ValueError, TypeError):
+            return 0.0
+
     # ── Summary snapshot ──────────────────────────────────────────────────────
 
     async def get_store_snapshot(self) -> Dict[str, Any]:
@@ -239,8 +463,8 @@ class ShopifyClient:
         shop_info = await self.get_shop_info()
 
         # Revenue calc
-        revenue_30d = sum(float(o.get("total_price", 0)) for o in orders)
-        revenue_today = sum(float(o.get("total_price", 0)) for o in today_orders)
+        revenue_30d = sum(self._safe_float(o.get("total_price", 0)) for o in orders)
+        revenue_today = sum(self._safe_float(o.get("total_price", 0)) for o in today_orders)
         aov = round(revenue_30d / len(orders), 2) if len(orders) > 0 else 0.0
 
         # Customer Intelligence & Segmentation
@@ -260,7 +484,7 @@ class ShopifyClient:
                         "total_spent": 0.0,
                     }
                 customer_map[cid]["orders_count"] += 1
-                customer_map[cid]["total_spent"] += float(order.get("total_price", 0))
+                customer_map[cid]["total_spent"] += self._safe_float(order.get("total_price", 0))
 
         total_unique = len(customer_map)
         repeat_count = sum(1 for c in customer_map.values() if c["orders_count"] > 1)
