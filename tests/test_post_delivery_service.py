@@ -241,5 +241,88 @@ class TestPostDeliveryServiceDispatchChannels(unittest.TestCase):
                             self.assertTrue(mock_wa.called)
 
 
+    def test_dispatch_both_email_and_whatsapp_when_both_present(self):
+        """Dispatches both email and WhatsApp when customer has both phone and email."""
+        record = {
+            "order_id": "ord_both_1",
+            "order_number": "1004",
+            "customer_name": "Lorenzo",
+            "customer_email": "lorenzo@example.com",
+            "customer_phone": "+393401234567",
+            "discount_code": "MGVIP15",
+            "items_summary": [{"title": "Smoking Luxury"}]
+        }
+        with patch.object(pds.db, "get_due_post_delivery_automations", return_value=[record]):
+            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock) as mock_mail:
+                with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock) as mock_wa:
+                    with patch.object(self.service.mobile_notifier, "notify_merchant", new_callable=AsyncMock) as mock_notify:
+                        with patch.object(pds.db, "mark_post_delivery_sent") as mock_mark:
+                            with patch.object(pds.db, "save_autopilot_log"):
+                                count = self.service.process_due_vip_automations("luxury.myshopify.com")
+                                self.assertEqual(count, 1)
+                                self.assertTrue(mock_mail.called)
+                                self.assertTrue(mock_wa.called)
+                                self.assertTrue(mock_notify.called)
+                                mock_mark.assert_called_once()
+
+    def test_dispatch_resilience_email_failure_does_not_abort_whatsapp(self):
+        """If email dispatch throws an exception, WhatsApp is still attempted."""
+        record = {
+            "order_id": "ord_resil_1",
+            "order_number": "1005",
+            "customer_name": "Matteo",
+            "customer_email": "matteo@example.com",
+            "customer_phone": "+393401234567",
+            "discount_code": "MGVIP15",
+            "items_summary": []
+        }
+        with patch.object(pds.db, "get_due_post_delivery_automations", return_value=[record]):
+            with patch.object(self.service.email_dispatcher, "send_email", side_effect=RuntimeError("SMTP Down")):
+                with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock) as mock_wa:
+                    with patch.object(pds.db, "mark_post_delivery_sent"):
+                        with patch.object(pds.db, "save_autopilot_log"):
+                            count = self.service.process_due_vip_automations("luxury.myshopify.com")
+                            self.assertEqual(count, 1)
+                            self.assertTrue(mock_wa.called)
+
+    def test_dispatch_resilience_mobile_notifier_failure_does_not_abort_dispatch(self):
+        """If merchant notification throws, automation record is still marked sent."""
+        record = {
+            "order_id": "ord_resil_2",
+            "order_number": "1006",
+            "customer_name": "Andrei",
+            "customer_email": "andrei@example.com",
+            "customer_phone": None,
+            "discount_code": "MGVIP15",
+            "items_summary": []
+        }
+        with patch.object(pds.db, "get_due_post_delivery_automations", return_value=[record]):
+            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock):
+                with patch.object(self.service.mobile_notifier, "notify_merchant", side_effect=RuntimeError("Telegram Down")):
+                    with patch.object(pds.db, "mark_post_delivery_sent") as mock_mark:
+                        with patch.object(pds.db, "save_autopilot_log"):
+                            count = self.service.process_due_vip_automations("luxury.myshopify.com")
+                            self.assertEqual(count, 1)
+                            mock_mark.assert_called_once()
+
+    def test_build_vip_message_fallback_for_empty_customer_name(self):
+        """Fallback to 'Client' or default if customer name is empty."""
+        msg = PostDeliveryService.build_vip_message(
+            customer_name="",
+            purchased_item="Suit",
+            discount_code="MGVIP15",
+            lang="en"
+        )
+        self.assertIn("MGVIP15", msg)
+        self.assertIn("Client", msg)
+
+    def test_sync_db_failure_handled_gracefully(self):
+        """If database raises operational error, sync_fulfilled_orders catches and returns 0."""
+        with patch.object(pds.db, "get_shop", side_effect=Exception("DB connection dead")):
+            count = self.service.sync_fulfilled_orders("luxury.myshopify.com")
+            self.assertEqual(count, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
+
