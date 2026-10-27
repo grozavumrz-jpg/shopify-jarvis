@@ -116,6 +116,61 @@ class TestAutonomousSalesBrain(unittest.IsolatedAsyncioTestCase):
         self.assertIn("google_search", goal["channel_split"])
         self.assertIn("tiktok_reels", goal["channel_split"])
 
+    async def test_dynamic_goal_parsing(self):
+        """Validates that /goal 25000 dynamically calculates for 25,000."""
+        reply = await self.ai.chat("maisongrozavu.myshopify.com", self.snap, [], "/goal 25000", lang="ro")
+        self.assertIn("25,000", reply)
+        self.assertIn("Ecuația Profitului", reply)
+
+    async def test_dynamic_browser_search(self):
+        """Validates that /browser sacou catifea searches for the specified query."""
+        reply = await self.ai.chat("maisongrozavu.myshopify.com", self.snap, [], "/browser sacou catifea", lang="ro")
+        self.assertIn("sacou catifea", reply)
+        self.assertIn("Live Search Demand", reply)
+
+    async def test_1click_tiktok_generation(self):
+        """Validates 1-Click viral TikTok generation generates full 30s script without protocol error."""
+        prompt = "Scrie-mi un script complet de TikTok/Reels de 30 secunde pentru cel mai vândut produs din magazinul Maison Grozavu"
+        reply = await self.ai.chat("maisongrozavu.myshopify.com", self.snap, [], prompt, lang="ro")
+        self.assertIn("Script Viral TikTok", reply)
+        self.assertIn("CÂRLIG VIZUAL", reply)
+        self.assertIn("MG10", reply)
+
+    async def test_1click_cart_recovery_generation(self):
+        """Validates 1-Click abandoned cart email recovery generation."""
+        prompt = "Scrie un email irezistibil de recuperare a coșurilor abandonate pentru clienții Maison Grozavu."
+        reply = await self.ai.chat("maisongrozavu.myshopify.com", self.snap, [], prompt, lang="ro")
+        self.assertIn("Email & WhatsApp de Recuperare", reply)
+        self.assertIn("MG10", reply)
+        self.assertIn("6 ore", reply)
+
+    async def test_1click_cro_audit_generation(self):
+        """Validates 1-Click CRO conversion audit generation."""
+        prompt = "Fă un audit rapid de conversie pentru produsele mele Maison Grozavu."
+        reply = await self.ai.chat("maisongrozavu.myshopify.com", self.snap, [], prompt, lang="ro")
+        self.assertIn("Audit Rapid de Conversie", reply)
+        self.assertIn("Trust Badges", reply)
+
+    async def test_1click_vip_reward_generation(self):
+        """Validates 1-Click VIP loyalty email generation."""
+        prompt = "Scrie un email VIP exclusiv de fidelizare și mulțumire pentru Maison Grozavu."
+        reply = await self.ai.chat("maisongrozavu.myshopify.com", self.snap, [], prompt, lang="ro")
+        self.assertIn("Email Exclusiv de Fidelizare", reply)
+        self.assertIn("MGVIP15", reply)
+
+    async def test_1click_post_purchase_generation(self):
+        """Validates 1-Click post-delivery sequence generation."""
+        prompt = "Scrie o secvență automată de email post-cumpărare (trimisă la 3 zile după livrare)."
+        reply = await self.ai.chat("maisongrozavu.myshopify.com", self.snap, [], prompt, lang="ro")
+        self.assertIn("Secvență Automată Post-Livrare", reply)
+        self.assertIn("Recenzie", reply)
+
+    async def test_ad_copy_generation(self):
+        """Validates ad copy generation for Meta/Facebook."""
+        reply = await self.ai.chat("maisongrozavu.myshopify.com", self.snap, [], "Scrie-mi o reclama pentru facebook ads", lang="ro")
+        self.assertIn("Scripturi Reclame Meta Ads", reply)
+        self.assertIn("Quiet Luxury", reply)
+
 
 class TestGrowthEndpointsAPI(unittest.TestCase):
 
@@ -165,6 +220,33 @@ class TestGrowthEndpointsAPI(unittest.TestCase):
         data = res.json()
         self.assertEqual(data["target_amount"], 10000.0)
         self.assertGreater(data["needed_orders"], 0)
+
+    def test_google_suggest_endpoint(self):
+        res = self.client.get("/api/growth/google-suggest?q=rochii+matase")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data["query"], "rochii matase")
+        self.assertIn("results", data)
+        self.assertGreater(len(data["results"]), 0)
+
+    def test_autopilot_status_offline_resilience(self):
+        res = self.client.get("/api/autopilot/status?shop=maisongrozavu.myshopify.com")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertTrue(data["active"])
+        self.assertIn("queue", data)
+
+    def test_briefing_default_shop_without_query_params(self):
+        res = self.client.get("/api/briefing")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIn("briefing", data)
+
+    def test_snapshot_default_shop_without_query_params(self):
+        res = self.client.get("/api/snapshot")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIn("orders_today", data)
 
 
 if __name__ == "__main__":

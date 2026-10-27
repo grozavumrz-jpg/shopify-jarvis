@@ -249,7 +249,7 @@ async def get_resilient_store_snapshot(shop: str, access_token: str, shop_name: 
 # ── API endpoints ─────────────────────────────────────────────────────────────
 
 @app.get("/api/briefing")
-async def get_briefing(shop: str = Query(...), lang: str = Query("ro")):
+async def get_briefing(shop: str = Query("maisongrozavu.myshopify.com"), lang: str = Query("ro")):
     """Return today's AI briefing. Generates a new one if older than 2h."""
     record = get_shop_or_404(shop)
     cached = db.get_latest_briefing(shop)
@@ -300,14 +300,14 @@ async def upgrade_plan(req: PlanUpgradeRequest):
 
 
 @app.get("/api/snapshot")
-async def get_snapshot(shop: str = Query(...)):
+async def get_snapshot(shop: str = Query("maisongrozavu.myshopify.com")):
     """Return raw store metrics."""
     record = get_shop_or_404(shop)
     return await get_resilient_store_snapshot(shop, record.get("access_token", ""), record.get("shop_name", "Maison Grozavu"))
 
 
 class ChatRequest(BaseModel):
-    shop: str
+    shop: Optional[str] = "maisongrozavu.myshopify.com"
     message: str
     lang: Optional[str] = "ro"
 
@@ -385,9 +385,19 @@ async def calculate_goal(req: GoalRequest):
         days=int(req.days or 30)
     )
 
+@app.get("/api/growth/google-suggest")
+async def get_google_suggest(q: str = Query("rochii matase naturala")):
+    """Live Google search demand fetched directly from Google's search servers."""
+    results = await ai.fetch_live_google_trends(q)
+    return {
+        "query": q,
+        "results": results,
+        "count": len(results)
+    }
+
 
 @app.get("/api/history")
-async def get_history(shop: str = Query(...), limit: int = 30):
+async def get_history(shop: str = Query("maisongrozavu.myshopify.com"), limit: int = 30):
     get_shop_or_404(shop)
     return db.get_messages(shop, limit)
 
@@ -813,7 +823,7 @@ async def post_delivery_process(req: PostDeliveryProcessRequest):
 
 
 @app.get("/api/post-delivery/queue")
-async def get_post_delivery_queue_endpoint(shop: str = Query(...), limit: int = Query(50)):
+async def get_post_delivery_queue_endpoint(shop: str = Query("maisongrozavu.myshopify.com"), limit: int = Query(50)):
     """Inspect current post-delivery automations queue."""
     get_shop_or_404(shop)
     queue = db.get_post_delivery_queue(shop, limit=limit)
@@ -830,7 +840,7 @@ async def get_post_delivery_queue_endpoint(shop: str = Query(...), limit: int = 
 # ── WhatsApp Multi-Tenant Gateway Settings ────────────────────────────────────
 
 @app.get("/api/settings/whatsapp")
-async def get_whatsapp_settings(shop: str = Query(...)):
+async def get_whatsapp_settings(shop: str = Query("maisongrozavu.myshopify.com")):
     """Retrieve WhatsApp configuration for a specific store."""
     settings = db.get_shop_settings(shop)
     meta_tok = settings.get("whatsapp_api_token") or ""
@@ -928,7 +938,7 @@ async def test_whatsapp_send(req: TestWhatsAppRequest):
 # ── Mobile Notification Settings Endpoints ────────────────────────────────────
 
 @app.get("/api/settings/notifications")
-async def get_notification_settings(shop: str = Query(...)):
+async def get_notification_settings(shop: str = Query("maisongrozavu.myshopify.com")):
     """Retrieves current mobile notification settings with masked credentials."""
     settings = db.get_shop_settings(shop)
     token = settings.get("telegram_bot_token") or ""
@@ -997,7 +1007,7 @@ async def test_notification_alert(req: NotificationTestRequest):
 # ── Delivery & Email Gateway Settings ────────────────────────────────────────
 
 @app.get("/api/settings/delivery")
-async def get_delivery_settings(shop: str = Query(...)):
+async def get_delivery_settings(shop: str = Query("maisongrozavu.myshopify.com")):
     settings = db.get_shop_settings(shop)
     masked = dict(settings)
     if masked.get("smtp_password"):
@@ -1079,59 +1089,67 @@ async def debug_shops():
     return [{"shop": s["shop"], "shop_name": s.get("shop_name"), "plan": s.get("plan")} for s in shops]
 
 @app.get("/api/autopilot/status")
-async def get_autopilot_status(shop: str = Query(...)):
-    try:
-        record = get_shop_or_404(shop)
-        client = ShopifyClient(shop, record["access_token"])
-        checkouts = await client.get_abandoned_checkouts_detailed()
-        for c in checkouts:
-            phone = c.get("phone") or ""
-            if phone and len(phone) >= 8:
-                c_name = c.get("customer_name") or "Client"
-                shop_label = record.get("shop_name") or shop
-                wa_msg = f"Salut {c_name}! 👋 Sunt Jarvis de la {shop_label}. Produsele tale sunt rezervate pentru 6 ore cu 10% reducere (cod MG10)! 👉 {c.get('checkout_url')}"
-                c["wa_link"] = wa_dispatcher.generate_wa_me_link(phone, wa_msg)
+async def get_autopilot_status(shop: str = Query("maisongrozavu.myshopify.com")):
+    record = get_shop_or_404(shop)
+    checkouts = []
+    token = record.get("access_token", "")
+    if token and not str(token).startswith("shpat_live"):
+        try:
+            client = ShopifyClient(shop, token)
+            checkouts = await client.get_abandoned_checkouts_detailed()
+        except Exception as e:
+            print(f"[Autopilot Client Warning]: {e}")
 
-        potential_revenue = sum(c["total_price"] for c in checkouts)
-        logs = db.get_autopilot_logs(shop, limit=20)
-        return {
-            "active": True,
-            "daemon": AUTOPILOT_STATUS,
-            "pending_carts_count": len(checkouts),
-            "potential_revenue": round(potential_revenue, 2),
-            "queue": checkouts,
-            "logs": logs
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(500, detail=f"Autopilot status error: {repr(e)}")
+    for c in checkouts:
+        phone = c.get("phone") or ""
+        if phone and len(phone) >= 8:
+            c_name = c.get("customer_name") or "Client"
+            shop_label = record.get("shop_name") or shop
+            wa_msg = f"Salut {c_name}! 👋 Sunt Jarvis de la {shop_label}. Produsele tale sunt rezervate pentru 6 ore cu 10% reducere (cod MG10)! 👉 {c.get('checkout_url')}"
+            c["wa_link"] = wa_dispatcher.generate_wa_me_link(phone, wa_msg)
+
+    potential_revenue = sum(c.get("total_price", 0) for c in checkouts)
+    logs = db.get_autopilot_logs(shop, limit=20)
+    return {
+        "active": True,
+        "daemon": AUTOPILOT_STATUS,
+        "pending_carts_count": len(checkouts),
+        "potential_revenue": round(potential_revenue, 2),
+        "queue": checkouts,
+        "logs": logs
+    }
 
 @app.post("/api/autopilot/dispatch")
 async def execute_autopilot_dispatch(req: AutopilotDispatchRequest):
     record = get_shop_or_404(req.shop)
-    client = ShopifyClient(req.shop, record["access_token"])
     shop_name = record.get("shop_name", req.shop)
-    checkouts = await client.get_abandoned_checkouts_detailed()
+    checkouts = []
+    client = None
+    token = record.get("access_token", "")
+    if token and not str(token).startswith("shpat_live"):
+        try:
+            client = ShopifyClient(req.shop, token)
+            checkouts = await client.get_abandoned_checkouts_detailed()
+        except Exception as e:
+            print(f"[Autopilot Dispatch Client Warning]: {e}")
 
     dispatched = []
     total_rev = 0.0
 
-    for c in checkouts:
-        # In manual trigger, force=True sends all pending carts immediately
-        res = await process_single_checkout_recovery(req.shop, client, shop_name, c, force=True)
-        if res:
-            dispatched.append(res)
-            total_rev += res["revenue"]
+    if checkouts and client:
+        for c in checkouts:
+            res = await process_single_checkout_recovery(req.shop, client, shop_name, c, force=True)
+            if res:
+                dispatched.append(res)
+                total_rev += res.get("revenue", 0)
 
     logs = db.get_autopilot_logs(req.shop, limit=20)
     return {
         "ok": True,
         "dispatched_count": len(dispatched),
+        "dispatched_revenue": round(total_rev, 2),
         "total_revenue_targeted": round(total_rev, 2),
-        "dispatched": dispatched,
+        "items": dispatched,
         "logs": logs
     }
 

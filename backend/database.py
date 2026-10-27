@@ -75,7 +75,10 @@ class SQLiteCursor:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        pass
+        try:
+            self.cur.close()
+        except Exception:
+            pass
 
 
 class SQLiteConnection:
@@ -102,8 +105,11 @@ class SQLiteConnection:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is None:
-            self.commit()
+        try:
+            if exc_type is None:
+                self.commit()
+        finally:
+            self.close()
 
 
 def get_conn():

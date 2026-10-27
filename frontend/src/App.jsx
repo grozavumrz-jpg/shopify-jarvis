@@ -270,6 +270,9 @@ export default function App() {
   const [goalTarget, setGoalTarget] = useState(10000)
   const [activeRadarSubtab, setActiveRadarSubtab] = useState('seo') // 'seo' | 'hunter' | 'goal'
   const [toastMessage, setToastMessage] = useState(null)
+  const [liveSearchQuery, setLiveSearchQuery] = useState('rochii matase naturala')
+  const [liveSearchResults, setLiveSearchResults] = useState([])
+  const [searchingGoogle, setSearchingGoogle] = useState(false)
 
   // Delivery & Email Gateway State
   const [deliverySettings, setDeliverySettings] = useState({
@@ -378,8 +381,25 @@ export default function App() {
       if (resRadar.ok) setRadarData(await resRadar.json())
       if (resBoost.ok) setBoostData(await resBoost.json())
       if (resGoal.ok) setGoalData(await resGoal.json())
+      handleLiveGoogleSearch('rochii matase naturala')
     } catch (e) {
       console.warn('Failed to load growth data:', e)
+    }
+  }
+
+  const handleLiveGoogleSearch = async (queryToSearch = null) => {
+    const q = queryToSearch || liveSearchQuery || 'rochii matase naturala'
+    setSearchingGoogle(true)
+    try {
+      const res = await fetch(`/api/growth/google-suggest?q=${encodeURIComponent(q)}`)
+      if (res.ok) {
+        const data = await res.json()
+        setLiveSearchResults(data.results || [])
+      }
+    } catch (err) {
+      console.warn('Google suggest search error:', err)
+    } finally {
+      setSearchingGoogle(false)
     }
   }
 
@@ -770,7 +790,8 @@ export default function App() {
       const data = await res.json()
       setGeneratedOutput({ title: type.toUpperCase(), content: data.reply })
     } catch (e) {
-      alert('Generation note: ' + e.message)
+      console.warn('Action generation error:', e)
+      handleToast(lang === 'ro' ? 'Notă generare: ' + e.message : 'Generation note: ' + e.message)
     } finally {
       setGeneratingAction(false)
     }
@@ -1158,6 +1179,66 @@ export default function App() {
             {/* Subtab 1: Google SEO */}
             {activeRadarSubtab === 'seo' && (
               <div className="radar-content-grid">
+                {/* Live Google Search Engine Scanner */}
+                <div className="hud-card live-google-card">
+                  <div className="card-title">
+                    <span>🌐 Scanner Live Cerere Google (Conectat în Timp Real la Servere Google)</span>
+                    <span className="tag-live">Live Google Demand</span>
+                  </div>
+                  <p className="card-desc">
+                    Tastează orice piesă vestimentară sau categorie pentru a descoperi exact ce caută cumpărătorii pe Google România în acest moment:
+                  </p>
+                  <div className="live-search-bar">
+                    <input 
+                      type="text"
+                      className="live-search-input"
+                      value={liveSearchQuery}
+                      onChange={(e) => setLiveSearchQuery(e.target.value)}
+                      placeholder="Ex: rochii matase naturala, sacou catifea, costume dama..."
+                      onKeyDown={(e) => e.key === 'Enter' && handleLiveGoogleSearch()}
+                    />
+                    <button 
+                      className="calculate-btn"
+                      onClick={() => handleLiveGoogleSearch()}
+                      disabled={searchingGoogle}
+                    >
+                      {searchingGoogle ? 'Se scanează Google...' : '🔎 Scanează Servere Google'}
+                    </button>
+                  </div>
+
+                  {liveSearchResults && liveSearchResults.length > 0 && (
+                    <div className="live-results-box">
+                      <div className="live-results-title">
+                        Căutări reale active detectate pe Google pentru „{liveSearchQuery}”:
+                      </div>
+                      <div className="live-tags-grid">
+                        {liveSearchResults.map((resItem, idx) => (
+                          <div key={idx} className="live-tag-chip">
+                            <span className="live-tag-text">🔍 {resItem}</span>
+                            <button 
+                              className="copy-btn-micro" 
+                              onClick={() => handleCopy(resItem, 'Expresia a fost copiată!')}
+                              title="Copiază căutarea"
+                            >
+                              📋
+                            </button>
+                            <button 
+                              className="chat-btn-micro"
+                              onClick={() => {
+                                setActiveTab('chat')
+                                handleSendMessage(`/browser ${resItem}`)
+                              }}
+                              title="Cere strategie Jarvis pentru această căutare"
+                            >
+                              💬 Strategie
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <div className="hud-card">
                   <div className="card-title">
                     <span>🎯 Cuvinte Cheie Google cu Intenție Tranzacțională Maximă</span>
@@ -2480,6 +2561,85 @@ const styles = `
 
 .copy-btn-inline:hover {
   background: rgba(245, 158, 11, 0.3);
+}
+
+.live-google-card {
+  grid-column: 1 / -1;
+  background: linear-gradient(135deg, rgba(22, 28, 42, 0.95), rgba(30, 38, 58, 0.95));
+  border: 1px solid var(--border-warm);
+}
+
+.live-search-bar {
+  display: flex;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.live-search-input {
+  flex: 1;
+  background: #090c12;
+  border: 1px solid var(--border-sub);
+  color: #fff;
+  padding: 12px 16px;
+  border-radius: 10px;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.live-search-input:focus {
+  border-color: var(--amber-gold);
+}
+
+.live-results-box {
+  margin-top: 18px;
+  padding: 16px;
+  background: var(--bg-card-sub);
+  border: 1px solid var(--border-warm);
+  border-radius: 12px;
+}
+
+.live-results-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--amber-gold);
+  margin-bottom: 12px;
+  letter-spacing: 0.5px;
+}
+
+.live-tags-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.live-tag-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 13px;
+  color: var(--cream);
+}
+
+.chat-btn-micro {
+  background: var(--amber-gold);
+  border: none;
+  color: #0e121a;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.chat-btn-micro:hover {
+  background: #fbbf24;
+  transform: translateY(-1px);
 }
 
 .hooks-list {
