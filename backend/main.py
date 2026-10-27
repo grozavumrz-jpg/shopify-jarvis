@@ -44,8 +44,9 @@ post_delivery_service = PostDeliveryService()
 
 # Serve React frontend build
 FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
-if os.path.isdir(FRONTEND_DIST):
-    app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIST, "assets")), name="assets")
+assets_dir = os.path.join(FRONTEND_DIST, "assets")
+if os.path.isdir(assets_dir):
+    app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
 
 @app.on_event("startup")
@@ -258,7 +259,7 @@ async def get_briefing(shop: str = Query("maisongrozavu.myshopify.com"), lang: s
 
     if cached:
         try:
-            age_minutes = (datetime.utcnow() - datetime.fromisoformat(
+            age_minutes = (datetime.now(timezone.utc).replace(tzinfo=None) - datetime.fromisoformat(
                 cached["created_at"].replace("Z", "").split(".")[0]
             )).total_seconds() / 60
             if age_minutes < 120:
@@ -441,8 +442,16 @@ async def get_tts(text: str = Query(...), lang: str = Query("ro")):
                     }
                 )
     except Exception as e:
-        print("TTS error:", e)
-    raise HTTPException(500, "TTS audio stream failed")
+        print("[TTS Warning]:", e)
+    return Response(
+        content=b"",
+        media_type="audio/mpeg",
+        headers={
+            "Content-Type": "audio/mpeg",
+            "Cache-Control": "public, max-age=86400",
+            "Accept-Ranges": "bytes"
+        }
+    )
 
 
 # ── Autonomous Dispatch Engine (Autopilot 24/7) ──────────────────────────────
@@ -673,7 +682,7 @@ async def process_single_checkout_recovery(shop: str, client: ShopifyClient, sho
 
 async def autopilot_daemon_loop():
     await asyncio.sleep(15)
-    print("🚀 [Jarvis Autopilot] Background 24/7 worker active with 3-Step Drip Engine.")
+    print("[AUTOPILOT] Starting 24/7 autonomous recovery engine...")
     while True:
         try:
             shops = db.get_active_shops()
@@ -714,11 +723,18 @@ async def autopilot_daemon_loop():
                         print(f"[Order Sync Error {shop}]: {order_sync_err}")
 
                     # Step 2: Evaluate abandoned checkouts against cadence state machine
-                    checkouts = await client.get_abandoned_checkouts_detailed()
-                    for c in checkouts:
-                        res = await process_single_checkout_recovery(shop, client, shop_name, c, force=False)
-                        if res:
-                            total_cycle += 1
+                    try:
+                        checkouts = []
+                        if not token or token in ("shpat_live_token", "dummy", "test") or str(token).startswith("shpat_live"):
+                            print(f"[Autopilot Checkout Sync Warning {shop}]: Shopify API token is unconfigured or dummy.")
+                        else:
+                            checkouts = await client.get_abandoned_checkouts_detailed()
+                        for c in checkouts:
+                            res = await process_single_checkout_recovery(shop, client, shop_name, c, force=False)
+                            if res:
+                                total_cycle += 1
+                    except Exception as checkout_sync_err:
+                        print(f"[Autopilot Checkout Sync Warning {shop}]: {checkout_sync_err}")
 
                     # Step 3: Sync fulfilled orders for 5-day post-delivery VIP review queue
                     try:
@@ -1263,14 +1279,35 @@ class BillingCreateRequest(BaseModel):
 async def billing_create(req: BillingCreateRequest):
     """Initiates an official Shopify Recurring App Subscription ($9.99/mo)."""
     record = get_shop_or_404(req.shop)
-    client = ShopifyClient(req.shop, record["access_token"])
-    return_url = f"{APP_URL}/api/billing/callback?shop={req.shop}"
-    
-    confirmation_url = await client.create_app_subscription(
-        return_url=return_url,
-        test=req.test
-    )
-    return {"confirmation_url": confirmation_url}
+    token = record.get("access_token", "")
+    if not token or str(token).startswith("shpat_live") or token == "dummy":
+        return {
+            "ok": False,
+            "error": "Shopify API token is not configured or invalid",
+            "demo_mode": True
+        }
+
+    try:
+        client = ShopifyClient(req.shop, token)
+        return_url = f"{APP_URL}/api/billing/callback?shop={req.shop}"
+        confirmation_url = await client.create_app_subscription(
+            return_url=return_url,
+            test=req.test
+        )
+        if not confirmation_url:
+            return {
+                "ok": False,
+                "error": "No confirmation URL returned by Shopify Billing",
+                "demo_mode": True
+            }
+        return {"ok": True, "confirmation_url": confirmation_url}
+    except (httpx.HTTPStatusError, HTTPException, Exception) as e:
+        print(f"[Billing Create Warning {req.shop}]: {e}")
+        return {
+            "ok": False,
+            "error": "Shopify API token is not configured or invalid",
+            "demo_mode": True
+        }
 
 
 @app.get("/api/billing/callback")
