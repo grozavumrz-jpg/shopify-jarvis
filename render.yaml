@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: shopify-jarvis
+    env: docker
+    dockerfilePath: Dockerfile
+    plan: free
+    region: frankfurt
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: RESEND_API_KEY
+        sync: false
+      - key: SENDER_EMAIL
+        value: Maison Grozavu <contact@maisongrozavu.com>
+      - key: MERCHANT_NOTIFY_EMAIL
+        value: grozavumrz@gmail.com
+      - key: SHOPIFY_API_KEY
+        sync: false
+      - key: SHOPIFY_API_SECRET
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false

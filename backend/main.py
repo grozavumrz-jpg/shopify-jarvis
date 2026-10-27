@@ -33,7 +33,7 @@ app.add_middleware(
 )
 
 SHOPIFY_API_KEY = os.getenv("SHOPIFY_API_KEY", "")
-APP_URL         = os.getenv("APP_URL") or os.getenv("APP URL") or "https://shopify-jarvis-production.up.railway.app"
+APP_URL         = os.getenv("APP_URL") or os.getenv("RENDER_EXTERNAL_URL") or os.getenv("APP URL") or "https://shopify-jarvis-production.up.railway.app"
 
 ai = AIAdvisor()
 wa_dispatcher = WhatsAppDispatcher()
