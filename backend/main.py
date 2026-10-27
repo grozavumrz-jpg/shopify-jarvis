@@ -50,7 +50,12 @@ if os.path.isdir(FRONTEND_DIST):
 
 @app.on_event("startup")
 async def startup():
-    db.init_db()
+    try:
+        if db:
+            db.init_db()
+            print("✅ [Database] Tables initialized successfully.")
+    except Exception as e:
+        print(f"⚠️ [Startup DB Warning] Database not immediately reachable: {e}")
     asyncio.create_task(autopilot_daemon_loop())
 
 
@@ -1166,7 +1171,65 @@ async def billing_callback(shop: str = Query(...), charge_id: Optional[str] = Qu
     """)
 
 
+def _start_aux_forwarder(src_port: int, dst_port: int):
+    import threading
+    import socket
+
+    def forward_traffic():
+        try:
+            server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind(("0.0.0.0", src_port))
+            server.listen(128)
+            server.settimeout(1.0)
+            while True:
+                try:
+                    client_sock, _ = server.accept()
+                except socket.timeout:
+                    continue
+                except Exception:
+                    break
+
+                def handle_client(c_sock):
+                    try:
+                        dest_sock = socket.create_connection(("127.0.0.1", dst_port), timeout=10.0)
+                        def pipe(s1, s2):
+                            try:
+                                while True:
+                                    data = s1.recv(8192)
+                                    if not data:
+                                        break
+                                    s2.sendall(data)
+                            except Exception:
+                                pass
+                            finally:
+                                try:
+                                    s1.shutdown(socket.SHUT_RDWR)
+                                except Exception:
+                                    pass
+                                try:
+                                    s2.shutdown(socket.SHUT_RDWR)
+                                except Exception:
+                                    pass
+                        t1 = threading.Thread(target=pipe, args=(c_sock, dest_sock), daemon=True)
+                        t2 = threading.Thread(target=pipe, args=(dest_sock, c_sock), daemon=True)
+                        t1.start()
+                        t2.start()
+                    except Exception:
+                        c_sock.close()
+
+                threading.Thread(target=handle_client, args=(client_sock,), daemon=True).start()
+        except Exception as e:
+            print(f"[Port Forwarder {src_port}->{dst_port} skipped]: {e}")
+
+    t = threading.Thread(target=forward_traffic, daemon=True)
+    t.start()
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8080))
+    aux_port = 8000 if port == 8080 else (8080 if port == 8000 else None)
+    if aux_port:
+        _start_aux_forwarder(aux_port, port)
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)

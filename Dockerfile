@@ -31,6 +31,7 @@ COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
 ENV PORT=8000
 EXPOSE 8000
+EXPOSE 8080
 
 WORKDIR /app/backend
 CMD ["python", "main.py"]
