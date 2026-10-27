@@ -12,9 +12,112 @@ DATABASE_URL = (
     or ""
 )
 
+import sqlite3
+import re
+import json
+
+SQLITE_PATH = os.path.join(os.path.dirname(__file__), "jarvis.db")
+USING_SQLITE = False
+
+class SQLiteCursor:
+    def __init__(self, cursor):
+        self.cur = cursor
+
+    def execute(self, sql, params=None):
+        clean_sql = sql
+        clean_sql = re.sub(r'::[a-zA-Z0-9_]+', '', clean_sql)
+        clean_sql = re.sub(r'\bSERIAL\s+PRIMARY\s+KEY\b', 'INTEGER PRIMARY KEY AUTOINCREMENT', clean_sql, flags=re.I)
+        clean_sql = re.sub(r'\bNOW\(\)', 'CURRENT_TIMESTAMP', clean_sql, flags=re.I)
+        clean_sql = re.sub(r'\bJSONB\b', 'TEXT', clean_sql, flags=re.I)
+        clean_sql = re.sub(r'\bTIMESTAMP\s+WITH\s+TIME\s+ZONE\b', 'TIMESTAMP', clean_sql, flags=re.I)
+        clean_sql = re.sub(r'\bBOOLEAN\s+DEFAULT\s+TRUE\b', 'INTEGER DEFAULT 1', clean_sql, flags=re.I)
+        clean_sql = re.sub(r'\bBOOLEAN\s+DEFAULT\s+FALSE\b', 'INTEGER DEFAULT 0', clean_sql, flags=re.I)
+        clean_sql = re.sub(r'\bNUMERIC\b', 'REAL', clean_sql, flags=re.I)
+        clean_sql = re.sub(r'\bVARCHAR\(\d+\)', 'TEXT', clean_sql, flags=re.I)
+        clean_sql = re.sub(r'\bADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\b', 'ADD COLUMN', clean_sql, flags=re.I)
+        clean_sql = clean_sql.replace('%s', '?')
+
+        statements = [s.strip() for s in clean_sql.split(';') if s.strip()]
+        for stmt in statements:
+            if params is not None and len(statements) == 1:
+                clean_params = []
+                for p in params:
+                    if isinstance(p, (dict, list)):
+                        clean_params.append(json.dumps(p))
+                    elif isinstance(p, bool):
+                        clean_params.append(1 if p else 0)
+                    else:
+                        clean_params.append(p)
+                return self.cur.execute(stmt, clean_params)
+            else:
+                try:
+                    self.cur.execute(stmt)
+                except sqlite3.OperationalError as e:
+                    err_msg = str(e).lower()
+                    if "duplicate column" in err_msg or "already exists" in err_msg:
+                        pass
+                    else:
+                        raise e
+        return self
+
+    def fetchone(self):
+        row = self.cur.fetchone()
+        return dict(row) if row is not None else None
+
+    def fetchall(self):
+        rows = self.cur.fetchall()
+        return [dict(r) for r in rows]
+
+    def __getattr__(self, name):
+        return getattr(self.cur, name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+
+class SQLiteConnection:
+    def __init__(self, db_path=SQLITE_PATH):
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+
+    def cursor(self):
+        return SQLiteCursor(self.conn.cursor())
+
+    def commit(self):
+        try:
+            self.conn.commit()
+        except Exception:
+            pass
+
+    def close(self):
+        try:
+            self.conn.close()
+        except Exception:
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is None:
+            self.commit()
+
 
 def get_conn():
-    return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+    global USING_SQLITE
+    if DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+            USING_SQLITE = False
+            return conn
+        except Exception:
+            USING_SQLITE = True
+            return SQLiteConnection()
+    USING_SQLITE = True
+    return SQLiteConnection()
 
 
 def init_db():

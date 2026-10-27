@@ -50,15 +50,22 @@ if os.path.isdir(FRONTEND_DIST):
 
 @app.on_event("startup")
 async def startup():
-    if db and getattr(db, "DATABASE_URL", None):
-        try:
-            db.init_db()
-            print("[Database] Tables initialized successfully.")
-        except Exception as e:
-            print(f"[Startup DB Warning] Database not immediately reachable: {e}")
-    else:
-        print("[Database] DATABASE_URL not configured. Running in standby mode.")
+    try:
+        db.init_db()
+        db_type = "SQLite (local zero-config)" if getattr(db, "USING_SQLITE", False) else "PostgreSQL"
+        print(f"[Database] Tables initialized successfully on {db_type}.")
+    except Exception as e:
+        print(f"[Startup DB Warning] Database init warning: {e}")
     asyncio.create_task(autopilot_daemon_loop())
+
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "app": "Jarvis for Shopify",
+        "db": "sqlite" if getattr(db, "USING_SQLITE", False) else "postgres"
+    }
 
 
 @app.middleware("http")
