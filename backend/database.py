@@ -1,7 +1,7 @@
 import os
 import psycopg2
 import psycopg2.extras
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any, Union
 from datetime import datetime
 
 DATABASE_URL = (
