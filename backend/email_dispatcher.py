@@ -1,6 +1,7 @@
 import os
 import re
 import html
+import urllib.parse
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -265,6 +266,7 @@ class EmailDispatcher:
         lang: str = "en",
         currency: str = "EUR",
         preheader: Optional[str] = None,
+        customer_email: Optional[str] = None,
     ) -> str:
         clean_lang = cls._normalize_lang(lang)
         labels = EMAIL_I18N[clean_lang]
@@ -328,6 +330,9 @@ class EmailDispatcher:
 
         safe_checkout_url = html.escape(effective_checkout_url)
         footer_content = labels["footer_text"].format(shop_name=safe_shop_name)
+        app_url = os.getenv("APP_URL") or os.getenv("RENDER_EXTERNAL_URL") or "https://shopify-jarvis.onrender.com"
+        clean_email_param = urllib.parse.quote(customer_email.strip()) if customer_email else ""
+        unsub_link = f"{app_url}/api/unsubscribe?email={clean_email_param}"
 
         return f"""<!DOCTYPE html>
 <html lang="{clean_lang}" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
@@ -427,6 +432,8 @@ class EmailDispatcher:
     <tr>
       <td align="center" style="padding: 24px 20px; background-color: #f8fafc; border-top: 1px solid #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; line-height: 1.5; color: #94a3b8;">
         {footer_content}
+        <br/>
+        <a href="{unsub_link}" style="color: #64748b; text-decoration: underline; margin-top: 8px; display: inline-block;">Dezabonare / Unsubscribe</a>
       </td>
     </tr>
   </table>
@@ -450,6 +457,11 @@ class EmailDispatcher:
         from_email = (settings.get("sender_email") or os.getenv("SENDER_EMAIL", "onboarding@resend.dev")).strip()
         from_name = settings.get("sender_name", "Grozavu")
 
+        app_url = os.getenv("APP_URL") or os.getenv("RENDER_EXTERNAL_URL") or "https://shopify-jarvis.onrender.com"
+        clean_email_param = urllib.parse.quote(to_email.strip())
+        unsub_link = f"{app_url}/api/unsubscribe?email={clean_email_param}"
+        unsub_header_val = f"<mailto:contact@maisongrozavu.com?subject=unsubscribe>, <{unsub_link}>"
+
         # 1. Try Resend API if key is present
         if resend_key:
             try:
@@ -462,7 +474,11 @@ class EmailDispatcher:
                     "to": [to_email],
                     "subject": subject,
                     "html": body_html or body_text.replace("\n", "<br/>"),
-                    "text": body_text
+                    "text": body_text,
+                    "headers": {
+                        "List-Unsubscribe": unsub_header_val,
+                        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"
+                    }
                 }
                 async with httpx.AsyncClient(timeout=15) as client:
                     resp = await client.post("https://api.resend.com/emails", headers=headers, json=payload)
@@ -486,6 +502,8 @@ class EmailDispatcher:
                 msg["Subject"] = subject
                 msg["From"] = f"{from_name} <{smtp_user}>"
                 msg["To"] = to_email
+                msg["List-Unsubscribe"] = unsub_header_val
+                msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
 
                 part1 = MIMEText(body_text, "plain", "utf-8")
                 msg.attach(part1)

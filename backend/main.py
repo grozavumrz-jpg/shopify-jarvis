@@ -21,6 +21,10 @@ from email_dispatcher import EmailDispatcher
 from cadence_manager import DripCadenceManager
 from mobile_notifier import MobileNotifier
 from post_delivery_service import PostDeliveryService
+from google_merchant_feed import build_google_merchant_xml, validate_google_merchant_feed
+from seo_optimizer import ProductSEOOptimizer
+from deliverability_checker import DeliverabilityChecker
+from compliance_guard import is_quiet_hours, can_dispatch_to_customer, log_customer_dispatch
 
 # ── Init ──────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Jarvis for Shopify")
@@ -41,6 +45,8 @@ email_dispatcher = EmailDispatcher()
 cadence_mgr = DripCadenceManager()
 mobile_notifier = MobileNotifier()
 post_delivery_service = PostDeliveryService()
+seo_optimizer = ProductSEOOptimizer()
+deliverability_checker = DeliverabilityChecker()
 
 # Serve React frontend build
 FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
@@ -483,7 +489,18 @@ async def process_single_checkout_recovery(shop: str, client: ShopifyClient, sho
     if not state or state.get("status") != "active":
         return None
 
+    if "buyer_accepts_marketing" in c:
+        db.record_marketing_consent(shop, email=email, phone=phone, accepts_marketing=bool(c["buyer_accepts_marketing"]))
+
     now_dt = datetime.now(timezone.utc)
+
+    # 3. Compliance & Quiet Hours Guard
+    can_send, compliance_reason = can_dispatch_to_customer(
+        shop, email=email, phone=phone, channel="email", bypass_quiet_hours=force, now_dt=now_dt
+    )
+    if not can_send and not force:
+        print(f"[Cart Drip Compliance Hold {cid}]: {compliance_reason}")
+        return None
 
     # 3. Cadence Timing Evaluation
     if not force:
@@ -643,6 +660,10 @@ async def process_single_checkout_recovery(shop: str, client: ShopifyClient, sho
 
     # 7. Update State Machine & Autopilot Log
     db.update_drip_stage(checkout_id=cid, stage=stage, sent_at=now_dt)
+    if email:
+        log_customer_dispatch(shop, email, "email", f"abandoned_cart_stage_{stage}")
+    if phone:
+        log_customer_dispatch(shop, phone, "whatsapp", f"abandoned_cart_stage_{stage}")
 
     db.save_autopilot_log(
         shop=shop,
@@ -1341,6 +1362,246 @@ async def billing_callback(shop: str = Query(...), charge_id: Optional[str] = Qu
         </body>
         </html>
     """)
+
+
+# ── Google Merchant Center Feed & Google Shopping ─────────────────────────────
+
+@app.get("/api/google/feed.xml")
+@app.get("/feeds/google-merchant.xml")
+async def get_google_merchant_feed(shop: str = Query("maisongrozavu.myshopify.com")):
+    """
+    Returns valid Google Merchant Center RSS 2.0 XML product feed
+    for free Google Shopping listings and organic product visibility.
+    """
+    products = []
+    try:
+        shop_record = db.get_shop(shop)
+        if shop_record and shop_record.get("access_token") and shop_record.get("access_token") != "shpat_live_token":
+            client = ShopifyClient(shop, shop_record["access_token"])
+            products = await client.get_products(limit=50)
+    except Exception as e:
+        print(f"[Google Feed Warning]: {e}")
+
+    xml_content = build_google_merchant_xml(
+        products=products,
+        shop_domain="maisongrozavu.com",
+        store_name="Maison Grozavu",
+        currency="EUR"
+    )
+    return Response(content=xml_content, media_type="application/xml; charset=utf-8")
+
+
+@app.get("/api/google/feed-validation")
+async def validate_merchant_feed_endpoint(shop: str = Query("maisongrozavu.myshopify.com")):
+    """Runs automated compliance validation against Google Merchant Center feed specs."""
+    products = []
+    try:
+        shop_record = db.get_shop(shop)
+        if shop_record and shop_record.get("access_token") and shop_record.get("access_token") != "shpat_live_token":
+            client = ShopifyClient(shop, shop_record["access_token"])
+            products = await client.get_products(limit=50)
+    except Exception:
+        pass
+
+    xml_content = build_google_merchant_xml(
+        products=products,
+        shop_domain="maisongrozavu.com",
+        store_name="Maison Grozavu"
+    )
+    validation = validate_google_merchant_feed(xml_content)
+    validation["feed_url"] = f"{APP_URL}/api/google/feed.xml"
+    return validation
+
+
+# ── Autonomous Product SEO Automation ──────────────────────────────────────────
+
+@app.get("/api/seo/audit")
+async def get_seo_audit(shop: str = Query("maisongrozavu.myshopify.com")):
+    """Audits store products for SEO titles, meta descriptions, image alts, and Schema markup."""
+    products = []
+    client = None
+    try:
+        shop_record = db.get_shop(shop)
+        if shop_record and shop_record.get("access_token") and shop_record.get("access_token") != "shpat_live_token":
+            client = ShopifyClient(shop, shop_record["access_token"])
+            products = await client.get_products(limit=20)
+    except Exception:
+        pass
+
+    if not products:
+        from google_merchant_feed import DEFAULT_LUXURY_PRODUCTS
+        products = DEFAULT_LUXURY_PRODUCTS
+
+    audits = [seo_optimizer.audit_product_seo(p) for p in products]
+    avg_score = round(sum(a["seo_score"] for a in audits) / max(1, len(audits)), 1)
+    needs_opt_count = sum(1 for a in audits if a["needs_optimization"])
+
+    return {
+        "shop": shop,
+        "products_audited": len(audits),
+        "average_seo_score": avg_score,
+        "needs_optimization_count": needs_opt_count,
+        "audits": audits
+    }
+
+
+@app.post("/api/seo/optimize-now")
+async def run_seo_optimization_now(req: Dict[str, Any] = None):
+    """
+    Executes automated SEO title, meta description, and Schema.org generation,
+    writes updates to Shopify and records log in database.
+    """
+    shop = (req.get("shop") if req else None) or "maisongrozavu.myshopify.com"
+    client = None
+    products = []
+    try:
+        shop_record = db.get_shop(shop)
+        if shop_record and shop_record.get("access_token") and shop_record.get("access_token") != "shpat_live_token":
+            client = ShopifyClient(shop, shop_record["access_token"])
+            products = await client.get_products(limit=20)
+    except Exception:
+        pass
+
+    if not products:
+        from google_merchant_feed import DEFAULT_LUXURY_PRODUCTS
+        products = DEFAULT_LUXURY_PRODUCTS
+
+    results = []
+    for p in products:
+        res = await seo_optimizer.optimize_and_apply(client, p, shop_domain=shop)
+        results.append(res)
+
+    logs = db.get_seo_logs(shop, limit=20)
+    return {
+        "success": True,
+        "optimized_products": len(results),
+        "results": results,
+        "recent_logs": logs
+    }
+
+
+@app.get("/api/seo/logs")
+async def get_seo_logs_endpoint(shop: str = Query("maisongrozavu.myshopify.com"), limit: int = 50):
+    """Returns chronological log of automated product SEO updates."""
+    logs = db.get_seo_logs(shop, limit=limit)
+    return {"shop": shop, "logs": logs, "count": len(logs)}
+
+
+# ── Deliverability & DNS Audit ────────────────────────────────────────────────
+
+@app.get("/api/deliverability/dns-audit")
+async def get_deliverability_dns_audit(domain: str = Query("maisongrozavu.com")):
+    """Performs live DNS-over-HTTPS lookup for SPF, DKIM, and DMARC posture."""
+    result = await deliverability_checker.audit_domain(domain)
+    return result
+
+
+# ── Marketing Consent, Frequency & Unsubscribe ────────────────────────────────
+
+@app.get("/api/compliance/stats")
+async def get_compliance_stats(shop: str = Query("maisongrozavu.myshopify.com")):
+    """Returns consent counts, frequency cap rules, and quiet hours status."""
+    stats = db.get_consent_stats(shop)
+    quiet = is_quiet_hours()
+    return {
+        "shop": shop,
+        "consent_stats": stats,
+        "quiet_hours_active": quiet,
+        "quiet_hours_schedule": "21:00 - 09:00 Europe/Bucharest",
+        "frequency_caps": {
+            "max_per_72h": 1,
+            "max_per_30d": 3
+        }
+    }
+
+
+@app.get("/api/unsubscribe", response_class=HTMLResponse)
+async def handle_unsubscribe(
+    email: str = Query(""),
+    shop: str = Query("maisongrozavu.myshopify.com")
+):
+    """
+    Handles GDPR-compliant 1-click unsubscribe.
+    Records opt-out in database and displays reassuring luxury confirmation screen.
+    """
+    clean_email = email.strip()
+    if clean_email:
+        db.record_opt_out(shop, email=clean_email)
+
+    return f"""
+    <!DOCTYPE html>
+    <html lang="ro">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Dezabonare Reușită | Maison Grozavu</title>
+        <style>
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background-color: #181513;
+                color: #FEF3C7;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                min-height: 100vh;
+                margin: 0;
+                padding: 20px;
+                box-sizing: border-box;
+            }}
+            .card {{
+                background-color: #231F1C;
+                border: 1px solid #451A03;
+                border-radius: 16px;
+                padding: 40px;
+                max-width: 500px;
+                text-align: center;
+                box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+            }}
+            .icon {{
+                font-size: 48px;
+                margin-bottom: 20px;
+            }}
+            h1 {{
+                font-size: 22px;
+                margin-bottom: 12px;
+                color: #F59E0B;
+                font-weight: 600;
+            }}
+            p {{
+                font-size: 15px;
+                color: #D1D5DB;
+                line-height: 1.6;
+                margin-bottom: 24px;
+            }}
+            .btn {{
+                display: inline-block;
+                background-color: #D97706;
+                color: #181513;
+                padding: 12px 24px;
+                border-radius: 8px;
+                text-decoration: none;
+                font-weight: 600;
+                font-size: 14px;
+                transition: opacity 0.2s;
+            }}
+            .btn:hover {{
+                opacity: 0.9;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <div class="icon">✨</div>
+            <h1>Te-ai dezabonat cu succes</h1>
+            <p>
+                Adresa <strong>{clean_email or 'ta'}</strong> a fost ștearsă din lista de comunicări comerciale <strong>Maison Grozavu</strong>. 
+                Respectăm intimitatea și decizia ta. Nu vei mai primi notificări promoționale.
+            </p>
+            <a href="https://maisongrozavu.com" class="btn">Înapoi la Magazin</a>
+        </div>
+    </body>
+    </html>
+    """
 
 
 if __name__ == "__main__":

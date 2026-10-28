@@ -2,7 +2,7 @@ import os
 import psycopg2
 import psycopg2.extras
 from typing import List, Dict, Optional, Any, Union
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 DATABASE_URL = (
     os.getenv("DATABASE_URL")
@@ -265,6 +265,39 @@ def init_db():
 
                 CREATE INDEX IF NOT EXISTS idx_post_delivery_order 
                 ON post_delivery_automations(shop_domain, order_id);
+
+                CREATE TABLE IF NOT EXISTS seo_automation_logs (
+                    id SERIAL PRIMARY KEY,
+                    shop_domain TEXT NOT NULL,
+                    product_id TEXT NOT NULL,
+                    product_title TEXT,
+                    change_type TEXT NOT NULL,
+                    old_value TEXT,
+                    new_value TEXT,
+                    applied_at TIMESTAMP DEFAULT NOW(),
+                    status TEXT DEFAULT 'applied'
+                );
+
+                CREATE TABLE IF NOT EXISTS marketing_consents (
+                    id SERIAL PRIMARY KEY,
+                    shop_domain TEXT NOT NULL,
+                    email TEXT,
+                    phone TEXT,
+                    accepts_marketing INTEGER DEFAULT 1,
+                    opt_out_at TIMESTAMP,
+                    source TEXT DEFAULT 'checkout',
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
+
+                CREATE TABLE IF NOT EXISTS message_frequency_logs (
+                    id SERIAL PRIMARY KEY,
+                    shop_domain TEXT NOT NULL,
+                    recipient TEXT NOT NULL,
+                    channel TEXT NOT NULL,
+                    message_type TEXT NOT NULL,
+                    sent_at TIMESTAMP DEFAULT NOW()
+                );
             """)
 
             # Seed default store maisongrozavu.myshopify.com
@@ -956,6 +989,243 @@ def get_post_delivery_automation(order_id: str) -> Optional[Dict[str, Any]]:
             cur.execute("SELECT * FROM post_delivery_automations WHERE order_id = %s", (str(order_id),))
             row = cur.fetchone()
             return dict(row) if row else None
+
+
+# ── SEO Automation Logs ────────────────────────────────────────────────────────
+
+def log_seo_change(
+    shop_domain: str,
+    product_id: str,
+    product_title: str,
+    change_type: str,
+    old_value: Optional[str] = None,
+    new_value: Optional[str] = None,
+    status: str = "applied"
+) -> bool:
+    """Log an automated on-store product SEO change."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO seo_automation_logs(shop_domain, product_id, product_title, change_type, old_value, new_value, status, applied_at)
+                VALUES(%s, %s, %s, %s, %s, %s, %s, NOW())
+            """, (shop_domain, str(product_id), product_title, change_type, old_value or "", new_value or "", status))
+        conn.commit()
+    return True
+
+
+def get_seo_logs(shop_domain: str, limit: int = 50) -> List[Dict[str, Any]]:
+    """Retrieve history of automated SEO changes for a shop."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT * FROM seo_automation_logs
+                WHERE shop_domain = %s
+                ORDER BY applied_at DESC
+                LIMIT %s
+            """, (shop_domain, limit))
+            rows = cur.fetchall()
+            return [dict(r) for r in rows]
+
+
+# ── Marketing Consent & Frequency Caps ────────────────────────────────────────
+
+def record_marketing_consent(
+    shop_domain: str,
+    email: Optional[str] = None,
+    phone: Optional[str] = None,
+    accepts_marketing: bool = True,
+    source: str = "checkout"
+) -> bool:
+    """Record or update a customer's marketing consent."""
+    clean_email = email.strip().lower() if email else None
+    clean_phone = phone.strip() if phone else None
+    if not clean_email and not clean_phone:
+        return False
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if clean_email:
+                cur.execute("SELECT id FROM marketing_consents WHERE shop_domain = %s AND email = %s", (shop_domain, clean_email))
+            else:
+                cur.execute("SELECT id FROM marketing_consents WHERE shop_domain = %s AND phone = %s", (shop_domain, clean_phone))
+            existing = cur.fetchone()
+
+            if existing:
+                e_id = existing["id"] if isinstance(existing, dict) else existing[0]
+                cur.execute("""
+                    UPDATE marketing_consents
+                    SET accepts_marketing = %s, updated_at = NOW()
+                    WHERE id = %s
+                """, (1 if accepts_marketing else 0, e_id))
+            else:
+                cur.execute("""
+                    INSERT INTO marketing_consents(shop_domain, email, phone, accepts_marketing, source, created_at, updated_at)
+                    VALUES(%s, %s, %s, %s, %s, NOW(), NOW())
+                """, (shop_domain, clean_email, clean_phone, 1 if accepts_marketing else 0, source))
+        conn.commit()
+    return True
+
+
+def record_opt_out(
+    shop_domain: str,
+    email: Optional[str] = None,
+    phone: Optional[str] = None
+) -> bool:
+    """Record an unsubscribe / opt-out request."""
+    clean_email = email.strip().lower() if email else None
+    clean_phone = phone.strip() if phone else None
+    if not clean_email and not clean_phone:
+        return False
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if clean_email:
+                cur.execute("SELECT id FROM marketing_consents WHERE shop_domain = %s AND email = %s", (shop_domain, clean_email))
+            else:
+                cur.execute("SELECT id FROM marketing_consents WHERE shop_domain = %s AND phone = %s", (shop_domain, clean_phone))
+            existing = cur.fetchone()
+
+            if existing:
+                e_id = existing["id"] if isinstance(existing, dict) else existing[0]
+                cur.execute("""
+                    UPDATE marketing_consents
+                    SET accepts_marketing = 0, opt_out_at = NOW(), updated_at = NOW()
+                    WHERE id = %s
+                """, (e_id,))
+            else:
+                cur.execute("""
+                    INSERT INTO marketing_consents(shop_domain, email, phone, accepts_marketing, opt_out_at, source, created_at, updated_at)
+                    VALUES(%s, %s, %s, 0, NOW(), 'unsubscribe_link', NOW(), NOW())
+                """, (shop_domain, clean_email, clean_phone))
+        conn.commit()
+    return True
+
+
+def is_consent_given(
+    shop_domain: str,
+    email: Optional[str] = None,
+    phone: Optional[str] = None
+) -> bool:
+    """
+    Check if marketing consent is active.
+    Returns False if customer explicitly opted out.
+    """
+    clean_email = email.strip().lower() if email else None
+    clean_phone = phone.strip() if phone else None
+    if not clean_email and not clean_phone:
+        return False
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if clean_email:
+                cur.execute("""
+                    SELECT accepts_marketing, opt_out_at FROM marketing_consents
+                    WHERE shop_domain = %s AND email = %s
+                    ORDER BY id DESC LIMIT 1
+                """, (shop_domain, clean_email))
+            else:
+                cur.execute("""
+                    SELECT accepts_marketing, opt_out_at FROM marketing_consents
+                    WHERE shop_domain = %s AND phone = %s
+                    ORDER BY id DESC LIMIT 1
+                """, (shop_domain, clean_phone))
+            row = cur.fetchone()
+            if row:
+                r_dict = dict(row)
+                if r_dict.get("opt_out_at"):
+                    return False
+                return bool(r_dict.get("accepts_marketing"))
+    return True
+
+
+def can_send_message_frequency(
+    shop_domain: str,
+    recipient: str,
+    channel: str = "email",
+    max_per_72h: int = 1,
+    max_per_30d: int = 3
+) -> tuple[bool, str]:
+    """
+    Enforce frequency caps:
+    - Max 1 marketing message per 72 hours
+    - Max 3 marketing messages per 30 days
+    """
+    clean_recip = (recipient or "").strip().lower()
+    if not clean_recip:
+        return False, "Recipient empty"
+
+    cutoff_72 = datetime.now(timezone.utc) - timedelta(hours=72)
+    cutoff_30d = datetime.now(timezone.utc) - timedelta(days=30)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Check 72h window
+            cur.execute("""
+                SELECT COUNT(*) as cnt FROM message_frequency_logs
+                WHERE shop_domain = %s AND recipient = %s AND sent_at >= %s
+            """, (shop_domain, clean_recip, cutoff_72))
+            row_72 = cur.fetchone()
+            cnt_72 = row_72["cnt"] if isinstance(row_72, dict) else (row_72[0] if row_72 else 0)
+
+            if cnt_72 >= max_per_72h:
+                return False, f"Frequency cap: sent {cnt_72} messages in last 72 hours"
+
+            # Check 30d window
+            cur.execute("""
+                SELECT COUNT(*) as cnt FROM message_frequency_logs
+                WHERE shop_domain = %s AND recipient = %s AND sent_at >= %s
+            """, (shop_domain, clean_recip, cutoff_30d))
+            row_30 = cur.fetchone()
+            cnt_30 = row_30["cnt"] if isinstance(row_30, dict) else (row_30[0] if row_30 else 0)
+
+            if cnt_30 >= max_per_30d:
+                return False, f"Frequency cap: sent {cnt_30} messages in last 30 days"
+
+    return True, "OK"
+
+
+def record_message_sent(
+    shop_domain: str,
+    recipient: str,
+    channel: str,
+    message_type: str
+) -> bool:
+    """Record a dispatched marketing message for frequency cap tracking."""
+    clean_recip = (recipient or "").strip().lower()
+    if not clean_recip:
+        return False
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO message_frequency_logs(shop_domain, recipient, channel, message_type, sent_at)
+                VALUES(%s, %s, %s, %s, NOW())
+            """, (shop_domain, clean_recip, channel, message_type))
+        conn.commit()
+    return True
+
+
+def get_consent_stats(shop_domain: str) -> Dict[str, int]:
+    """Return summary of consent and messaging metrics for dashboard."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT 
+                    COUNT(*) as total_recorded,
+                    SUM(CASE WHEN accepts_marketing = 1 AND opt_out_at IS NULL THEN 1 ELSE 0 END) as active_subscribers,
+                    SUM(CASE WHEN opt_out_at IS NOT NULL OR accepts_marketing = 0 THEN 1 ELSE 0 END) as unsubscribed
+                FROM marketing_consents
+                WHERE shop_domain = %s
+            """, (shop_domain,))
+            row = cur.fetchone()
+            if row:
+                r = dict(row)
+                return {
+                    "total_recorded": int(r.get("total_recorded") or 0),
+                    "active_subscribers": int(r.get("active_subscribers") or 0),
+                    "unsubscribed": int(r.get("unsubscribed") or 0),
+                }
+    return {"total_recorded": 0, "active_subscribers": 0, "unsubscribed": 0}
 
 
 

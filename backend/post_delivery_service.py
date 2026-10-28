@@ -40,6 +40,11 @@ try:
 except ImportError:
     from backend.mobile_notifier import MobileNotifier
 
+try:
+    from compliance_guard import can_dispatch_to_customer, log_customer_dispatch
+except ImportError:
+    from backend.compliance_guard import can_dispatch_to_customer, log_customer_dispatch
+
 
 def _run_coroutine(coro):
     """Executes an async coroutine synchronously, handling running event loops safely."""
@@ -223,6 +228,16 @@ class PostDeliveryService:
             ]
 
             try:
+                if db and (c_email or c_phone):
+                    buyer_mkt = order.get("buyer_accepts_marketing")
+                    if buyer_mkt is None and isinstance(customer, dict):
+                        buyer_mkt = customer.get("accepts_marketing")
+                    db.record_marketing_consent(
+                        shop, email=c_email or None, phone=c_phone or None,
+                        accepts_marketing=bool(buyer_mkt if buyer_mkt is not None else True),
+                        source="order"
+                    )
+
                 ok = db.enqueue_post_delivery_automation(
                     shop=shop,
                     order_id=order_id,
