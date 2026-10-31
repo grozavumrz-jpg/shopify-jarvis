@@ -1,0 +1,21 @@
+# Keeps the free Render instance awake so the autopilot (every 5 min) keeps running.
+# Render free sleeps after 15 minutes without inbound traffic. GitHub may delay
+# scheduled runs, so an external monitor (UptimeRobot, every 5 min) is still recommended.
+name: keepalive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping /health
+        run: |
+          curl -fsS --retry 3 --retry-delay 20 --max-time 90 \
+            https://shopify-jarvis.onrender.com/health
