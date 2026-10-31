@@ -26,6 +26,7 @@ os.environ["JARVIS_ADMIN_KEY"] = ADMIN_KEY
 os.environ["SHOPIFY_API_KEY"] = API_KEY
 os.environ["SHOPIFY_API_SECRET"] = API_SECRET
 os.environ["JARVIS_DISABLE_DAEMON"] = "1"
+os.environ.setdefault("SHOPIFY_AUTH_MODE", "oauth")
 
 import database as db  # noqa: E402
 import main  # noqa: E402

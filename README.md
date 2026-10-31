@@ -18,6 +18,12 @@ Asistent pentru magazinul Shopify: urmărește coșurile abandonate (doar clien�
 5. SEO: Jarvis **doar propune** titluri, descrieri și texte alternative pentru imagini. Nu modifică nimic în Shopify fără aprobarea ta.
 
 ## Pași o singură dată (obligatorii)
+0. **Conectează Shopify (din 2026, prin Dev Dashboard).**
+   - În Shopify Admin → Setări → Aplicații → Dezvoltă aplicații → deschide Dev Dashboard și creează aplicația „Jarvis”.
+   - Scopuri: `read_orders`, `read_products`, `read_customers`, `read_inventory`, plus acces la datele protejate ale clienților (nume, email, telefon).
+   - Fă release la versiune și instaleaz-o pe magazin.
+   - Pune *Client ID* în Render → `SHOPIFY_API_KEY` și *Client secret* → `SHOPIFY_API_SECRET`.
+   - Jarvis cere singur tokenul și îl reînnoiește înainte să expire (24h). Starea se vede în `/health` → `shopify_connection`.
 1. **Bază de date permanentă.** Pe Render free, SQLite se șterge la fiecare restart. Odată cu el se pierd dezabonările, istoricul și setările. Creează un Postgres gratuit (Neon sau Supabase) și pune link-ul în Render → Environment → `DATABASE_URL`.
 2. **Parola dashboard-ului.** Setează în Render → Environment `JARVIS_ADMIN_KEY` (minimum 12 caractere). Ți-o cere dashboard-ul când îl deschizi direct, nu din Shopify Admin.
 3. **Server treaz.** Render free adoarme serverul după 15 minute fără trafic, iar automatizările se opresc. Adaugă un monitor gratuit (UptimeRobot / cron-job.org) care accesează `https://shopify-jarvis.onrender.com/health` la fiecare 5–10 minute.

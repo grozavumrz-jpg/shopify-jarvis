@@ -64,3 +64,33 @@ async def exchange_code_for_token(shop: str, code: str) -> str:
         )
         r.raise_for_status()
         return r.json()["access_token"]
+
+
+async def fetch_client_credentials_token(shop: str) -> tuple:
+    """
+    Client credentials grant (Dev Dashboard apps installed on a store of the same organization).
+    Returns (access_token, expires_in_seconds). Tokens last ~24h, so callers must refresh.
+    """
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(
+            f"https://{shop}/admin/oauth/access_token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": _api_key(),
+                "client_secret": _api_secret(),
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+        )
+        if r.status_code != 200:
+            detail = ""
+            try:
+                body = r.json()
+                detail = body.get("error_description") or body.get("error") or ""
+            except Exception:
+                detail = r.text[:200]
+            raise RuntimeError(f"Shopify token request failed ({r.status_code}): {detail}")
+        body = r.json()
+        token = body.get("access_token")
+        if not token:
+            raise RuntimeError("Shopify token response had no access_token")
+        return token, int(body.get("expires_in") or 86399)

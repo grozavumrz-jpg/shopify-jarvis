@@ -19,7 +19,7 @@ import database as db
 from auth_guard import (
     AuthContext, require_auth, resolve_shop, normalize_shop, default_shop, verify_webhook_hmac,
 )
-from shopify_auth import verify_hmac, build_install_url, exchange_code_for_token, public_app_url
+from shopify_auth import verify_hmac, build_install_url, exchange_code_for_token, public_app_url, fetch_client_credentials_token
 from shopify_api import ShopifyClient
 from ai_advisor import AIAdvisor
 from whatsapp_dispatcher import WhatsAppDispatcher
@@ -91,6 +91,62 @@ def bootstrap_configured_shop() -> Optional[str]:
         return None
 
 
+# ── Shopify connection via client credentials (Dev Dashboard app, token valid ~24h) ──
+SHOPIFY_CONNECTION: Dict[str, Any] = {"mode": "none", "expires_at": 0.0, "error": None, "refreshed_at": None,
+                                      "retry_after": 0.0}
+CC_REFRESH_MARGIN_SECONDS = 3600
+CC_RETRY_AFTER_FAILURE_SECONDS = 600
+_cc_lock: Optional[asyncio.Lock] = None
+
+
+def client_credentials_configured() -> bool:
+    return (bool(os.getenv("SHOPIFY_API_KEY", "").strip()) and bool(os.getenv("SHOPIFY_API_SECRET", "").strip())
+            and os.getenv("SHOPIFY_AUTH_MODE", "auto").strip().lower() in ("auto", "client_credentials"))
+
+
+async def ensure_shop_connection(force: bool = False) -> None:
+    """
+    Keep the configured shop connected:
+    - SHOPIFY_ACCESS_TOKEN (static token) wins if set;
+    - else, with SHOPIFY_API_KEY + SHOPIFY_API_SECRET of a Dev Dashboard app installed on the store,
+      request a client-credentials token and refresh it before it expires (~24h).
+    Never raises; the reason is kept in SHOPIFY_CONNECTION["error"] and shown in /health.
+    """
+    global _cc_lock
+    if has_real_token(os.getenv("SHOPIFY_ACCESS_TOKEN", "")):
+        if SHOPIFY_CONNECTION.get("mode") != "env_token":
+            bootstrap_configured_shop()
+            SHOPIFY_CONNECTION.update(mode="env_token", error=None)
+        return
+    if not client_credentials_configured():
+        return
+    if not force and time.time() < SHOPIFY_CONNECTION.get("expires_at", 0) - CC_REFRESH_MARGIN_SECONDS:
+        return
+    if not force and time.time() < SHOPIFY_CONNECTION.get("retry_after", 0):
+        return  # recent failure: don't hammer Shopify on every request
+    if _cc_lock is None:
+        _cc_lock = asyncio.Lock()
+    async with _cc_lock:
+        if not force and time.time() < SHOPIFY_CONNECTION.get("expires_at", 0) - CC_REFRESH_MARGIN_SECONDS:
+            return
+        shop = default_shop()
+        try:
+            token, expires_in = await fetch_client_credentials_token(shop)
+            existing = None
+            try:
+                existing = db.get_shop(shop)
+            except Exception:
+                pass
+            db.upsert_shop(shop, token, (existing or {}).get("shop_name") or BRAND_NAME)
+            SHOPIFY_CONNECTION.update(mode="client_credentials", expires_at=time.time() + expires_in, error=None,
+                                      refreshed_at=datetime.now(timezone.utc).isoformat())
+            _SNAPSHOT_CACHE.pop(shop, None)
+            print(f"[Shopify] Connected {shop} with client credentials (token valid {expires_in // 3600}h).")
+        except Exception as e:
+            SHOPIFY_CONNECTION.update(error=str(e)[:300], retry_after=time.time() + CC_RETRY_AFTER_FAILURE_SECONDS)
+            print(f"[Shopify] Client-credentials connection failed for {shop}: {e}")
+
+
 _daemon_task: Optional[asyncio.Task] = None
 
 
@@ -104,6 +160,7 @@ async def startup():
     except Exception as e:
         print(f"[Startup DB ERROR] Database init failed — Jarvis cannot store consent/opt-outs until this is fixed: {e}")
     bootstrap_configured_shop()
+    await ensure_shop_connection()
     if not os.getenv("JARVIS_ADMIN_KEY"):
         print("[Startup Warning] JARVIS_ADMIN_KEY is not set: the dashboard only works embedded in Shopify admin.")
     if os.getenv("JARVIS_DISABLE_DAEMON") != "1":
@@ -131,6 +188,8 @@ async def health():
         "app": "Jarvis for Shopify",
         "db": "sqlite" if getattr(db, "USING_SQLITE", False) else "postgres",
         "autopilot_running": daemon_running(),
+        "shopify_connection": SHOPIFY_CONNECTION.get("mode"),
+        "shopify_connection_error": SHOPIFY_CONNECTION.get("error"),
         "autopilot_last_cycle_at": AUTOPILOT_STATUS.get("last_cycle_at"),
     }
 
@@ -278,6 +337,10 @@ SNAPSHOT_TTL_SECONDS = 60
 
 async def get_resilient_store_snapshot(shop: str, access_token: str, shop_name: str = "") -> dict:
     """Real Shopify numbers, or an explicit empty 'not connected' snapshot. Never invented data."""
+    if shop == default_shop() and client_credentials_configured():
+        await ensure_shop_connection()
+        refreshed = get_shop_or_404(shop)
+        access_token = refreshed.get("access_token", access_token)
     if not has_real_token(access_token):
         return empty_snapshot(shop_name, "Shopify nu este conectat: lipsește tokenul de acces. "
                                          "Reinstalează aplicația din Shopify sau setează SHOPIFY_ACCESS_TOKEN.")
@@ -802,6 +865,7 @@ async def run_shop_cycle(s: dict, skip_log: Optional[List[dict]] = None) -> Dict
 
 
 async def run_autopilot_cycle(only_shop: Optional[str] = None, skip_log: Optional[List[dict]] = None) -> Dict[str, Any]:
+    await ensure_shop_connection()
     async with _get_cycle_lock():
         totals: Dict[str, Any] = {"sent": 0, "items": [], "errors": []}
         try:
@@ -1378,6 +1442,8 @@ async def load_feed_products(shop: str) -> tuple:
     cached = _FEED_CACHE.get(shop)
     if cached and time.time() - cached[0] < FEED_TTL_SECONDS:
         return cached[1], None
+    if shop == default_shop():
+        await ensure_shop_connection()
     record = get_shop_or_404(shop)
     token = record.get("access_token", "")
     if not has_real_token(token):

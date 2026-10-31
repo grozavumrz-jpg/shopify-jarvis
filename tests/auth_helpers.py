@@ -14,6 +14,8 @@ TEST_ADMIN_KEY = os.environ.setdefault("JARVIS_ADMIN_KEY", "test-admin-key-01234
 TEST_API_KEY = os.environ.setdefault("SHOPIFY_API_KEY", "test_api_key_123")
 TEST_API_SECRET = os.environ.setdefault("SHOPIFY_API_SECRET", "test_api_secret_456")
 os.environ.setdefault("JARVIS_DISABLE_DAEMON", "1")
+# Tests use a fake app key/secret: never try the real client-credentials token endpoint
+os.environ.setdefault("SHOPIFY_AUTH_MODE", "oauth")
 
 AUTH_HEADERS = {"X-Jarvis-Key": TEST_ADMIN_KEY}
 
