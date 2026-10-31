@@ -910,6 +910,40 @@ class TestDeliverability(NoNetworkMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r["records_to_add"], [])
         self.assertEqual(r["color"], "gray")
 
+    async def test_resend_forge_return_path_via_cname_is_ok(self):
+        """Live layout of maisongrozavu.com: Forge return path on send1 (CNAME), junk TXT on send."""
+        table = {
+            ("maisongrozavu.com", "TXT"): ["v=spf1 include:_spf.hostedemail.com ~all"],
+            ("send.maisongrozavu.com", "TXT"): ["ns1.sendwill.com", "ns2.sendwill.com"],
+            ("send1.maisongrozavu.com", "CNAME"): ["send.forge.rmta.net"],
+            ("send1.maisongrozavu.com", "TXT"): ["v=spf1 ip4:52.3.252.119 ip4:44.222.39.36 ip4:199.249.231.0/24 ~all"],
+            ("send1.maisongrozavu.com", "MX"): ["10 feedback.forge.rmta.net"],
+            ("rsend.maisongrozavu.com", "CNAME"): ["rsend-euw1.forge.rmta.net"],
+            ("rsend.maisongrozavu.com", "TXT"): ["v=spf1 include:amazonses.com ~all"],
+            ("resend._domainkey.maisongrozavu.com", "TXT"): [f"p={LONG_KEY}"],
+            ("_dmarc.maisongrozavu.com", "TXT"): ["v=DMARC1; p=none"],
+        }
+        r = await self._audit(table)
+        self.assertEqual(r["score"], 100)
+        self.assertEqual(r["color"], "green")
+        self.assertEqual(r["return_path"], "send1.maisongrozavu.com")
+        self.assertEqual(r["return_path_via"], "send.forge.rmta.net")
+        self.assertEqual(r["records_to_add"], [])
+
+    async def test_forge_style_spf_without_cname_is_still_invalid(self):
+        table = dict(GOOD)
+        table[("send.maisongrozavu.com", "TXT")] = ["v=spf1 ip4:1.2.3.4 ~all"]
+        r = await self._audit(table)
+        self.assertEqual(r["checks"]["spf"]["status"], "invalid")
+
+    async def test_return_path_names_can_be_configured(self):
+        table = {("bounces.maisongrozavu.com", "TXT"): ["v=spf1 include:amazonses.com ~all"],
+                 ("bounces.maisongrozavu.com", "MX"): ["10 feedback-smtp.us-east-1.amazonses.com"]}
+        with patch.dict(os.environ, {"RESEND_RETURN_PATH": "bounces"}):
+            r = await self._audit(table)
+        self.assertEqual(r["checks"]["spf"]["status"], "ok")
+        self.assertEqual(r["checks"]["mx"]["host"], "bounces.maisongrozavu.com")
+
     async def test_other_domain_dmarc_has_no_brand_rua(self):
         r = await self._audit({}, domain="example.org")
         self.assertEqual(r["checks"]["dmarc"]["recommended_value"], "v=DMARC1; p=none;")

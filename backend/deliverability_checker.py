@@ -6,6 +6,9 @@ Resend layout (per Resend "Domains" setup):
   - MX        send.<domain>               feedback-smtp.<region>.amazonses.com  priority 10
   - DKIM TXT  resend._domainkey.<domain>  "p=<public key shown in the Resend dashboard>"
   - DMARC TXT _dmarc.<domain>             "v=DMARC1; p=none; ..."  (recommended)
+The Return-Path subdomain can be customised in Resend ("custom return path"), and Resend Forge
+delegates it with a CNAME to *.forge.rmta.net (SPF + MX live on Resend's side). So every name in
+RESEND_RETURN_PATH (default: send, send1, rsend, bounce, mail) is checked and the best one is reported.
 The root-domain SPF is NOT used by Resend; it is only checked for duplicates (two SPF
 records on the same name = permerror for whoever uses it, e.g. Shopify / Google Workspace).
 
@@ -13,9 +16,10 @@ Per-check status is one of: "ok", "missing", "invalid", "unknown" (DNS lookup fa
 DNS failures are never reported as "missing". Passing these checks does not guarantee
 inbox placement (reputation and content still matter) — the UI must not promise it.
 """
+import os
 import re
 import asyncio
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 import httpx
 
@@ -31,6 +35,20 @@ BRAND_MAILBOX = "info@maisongrozavu.com"
 _DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
 
 STATUS_OK, STATUS_MISSING, STATUS_INVALID, STATUS_UNKNOWN = "ok", "missing", "invalid", "unknown"
+
+RESEND_RETURN_PATH_DEFAULTS = ("send", "send1", "rsend", "bounce", "mail")
+RESEND_MX_SUFFIXES = (".amazonses.com", ".rmta.net")      # SES feedback-smtp.* / Forge feedback.forge.rmta.net
+RESEND_FORGE_CNAME_SUFFIX = ".rmta.net"
+
+
+def return_path_candidates() -> List[str]:
+    """Return-Path subdomains to check: RESEND_RETURN_PATH (comma-separated) or Resend's usual names."""
+    names = []
+    for part in os.getenv("RESEND_RETURN_PATH", "").split(","):
+        n = part.strip().lower().strip(".")
+        if n and re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", n) and n not in names:
+            names.append(n)
+    return names or list(RESEND_RETURN_PATH_DEFAULTS)
 
 
 class DNSLookupError(Exception):
@@ -142,31 +160,45 @@ class DeliverabilityChecker:
         check["problem"] = problem
         return check
 
-    def _check_resend_spf(self, domain: str, res: Dict[str, Any]) -> Dict[str, Any]:
+    @staticmethod
+    def _forge_cname(cname: Optional[Dict[str, Any]]) -> Optional[str]:
+        """The *.rmta.net target when the return path is delegated to Resend Forge by CNAME."""
+        if not cname or not cname.get("ok"):
+            return None
+        for target in cname.get("records") or []:
+            if target.lower().rstrip(".").endswith(RESEND_FORGE_CNAME_SUFFIX):
+                return target.rstrip(".")
+        return None
+
+    def _check_resend_spf(self, domain: str, res: Dict[str, Any], sub: str = "send",
+                          cname: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         c = self._base_check(
-            "spf", "SPF Resend (send.)", f"send.{domain}", "send", "TXT",
+            "spf", f"SPF Resend ({sub}.)", f"{sub}.{domain}", sub, "TXT",
             "v=spf1 include:amazonses.com ~all",
-            "Autorizează serverele Resend (Amazon SES) pentru adresa de retur send.<domeniu>.",
+            f"Autorizează serverele Resend pentru adresa de retur {sub}.<domeniu>.",
             True, 30,
         )
+        forge = self._forge_cname(cname)
+        if forge:
+            c["via_cname"] = forge
         if not res["ok"]:
             return self._finish(c, STATUS_UNKNOWN, f"Interogarea DNS a eșuat: {res['error']}")
         spf = [r for r in res["records"] if r.lower().startswith("v=spf1")]
         c["found"] = spf
         c["record"] = spf[0] if spf else ""
         if not spf:
-            return self._finish(c, STATUS_MISSING, "Nu există înregistrare SPF pe send.<domeniu>.")
+            return self._finish(c, STATUS_MISSING, f"Nu există înregistrare SPF pe {sub}.<domeniu>.")
         if len(spf) > 1:
             return self._finish(c, STATUS_INVALID, f"{len(spf)} înregistrări SPF pe același nume (permerror) — păstrează una singură.")
-        if "include:amazonses.com" not in spf[0].lower():
+        if "include:amazonses.com" not in spf[0].lower() and not forge:
             return self._finish(c, STATUS_INVALID, "SPF-ul nu conține include:amazonses.com.")
         return self._finish(c, STATUS_OK)
 
-    def _check_resend_mx(self, domain: str, res: Dict[str, Any]) -> Dict[str, Any]:
+    def _check_resend_mx(self, domain: str, res: Dict[str, Any], sub: str = "send") -> Dict[str, Any]:
         c = self._base_check(
-            "mx", "MX Resend (send.)", f"send.{domain}", "send", "MX",
+            "mx", f"MX Resend ({sub}.)", f"{sub}.{domain}", sub, "MX",
             "feedback-smtp.<regiune>.amazonses.com (prioritate 10 — valoarea exactă e afișată în Resend → Domains)",
-            "Primește bounce-urile și reclamațiile pentru send.<domeniu>.",
+            f"Primește bounce-urile și reclamațiile pentru {sub}.<domeniu>.",
             True, 15,
         )
         c["priority"] = 10
@@ -175,10 +207,27 @@ class DeliverabilityChecker:
         c["found"] = list(res["records"])
         c["record"] = c["found"][0] if c["found"] else ""
         if not c["found"]:
-            return self._finish(c, STATUS_MISSING, "Nu există MX pe send.<domeniu>.")
-        if not any(r.lower().endswith(".amazonses.com") for r in c["found"]):
-            return self._finish(c, STATUS_INVALID, "MX-ul de pe send.<domeniu> nu indică feedback-smtp.*.amazonses.com.")
+            return self._finish(c, STATUS_MISSING, f"Nu există MX pe {sub}.<domeniu>.")
+        if not any(r.lower().rstrip(".").endswith(RESEND_MX_SUFFIXES) for r in c["found"]):
+            return self._finish(c, STATUS_INVALID, f"MX-ul de pe {sub}.<domeniu> nu indică serverele de feedback Resend.")
         return self._finish(c, STATUS_OK)
+
+    def _best_return_path(self, domain: str, lookups: Dict[str, Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]],
+                          order: List[str]) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+        """Pick the return-path subdomain whose SPF + MX pass best; default to the first name if none passes."""
+        best = None
+        for idx, sub in enumerate(order):
+            txt, mx, cname = lookups[sub]
+            spf_c = self._check_resend_spf(domain, txt, sub, cname)
+            mx_c = self._check_resend_mx(domain, mx, sub)
+            passed = (spf_c["status"] == STATUS_OK) + (mx_c["status"] == STATUS_OK)
+            if best is None or passed > best[0]:
+                best = (passed, sub, spf_c, mx_c)
+        if best[0] == 0:  # nothing configured anywhere: report the default name (unknown stays unknown)
+            sub = order[0]
+            txt, mx, cname = lookups[sub]
+            return sub, self._check_resend_spf(domain, txt, sub, cname), self._check_resend_mx(domain, mx, sub)
+        return best[1], best[2], best[3]
 
     def _check_dkim(self, domain: str, res: Dict[str, Any]) -> Dict[str, Any]:
         c = self._base_check(
@@ -262,17 +311,19 @@ class DeliverabilityChecker:
                 "missing_records": [], "records_to_add": [], "issues": ["Domeniu invalid."], "guide_ro": [],
             }
 
-        root, send_txt, send_mx, dkim, dmarc = await asyncio.gather(
+        subs = return_path_candidates()
+        root, dkim, dmarc, *rp = await asyncio.gather(
             self._lookup(target, "TXT"),
-            self._lookup(f"send.{target}", "TXT"),
-            self._lookup(f"send.{target}", "MX"),
             self._lookup(f"resend._domainkey.{target}", "TXT"),
             self._lookup(f"_dmarc.{target}", "TXT"),
+            *[self._lookup(f"{sub}.{target}", rtype) for sub in subs for rtype in ("TXT", "MX", "CNAME")],
         )
+        lookups = {sub: tuple(rp[i * 3:i * 3 + 3]) for i, sub in enumerate(subs)}
+        return_path, spf_check, mx_check = self._best_return_path(target, lookups, subs)
 
         checks = {
-            "spf": self._check_resend_spf(target, send_txt),
-            "mx": self._check_resend_mx(target, send_mx),
+            "spf": spf_check,
+            "mx": mx_check,
             "dkim": self._check_dkim(target, dkim),
             "dmarc": self._check_dmarc(target, dmarc),
             "root_spf": self._check_root_spf(target, root),
@@ -330,6 +381,8 @@ class DeliverabilityChecker:
         return {
             "domain": target,
             "provider": "resend",
+            "return_path": f"{return_path}.{target}",
+            "return_path_via": checks["spf"].get("via_cname"),
             "score": score,
             "max_score": 100,
             "complete": complete,
@@ -343,7 +396,7 @@ class DeliverabilityChecker:
             "note": "Autentificarea corectă ajută, dar livrarea în Inbox depinde și de reputația domeniului și de conținut.",
             "guide_ro": [
                 "1. Deschide panoul DNS al domeniului (unde e administrat maisongrozavu.com — ex. Shopify Domains, Cloudflare).",
-                "2. În Resend → Domains, copiază exact înregistrările afișate pentru domeniu (SPF și MX pe «send», DKIM pe «resend._domainkey»).",
+                "2. În Resend → Domains, copiază exact înregistrările afișate pentru domeniu (return-path: SPF + MX pe «send» sau CNAME-ul Forge; DKIM pe «resend._domainkey»).",
                 "3. Adaugă înregistrările din lista «records_to_add»; pentru DMARC poți începe cu p=none.",
                 "4. Propagarea durează de obicei de la câteva minute la câteva ore; apoi apasă «Verify» în Resend și rulează din nou acest audit.",
             ],
