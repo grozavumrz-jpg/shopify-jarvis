@@ -151,6 +151,11 @@ class TestMainReviewFixes(unittest.TestCase):
         data = self.client.get("/health").json()
         self.assertFalse(data["autopilot_running"])  # disabled in tests, so it must not claim it runs
 
+    def test_head_requests_from_uptime_monitors_succeed(self):
+        for path in ("/health", "/"):
+            r = TestClient(main.app).head(path)
+            self.assertEqual(r.status_code, 200, path)
+
 
 if __name__ == "__main__":
     unittest.main()

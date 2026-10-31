@@ -181,7 +181,7 @@ def autopilot_status_payload() -> Dict[str, Any]:
     return status
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])  # HEAD: uptime monitors and Render's probe
 async def health():
     return {
         "status": "ok",
@@ -217,7 +217,7 @@ if (window.top !== window.self) {{ window.top.location.href = target; }} else {{
 <body style="font-family: system-ui; text-align: center; padding-top: 50px;"><p>{html_lib.escape(message)}</p></body></html>""")
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
 async def root(request: Request):
     raw_shop = request.query_params.get("shop")
     shop = normalize_shop(raw_shop)
