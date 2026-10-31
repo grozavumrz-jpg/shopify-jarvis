@@ -165,7 +165,7 @@ class TestEphemeralDatabaseGuard(unittest.TestCase):
         import compliance_guard as cg
         noon_madrid = datetime(2026, 11, 2, 11, 0, tzinfo=timezone.utc)
         with patch.dict(os.environ, {"RENDER": "true", "JARVIS_ALLOW_EPHEMERAL_DB": ""}), \
-                patch.object(cg.db, "USING_SQLITE", True):
+                patch.object(cg.db, "DATABASE_URL", ""), patch.object(cg.db, "USING_SQLITE", True):
             ok, reason = cg.can_dispatch_to_customer(SHOP, email="ana@test.es", channel="email", now_dt=noon_madrid)
             self.assertFalse(ok)
             self.assertTrue(reason.startswith(cg.REASON_EPHEMERAL_DB), reason)
