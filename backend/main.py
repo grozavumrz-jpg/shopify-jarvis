@@ -1299,6 +1299,27 @@ async def save_delivery_settings(req: DeliverySettingsUpdateRequest, auth: AuthC
 class TestEmailRequest(BaseModel):
     shop: Optional[str] = None
     to_email: str
+    # "cart": the real abandoned-cart email (stage 2, MG10) with real products; "basic": plain delivery test
+    kind: Optional[str] = "cart"
+    lang: Optional[str] = "es"
+
+
+def sample_line_items(products: List[dict], limit: int = 2) -> List[dict]:
+    """Up to `limit` real products with an image and a price, shaped like checkout line items."""
+    items: List[dict] = []
+    for p in products or []:
+        if not isinstance(p, dict):
+            continue
+        image = (p.get("image") or {}).get("src") if isinstance(p.get("image"), dict) else None
+        image = image or next((i.get("src") for i in p.get("images") or [] if isinstance(i, dict) and i.get("src")), None)
+        variant = next((v for v in p.get("variants") or [] if isinstance(v, dict) and v.get("price")), None)
+        if not image or not variant:
+            continue
+        items.append({"title": p.get("title") or "", "variant_title": variant.get("title") or "", "quantity": 1,
+                      "price": variant.get("price"), "image_url": image})
+        if len(items) >= limit:
+            break
+    return items
 
 
 @app.post("/api/email/test")
@@ -1306,6 +1327,31 @@ async def test_email_send(req: TestEmailRequest, auth: AuthContext = Depends(req
     shop = resolve_shop(auth, req.shop)
     record = get_shop_or_404(shop)
     shop_name = record.get("shop_name") or BRAND_NAME
+    if (req.kind or "cart").strip().lower() == "cart":
+        # Exactly what a customer receives (stage 2 of the cart sequence), sent only to the merchant.
+        lang = EmailDispatcher._normalize_lang(req.lang or "es")
+        store_url = f"https://{BRAND_DOMAIN}"
+        try:
+            products, _ = await load_feed_products(shop)
+        except Exception:
+            products = []
+        items = sample_line_items(products or [])
+        checkout = {"customer_name": "Ana", "checkout_url": store_url, "items": [i["title"] for i in items],
+                    "line_items": items}
+        try:
+            copy = await ai.generate_autonomous_recovery(shop_name, checkout, lang=lang, discount_code="MG10")
+        except Exception:
+            copy = {}
+        body = copy.get("body") or f"Hola Ana, tu carrito te espera: {store_url} — código MG10."
+        html_body = EmailDispatcher.build_html_email(
+            shop_name=shop_name, customer_name="Ana", items_str=", ".join(checkout["items"]),
+            checkout_url=store_url, text_body=body, line_items=items, discount_code="MG10", lang=lang,
+            customer_email=req.to_email, shop_domain=shop)
+        result = await email_dispatcher.send_email(
+            to_email=req.to_email, subject=f"[TEST] {copy.get('subject') or shop_name}", body_text=body,
+            body_html=html_body, settings=db.get_shop_settings(shop), shop_domain=shop, is_internal=True)
+        result.update(kind="cart", sample_products=len(items), lang=lang)
+        return result
     subject = f"[Jarvis Test] Email de test de la {shop_name}"
     body = (f"Salut!\n\nAcesta este un email de test trimis de Jarvis pentru {shop_name}.\n"
             f"Dacă îl citești, trimiterea emailurilor funcționează cu setările actuale.\n\nJarvis")

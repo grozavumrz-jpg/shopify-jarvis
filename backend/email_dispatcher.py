@@ -58,7 +58,16 @@ def resolve_brand_domain(shop_domain: Optional[str] = None, brand_domain: Option
     sender_domain = _domain_from_address(os.getenv("SENDER_EMAIL"))
     if sender_domain and sender_domain not in _GENERIC_MAIL_DOMAINS:
         return sender_domain
+    feed_domain = re.sub(r"^https?://", "", (os.getenv("FEED_DOMAIN") or "").strip().lower()).split("/")[0]
+    if feed_domain:
+        return feed_domain  # the storefront domain, never the internal *.myshopify.com one
     return (shop_domain or "").strip().lower() if isinstance(shop_domain, str) else ""
+
+
+def email_logo_url() -> str:
+    """HTTPS URL of the white logo shown on the black email header (EMAIL_LOGO_URL). Empty = text only."""
+    url = (os.getenv("EMAIL_LOGO_URL") or "").strip()
+    return url if url.startswith("https://") else ""
 
 
 EMAIL_I18N: Dict[str, Dict[str, str]] = {
@@ -439,16 +448,16 @@ class EmailDispatcher:
 
             discount_card_html = f"""
         <!-- CADENCE DISCOUNT CARD -->
-        <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #f0fdf4; border: 2px dashed #10b981; border-radius: 10px; margin: 24px 0;">
+        <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #fafafa; border: 2px dashed #111111; border-radius: 10px; margin: 24px 0;">
           <tr>
             <td align="center" style="padding: 20px 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
-              <div style="font-size: 12px; color: #047857; text-transform: uppercase; font-weight: 700; letter-spacing: 1.5px; margin-bottom: 8px;">
+              <div style="font-size: 12px; color: #111111; text-transform: uppercase; font-weight: 700; letter-spacing: 1.5px; margin-bottom: 8px;">
                 {header_badge}
               </div>
-              <div style="display: inline-block; background-color: #ffffff; border: 1px solid #d1fae5; border-radius: 8px; padding: 10px 24px; font-family: 'Courier New', Courier, monospace; font-size: 24px; font-weight: 800; color: #065f46; letter-spacing: 3px; box-shadow: 0 2px 8px rgba(16, 185, 129, 0.08);">
+              <div style="display: inline-block; background-color: #ffffff; border: 1px solid #e5e5e5; border-radius: 8px; padding: 10px 24px; font-family: 'Courier New', Courier, monospace; font-size: 24px; font-weight: 800; color: #000000; letter-spacing: 3px;">
                 {safe_code_str}
               </div>
-              <div style="font-size: 12px; color: #047857; margin-top: 8px;">
+              <div style="font-size: 12px; color: #525252; margin-top: 8px;">
                 {hint}
               </div>
             </td>
@@ -460,6 +469,13 @@ class EmailDispatcher:
 
         safe_checkout_url = html.escape(effective_checkout_url)
         trust_line = "" if is_vip else labels["secure_checkout"]
+
+        logo_url = email_logo_url()
+        logo_html = (
+            f'<img src="{html.escape(logo_url)}" alt="{safe_shop_name}" width="96" '
+            f'style="display: block; margin: 0 auto 14px auto; width: 96px; max-width: 96px; height: auto; border: 0;" />'
+            if logo_url else ""
+        )
 
         # 3. Footer: sender identity + commercial label + unsubscribe
         sender_identity = f"© {safe_shop_name}" + (f" · {html.escape(domain)}" if domain else "")
@@ -527,8 +543,9 @@ class EmailDispatcher:
   <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" class="email-container" style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; border: 1px solid #e2e8f0; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.05);">
     <!-- BRAND HEADER -->
     <tr>
-      <td align="center" style="background-color: #0f172a; padding: 28px 24px;">
-        <h1 style="margin: 0; font-family: 'Playfair Display', Georgia, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 22px; font-weight: 700; color: #ffffff; letter-spacing: 2px; text-transform: uppercase;">
+      <td align="center" style="background-color: #000000; padding: 30px 24px 26px 24px;">
+        {logo_html}
+        <h1 style="margin: 0; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 20px; font-weight: 800; color: #ffffff; letter-spacing: 7px; text-transform: uppercase;">
           {safe_shop_name}
         </h1>
       </td>
@@ -551,7 +568,7 @@ class EmailDispatcher:
           <tr>
             <td align="center">
               <!--[if mso]>
-              <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="{safe_checkout_url}" style="height:52px;v-text-anchor:middle;width:340px;" arcsize="15%" stroke="f" fillcolor="#0f172a">
+              <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="{safe_checkout_url}" style="height:52px;v-text-anchor:middle;width:340px;" arcsize="15%" stroke="f" fillcolor="#000000">
                 <w:anchorlock/>
                 <center style="color:#ffffff;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:15px;font-weight:bold;">
                   {cta_label}
@@ -559,7 +576,7 @@ class EmailDispatcher:
               </v:roundrect>
               <![endif]-->
               <!--[if !mso]><!-->
-              <a href="{safe_checkout_url}" target="_blank" class="btn" style="display: inline-block; background-color: #0f172a; color: #ffffff !important; padding: 16px 36px; border-radius: 8px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 15px; font-weight: 700; text-decoration: none; letter-spacing: 0.5px; box-shadow: 0 4px 14px rgba(15, 23, 42, 0.18); mso-padding-alt: 0;">
+              <a href="{safe_checkout_url}" target="_blank" class="btn" style="display: inline-block; background-color: #000000; color: #ffffff !important; padding: 16px 36px; border-radius: 8px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 15px; font-weight: 700; text-decoration: none; letter-spacing: 0.5px; mso-padding-alt: 0;">
                 {cta_label}
               </a>
               <!--<![endif]-->

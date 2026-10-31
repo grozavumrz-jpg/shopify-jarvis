@@ -157,6 +157,54 @@ class TestMainReviewFixes(unittest.TestCase):
             self.assertEqual(r.status_code, 200, path)
 
 
+class TestBrandedEmailAndSample(unittest.TestCase):
+    LOGO = "https://cdn.shopify.com/s/files/1/0000/files/grozavu-hare-white.png"
+
+    def test_logo_only_from_https_env(self):
+        from email_dispatcher import EmailDispatcher
+        with patch.dict(os.environ, {"EMAIL_LOGO_URL": self.LOGO}):
+            html_out = EmailDispatcher.build_html_email(shop_name="Grozavu", text_body="Hola", lang="es")
+        self.assertIn(f'src="{self.LOGO}"', html_out)
+        for bad in ("", "http://insecure.example/logo.png", "javascript:alert(1)"):
+            with patch.dict(os.environ, {"EMAIL_LOGO_URL": bad}):
+                html_out = EmailDispatcher.build_html_email(shop_name="Grozavu", text_body="Hola", lang="es")
+            self.assertNotIn('alt="Grozavu" width="96"', html_out, bad)
+
+    def test_sample_cart_email_goes_only_to_merchant_with_real_products(self):
+        products = [
+            {"title": "No image", "variants": [{"price": "10.00", "title": "M"}], "images": []},
+            {"title": "Boxy Tee GROZAVU", "image": {"src": "https://cdn.shopify.com/a.jpg"},
+             "variants": [{"price": "39.00", "title": "Black / M"}]},
+            {"title": "Crewneck SS26", "images": [{"src": "https://cdn.shopify.com/b.jpg"}],
+             "variants": [{"price": "79.00", "title": "Default Title"}]},
+        ]
+        self.assertEqual([i["title"] for i in main.sample_line_items(products)], ["Boxy Tee GROZAVU", "Crewneck SS26"])
+        db.init_db()
+        db.upsert_shop(SHOP, "shpat_0123456789abcdef0123456789abcd", "Grozavu")
+        client = TestClient(main.app, headers=AUTH_HEADERS)
+        with patch.object(main, "load_feed_products", new_callable=AsyncMock, return_value=(products, None)), \
+                patch.object(main.email_dispatcher, "send_email", new_callable=AsyncMock,
+                             return_value={"success": True, "provider": "resend"}) as send:
+            r = client.post("/api/email/test", json={"shop": SHOP, "to_email": "owner@example.org"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["sample_products"], 2)
+        kw = send.call_args.kwargs
+        self.assertEqual(kw["to_email"], "owner@example.org")
+        self.assertTrue(kw["subject"].startswith("[TEST]"))
+        self.assertTrue(kw["is_internal"])
+        self.assertIn("Boxy Tee GROZAVU", kw["body_html"])
+        self.assertIn("MG10", kw["body_html"])
+
+    def test_basic_test_email_still_available(self):
+        db.init_db()
+        db.upsert_shop(SHOP, "shpat_0123456789abcdef0123456789abcd", "Grozavu")
+        client = TestClient(main.app, headers=AUTH_HEADERS)
+        with patch.object(main.email_dispatcher, "send_email", new_callable=AsyncMock,
+                          return_value={"success": True}) as send:
+            client.post("/api/email/test", json={"shop": SHOP, "to_email": "owner@example.org", "kind": "basic"})
+        self.assertIn("[Jarvis Test]", send.call_args.kwargs["subject"])
+
+
 class TestAutopilotInterval(unittest.TestCase):
     """Neon free = 100 CU-h/month and 5-minute idle suspend: a 5-minute loop would never let it sleep."""
 
