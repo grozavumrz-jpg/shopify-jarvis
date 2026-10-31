@@ -57,6 +57,24 @@ class TestClientCredentialsConnection(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fetch.await_count, 1)
         self.assertIn("shop_not_permitted", main.SHOPIFY_CONNECTION["error"])
 
+    async def test_store_outside_org_backs_off_for_hours_with_a_hint(self):
+        fetch = AsyncMock(side_effect=RuntimeError(
+            "Shopify token request failed (400): Client credentials cannot be performed on this shop."))
+        with patch.dict(os.environ, CC_ENV), patch.object(main, "fetch_client_credentials_token", fetch):
+            await main.ensure_shop_connection()
+        self.assertGreater(main.SHOPIFY_CONNECTION["retry_after"] - time.time(), 5 * 3600)
+        self.assertIn("Shopify Admin", main.SHOPIFY_CONNECTION["error"])
+
+    async def test_health_reports_oauth_token_and_hides_stale_cc_error(self):
+        from starlette.testclient import TestClient
+        main.SHOPIFY_CONNECTION.update(mode="none", error="shop_not_permitted")
+        with patch.dict(os.environ, dict(CC_ENV, SHOP_DOMAIN="oauth-test-store.myshopify.com")):
+            db.upsert_shop("oauth-test-store.myshopify.com", "shpua_oauth0123456789abcdef012345", "Test")
+            data = TestClient(main.app).get("/health").json()
+        self.assertEqual(data["shopify_connection"], "oauth")
+        self.assertIsNone(data["shopify_connection_error"])
+        self.assertEqual(data["shopify_shop"], "oauth-test-store.myshopify.com")
+
     async def test_static_token_wins_over_client_credentials(self):
         fetch = AsyncMock()
         env = dict(CC_ENV, SHOPIFY_ACCESS_TOKEN="shpat_static0123456789abcdef0123456")

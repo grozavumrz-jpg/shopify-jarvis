@@ -96,6 +96,7 @@ SHOPIFY_CONNECTION: Dict[str, Any] = {"mode": "none", "expires_at": 0.0, "error"
                                       "retry_after": 0.0}
 CC_REFRESH_MARGIN_SECONDS = 3600
 CC_RETRY_AFTER_FAILURE_SECONDS = 600
+CC_RETRY_AFTER_CONFIG_ERROR_SECONDS = 6 * 3600
 _cc_lock: Optional[asyncio.Lock] = None
 
 
@@ -143,7 +144,14 @@ async def ensure_shop_connection(force: bool = False) -> None:
             _SNAPSHOT_CACHE.pop(shop, None)
             print(f"[Shopify] Connected {shop} with client credentials (token valid {expires_in // 3600}h).")
         except Exception as e:
-            SHOPIFY_CONNECTION.update(error=str(e)[:300], retry_after=time.time() + CC_RETRY_AFTER_FAILURE_SECONDS)
+            message = str(e)[:300]
+            retry_in = CC_RETRY_AFTER_FAILURE_SECONDS
+            if "shop_not_permitted" in message or "cannot be performed on this shop" in message.lower():
+                # Configuration problem, not a hiccup: the store is not in the app's Dev Dashboard organization.
+                retry_in = CC_RETRY_AFTER_CONFIG_ERROR_SECONDS
+                message += (" — magazinul nu e în aceeași organizație cu aplicația din Dev Dashboard. "
+                            "Deschide Jarvis o dată din Shopify Admin (instalare OAuth) sau mută magazinul în organizație.")
+            SHOPIFY_CONNECTION.update(error=message, retry_after=time.time() + retry_in)
             print(f"[Shopify] Client-credentials connection failed for {shop}: {e}")
 
 
@@ -181,15 +189,31 @@ def autopilot_status_payload() -> Dict[str, Any]:
     return status
 
 
+def shopify_connection_mode() -> str:
+    """client_credentials / env_token when managed here; 'oauth' when a token came from the install flow."""
+    mode = SHOPIFY_CONNECTION.get("mode") or "none"
+    if mode == "none":
+        try:
+            record = db.get_shop(default_shop())
+            if record and has_real_token(record.get("access_token")):
+                return "oauth"
+        except Exception:
+            pass
+    return mode
+
+
 @app.api_route("/health", methods=["GET", "HEAD"])  # HEAD: uptime monitors and Render's probe
 async def health():
+    mode = shopify_connection_mode()
     return {
         "status": "ok",
         "app": "Jarvis for Shopify",
         "db": "sqlite" if getattr(db, "USING_SQLITE", False) else "postgres",
         "autopilot_running": daemon_running(),
-        "shopify_connection": SHOPIFY_CONNECTION.get("mode"),
-        "shopify_connection_error": SHOPIFY_CONNECTION.get("error"),
+        "shopify_shop": default_shop(),
+        "shopify_connection": mode,
+        # A client-credentials failure is irrelevant once the shop is connected through OAuth.
+        "shopify_connection_error": None if mode != "none" else SHOPIFY_CONNECTION.get("error"),
         "autopilot_last_cycle_at": AUTOPILOT_STATUS.get("last_cycle_at"),
     }
 
