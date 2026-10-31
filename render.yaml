@@ -17,7 +17,7 @@ services:
       - key: JARVIS_ADMIN_KEY
         sync: false
       - key: SHOP_DOMAIN
-        value: maisongrozavu.myshopify.com
+        value: grozavushop.myshopify.com
       # Optional: Admin API token of a custom app; re-registers the shop after restarts.
       - key: SHOPIFY_ACCESS_TOKEN
         sync: false

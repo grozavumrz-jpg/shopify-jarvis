@@ -429,7 +429,7 @@ class ProductSEOOptimizer:
         self,
         shopify_client=None,
         product: Dict[str, Any] = None,
-        shop_domain: str = "maisongrozavu.myshopify.com",
+        shop_domain: str = "grozavushop.myshopify.com",
         log: bool = True,
     ) -> Dict[str, Any]:
         """

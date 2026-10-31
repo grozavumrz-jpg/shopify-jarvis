@@ -41,7 +41,7 @@ def normalize_shop(shop: Optional[str]) -> Optional[str]:
 
 
 def default_shop() -> str:
-    return normalize_shop(os.getenv("SHOP_DOMAIN")) or "maisongrozavu.myshopify.com"
+    return normalize_shop(os.getenv("SHOP_DOMAIN")) or "grozavushop.myshopify.com"  # real myshopify domain of maisongrozavu.com
 
 
 def _b64url_decode(part: str) -> bytes:

@@ -390,7 +390,7 @@ function policyEntries(fp) {
 
 export default function App() {
   const params = new URLSearchParams(window.location.search)
-  const shop = params.get('shop') || 'maisongrozavu.myshopify.com'
+  const shop = params.get('shop') || 'grozavushop.myshopify.com'
   const qShop = `shop=${encodeURIComponent(shop)}`
 
   const [lang, setLang] = useState(() => storageGet('jarvis_lang') || 'ro')

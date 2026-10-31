@@ -19,9 +19,10 @@ Asistent pentru magazinul Shopify: urmărește coșurile abandonate (doar clien�
 
 ## Pași o singură dată (obligatorii)
 0. **Conectează Shopify (din 2026, prin Dev Dashboard).**
-   - În Shopify Admin → Setări → Aplicații → Dezvoltă aplicații → deschide Dev Dashboard și creează aplicația „Jarvis”.
-   - Scopuri: `read_orders`, `read_products`, `read_customers`, `read_inventory`, plus acces la datele protejate ale clienților (nume, email, telefon).
-   - Fă release la versiune și instaleaz-o pe magazin.
+   - Domeniul intern al magazinului este `grozavushop.myshopify.com` (nu `maisongrozavu.myshopify.com`). Pune-l în Render → `SHOP_DOMAIN`.
+   - Aplicația „Jarvis” există deja în Dev Dashboard (dev.shopify.com) și e instalată pe `grozavushop`.
+   - Scopuri necesare: `read_orders`, `read_products`, `read_customers`, `read_inventory`, plus acces la datele protejate ale clienților (nume, email, telefon).
+   - Dacă schimbi scopurile, fă release la o versiune nouă și acceptă noile permisiuni în magazin.
    - Pune *Client ID* în Render → `SHOPIFY_API_KEY` și *Client secret* → `SHOPIFY_API_SECRET`.
    - Jarvis cere singur tokenul și îl reînnoiește înainte să expire (24h). Starea se vede în `/health` → `shopify_connection`.
 1. **Bază de date permanentă.** Pe Render free, SQLite se șterge la fiecare restart. Odată cu el se pierd dezabonările, istoricul și setările. Creează un Postgres gratuit (Neon sau Supabase) și pune link-ul în Render → Environment → `DATABASE_URL`.
