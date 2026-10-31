@@ -157,5 +157,35 @@ class TestMainReviewFixes(unittest.TestCase):
             self.assertEqual(r.status_code, 200, path)
 
 
+class TestEphemeralDatabaseGuard(unittest.TestCase):
+    """On Render without DATABASE_URL, unsubscribes would be wiped on restart -> no marketing."""
+
+    def test_marketing_waits_for_postgres_on_render(self):
+        from datetime import datetime, timezone
+        import compliance_guard as cg
+        noon_madrid = datetime(2026, 11, 2, 11, 0, tzinfo=timezone.utc)
+        with patch.dict(os.environ, {"RENDER": "true", "JARVIS_ALLOW_EPHEMERAL_DB": ""}), \
+                patch.object(cg.db, "USING_SQLITE", True):
+            ok, reason = cg.can_dispatch_to_customer(SHOP, email="ana@test.es", channel="email", now_dt=noon_madrid)
+            self.assertFalse(ok)
+            self.assertTrue(reason.startswith(cg.REASON_EPHEMERAL_DB), reason)
+            self.assertTrue(cg.is_transient_block(reason))  # VIP is held, not suppressed forever
+            ok, _ = cg.can_dispatch_to_customer(SHOP, email="ana@test.es", channel="email", now_dt=noon_madrid,
+                                                message_type="transactional")
+            self.assertTrue(ok)
+            self.assertIsNotNone(TestClient(main.app).get("/health").json()["marketing_paused_reason"])
+        with patch.dict(os.environ, {"RENDER": "true"}), patch.object(cg.db, "USING_SQLITE", False):
+            self.assertFalse(cg.ephemeral_db_blocks_marketing())
+        with patch.dict(os.environ, {"RENDER": "true", "JARVIS_ALLOW_EPHEMERAL_DB": "1"}), \
+                patch.object(cg.db, "USING_SQLITE", True):
+            self.assertFalse(cg.ephemeral_db_blocks_marketing())
+
+    def test_local_runs_are_not_blocked(self):
+        import compliance_guard as cg
+        env = {k: v for k, v in os.environ.items() if k not in ("RENDER", "RENDER_EXTERNAL_URL")}
+        with patch.dict(os.environ, env, clear=True), patch.object(cg.db, "USING_SQLITE", True):
+            self.assertFalse(cg.ephemeral_db_blocks_marketing())
+
+
 if __name__ == "__main__":
     unittest.main()

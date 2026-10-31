@@ -31,7 +31,8 @@ from google_merchant_feed import build_google_merchant_xml, build_feed_items, va
 from seo_optimizer import ProductSEOOptimizer
 from deliverability_checker import DeliverabilityChecker
 import compliance_guard
-from compliance_guard import is_quiet_hours, can_dispatch_to_customer, log_customer_dispatch
+from compliance_guard import (is_quiet_hours, can_dispatch_to_customer, log_customer_dispatch,
+                              ephemeral_db_blocks_marketing)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Jarvis for Shopify")
@@ -214,6 +215,9 @@ async def health():
         "shopify_connection": mode,
         # A client-credentials failure is irrelevant once the shop is connected through OAuth.
         "shopify_connection_error": None if mode != "none" else SHOPIFY_CONNECTION.get("error"),
+        "marketing_paused_reason": ("DATABASE_URL lipsă: pe Render baza locală se șterge la restart, "
+                                    "deci mesajele de marketing așteaptă Postgres.")
+        if ephemeral_db_blocks_marketing() else None,
         "autopilot_last_cycle_at": AUTOPILOT_STATUS.get("last_cycle_at"),
     }
 

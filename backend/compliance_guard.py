@@ -12,6 +12,7 @@ Rules (CONTRACT.md):
   sequence_key are exempt from that 72h rule).
 """
 
+import os
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple, Dict, Any
 
@@ -107,17 +108,30 @@ def is_quiet_hours(now_dt: Optional[datetime] = None) -> bool:
 
 
 REASON_SEQUENCE_EXHAUSTED = "Frequency cap: sequence"
+REASON_EPHEMERAL_DB = "Persistent database required"
+
+
+def ephemeral_db_blocks_marketing() -> bool:
+    """
+    On Render the local SQLite file is wiped on every restart/deploy. Unsubscribes, consent records and
+    the per-person message history would be forgotten, so a customer who opted out could be messaged
+    again. Marketing therefore waits for DATABASE_URL (Postgres). JARVIS_ALLOW_EPHEMERAL_DB=1 overrides.
+    """
+    if os.getenv("JARVIS_ALLOW_EPHEMERAL_DB", "").strip().lower() in ("1", "true", "yes"):
+        return False
+    on_render = bool(os.getenv("RENDER", "").strip() or os.getenv("RENDER_EXTERNAL_URL", "").strip())
+    return on_render and bool(getattr(db, "USING_SQLITE", False))
 
 
 def is_transient_block(reason: Optional[str]) -> bool:
     """
-    Quiet hours and the 72h / 30-day frequency windows clear with time.
+    Quiet hours, the 72h / 30-day frequency windows and a missing persistent database clear with time.
     Consent blocks and an exhausted sequence (e.g. VIP already sent for that order) do not.
     """
     r = reason or ""
     if r.startswith(REASON_SEQUENCE_EXHAUSTED):
         return False
-    return r.startswith(REASON_QUIET) or r.startswith(REASON_FREQUENCY)
+    return r.startswith(REASON_QUIET) or r.startswith(REASON_FREQUENCY) or r.startswith(REASON_EPHEMERAL_DB)
 
 
 def _is_phone_channel(channel: Optional[str]) -> bool:
@@ -155,6 +169,10 @@ def can_dispatch_to_customer(
         return False, f"{REASON_EMPTY} for channel {chan}"
 
     is_marketing = (message_type or MARKETING).strip().lower() != TRANSACTIONAL
+
+    if is_marketing and ephemeral_db_blocks_marketing():
+        return False, (f"{REASON_EPHEMERAL_DB}: DATABASE_URL lipsește — pe Render baza locală se șterge la restart "
+                       "și s-ar pierde dezabonările. Marketingul pornește automat după ce adaugi Postgres.")
 
     if is_marketing:
         status = db.get_consent_status(
