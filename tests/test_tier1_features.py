@@ -17,7 +17,8 @@ from tests.helpers import (
     HAS_POST_DELIVERY, PostDeliveryService,
     HAS_MOBILE_NOTIFIER, MobileNotifier,
     make_sample_line_item, make_sample_checkout,
-    make_sample_order, make_sample_shop_settings
+    make_sample_order, make_sample_shop_settings,
+    send_transport,
 )
 
 
@@ -256,7 +257,7 @@ class TestTier1Feature3WhatsApp(unittest.TestCase):
             mock_resp.json.return_value = {"sid": "SM123456789"}
             mock_post.return_value = mock_resp
 
-            coro = self.dispatcher.send_message("+40721123456", "Test Twilio", settings=settings)
+            coro = send_transport(self.dispatcher, "+40721123456", "Test Twilio", settings=settings)
             res = asyncio.run(coro)
 
             self.assertTrue(res.get("ok") or res.get("success"))
@@ -277,7 +278,7 @@ class TestTier1Feature3WhatsApp(unittest.TestCase):
             mock_resp.json.return_value = {"messages": [{"id": "wamid.HBgM"}]}
             mock_post.return_value = mock_resp
 
-            coro = self.dispatcher.send_message("+40721123456", "Test Meta", settings=settings)
+            coro = send_transport(self.dispatcher, "+40721123456", "Test Meta", settings=settings)
             res = asyncio.run(coro)
 
             self.assertTrue(res.get("ok") or res.get("success"))
@@ -293,7 +294,7 @@ class TestTier1Feature3WhatsApp(unittest.TestCase):
             "twilio_account_sid": "",
             "whatsapp_webhook_url": ""
         }
-        coro = self.dispatcher.send_message("+40721123456", "Fallback message", settings=settings)
+        coro = send_transport(self.dispatcher, "+40721123456", "Fallback message", settings=settings)
         res = asyncio.run(coro)
 
         wa_url = res.get("wa_me_url") or res.get("wa_link")
@@ -313,8 +314,8 @@ class TestTier1Feature3WhatsApp(unittest.TestCase):
             mock_resp.json.return_value = {"sid": "SM_A", "messages": [{"id": "wamid_B"}]}
             mock_post.return_value = mock_resp
 
-            res_a = asyncio.run(self.dispatcher.send_message("+40721123456", "Msg A", settings=settings_store_a))
-            res_b = asyncio.run(self.dispatcher.send_message("+40721123456", "Msg B", settings=settings_store_b))
+            res_a = asyncio.run(send_transport(self.dispatcher, "+40721123456", "Msg A", settings=settings_store_a))
+            res_b = asyncio.run(send_transport(self.dispatcher, "+40721123456", "Msg B", settings=settings_store_b))
 
             self.assertIsNotNone(res_a)
             self.assertIsNotNone(res_b)
@@ -420,11 +421,13 @@ class TestTier1Feature5MobileNotifications(unittest.TestCase):
             res = asyncio.run(coro)
 
             self.assertTrue(res.get("telegram", {}).get("ok") or res.get("ok", True))
-            # Verify payload had parse_mode = HTML
-            if mock_post.called:
-                call_kwargs = mock_post.call_args[1]
-                payload = call_kwargs.get("json", {})
-                self.assertEqual(payload.get("parse_mode"), "HTML")
+            # Verify the Telegram payload had parse_mode = HTML (Discord payloads have no parse_mode)
+            tg_calls = [c for c in mock_post.call_args_list if "api.telegram.org" in str(c[0][0] if c[0] else c[1].get("url", ""))]
+            self.assertTrue(tg_calls)
+            self.assertEqual(tg_calls[0][1].get("json", {}).get("parse_mode"), "HTML")
+            dc_calls = [c for c in mock_post.call_args_list if "discord.com" in str(c[0][0] if c[0] else c[1].get("url", ""))]
+            for c in dc_calls:
+                self.assertNotIn("parse_mode", c[1].get("json", {}))
 
     def test_f5_02_discord_abandoned_cart_embed(self):
         """Verify Discord Webhook sends Rich Embed with amber color (0xF59E0B) on abandoned cart."""

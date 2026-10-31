@@ -275,6 +275,43 @@ class TestShopifyClientDefensiveIngestion(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res["lang"], "ro")
 
 
+class TestShopifyClientCorrectedBehaviour(unittest.IsolatedAsyncioTestCase):
+    """Behaviour fixed in the W2 truth pass (no network: _get is mocked)."""
+
+    def setUp(self):
+        self.client = ShopifyClient("test-shop.myshopify.com", "shpat_test_token_123")
+
+    def test_api_version_is_current_not_2024(self):
+        self.assertNotIn("2024-01", self.client.base)
+        self.assertIn(f"/admin/api/{os.getenv('SHOPIFY_API_VERSION') or '2026-07'}", self.client.base)
+
+    def test_french_surnames_are_french_not_spanish(self):
+        self.assertEqual(detect_customer_language_and_country("Marie Dubois", "", "", "", "")["lang"], "fr")
+        self.assertEqual(detect_customer_language_and_country("Luc Bernard", "", "", "", "")["lang"], "fr")
+
+    def test_send_recovery_email_removed(self):
+        """The old endpoint (/checkouts/{id}/recovery_email.json) does not exist in the Admin API."""
+        self.assertFalse(hasattr(self.client, "send_recovery_email"))
+
+    async def test_detailed_checkouts_carry_tri_state_consent(self):
+        self.client._get = AsyncMock(return_value={"checkouts": [
+            {"id": 1, "buyer_accepts_marketing": True, "buyer_accepts_sms_marketing": False, "line_items": []},
+            {"id": 2, "line_items": []},
+        ]})
+        res = await self.client.get_abandoned_checkouts_detailed()
+        self.assertEqual((res[0]["email_marketing_consent"], res[0]["sms_marketing_consent"]), (True, False))
+        self.assertEqual((res[1]["email_marketing_consent"], res[1]["sms_marketing_consent"]), (None, None))
+
+    async def test_low_stock_counts_only_shopify_tracked_variants(self):
+        self.client._get = AsyncMock(return_value={"products": [{
+            "id": 1, "title": "Boxy Tee", "status": "active", "variants": [
+                {"title": "M", "inventory_quantity": 0, "inventory_management": None},
+                {"title": "L", "inventory_quantity": 1, "inventory_management": "shopify"},
+            ]}]})
+        low = await self.client.get_low_stock_products(5)
+        self.assertEqual([(i["product"], i["variant"], i["qty"]) for i in low], [("Boxy Tee", "L", 1)])
+
+
 if __name__ == "__main__":
     unittest.main()
 

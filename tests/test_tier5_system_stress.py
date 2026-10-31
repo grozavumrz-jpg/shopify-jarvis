@@ -33,6 +33,7 @@ from tests.helpers import (
     make_sample_checkout,
     make_sample_order,
     make_sample_shop_settings,
+    EMAIL_SENT_OK, WA_SENT_OK, allow_vip_compliance,
 )
 from backend.cadence_manager import DripCadenceManager
 from backend.post_delivery_service import PostDeliveryService
@@ -41,6 +42,7 @@ from backend.email_dispatcher import EmailDispatcher
 from backend.mobile_notifier import MobileNotifier
 from backend.shopify_api import detect_customer_language_and_country, ShopifyClient
 import backend.database as db
+from tests.auth_helpers import AUTH_HEADERS, webhook_headers  # noqa: E402
 import backend.main as bm
 from backend.main import (
     app,
@@ -49,6 +51,7 @@ from backend.main import (
     webhook_order_cancelled,
 )
 from fastapi.testclient import TestClient
+from tests.helpers import send_transport
 
 
 # ==============================================================================
@@ -102,9 +105,9 @@ class TestTier5MultiTenantIsolation(unittest.TestCase):
             mock_post.side_effect = [resp_twilio, resp_meta]
 
             # Interleaved dispatches
-            res_a = asyncio.run(self.wa.send_message("+393401111111", "Message for A", settings=settings_a))
-            res_c = asyncio.run(self.wa.send_message("+40721333333", "Message for C", settings=settings_c))
-            res_b = asyncio.run(self.wa.send_message("+34612222222", "Message for B", settings=settings_b))
+            res_a = asyncio.run(send_transport(self.wa, "+393401111111", "Message for A", settings=settings_a))
+            res_c = asyncio.run(send_transport(self.wa, "+40721333333", "Message for C", settings=settings_c))
+            res_b = asyncio.run(send_transport(self.wa, "+34612222222", "Message for B", settings=settings_b))
 
             self.assertTrue(res_a["ok"])
             self.assertEqual(res_a["provider"], "twilio")
@@ -259,7 +262,7 @@ class TestTier5MultiTenantIsolation(unittest.TestCase):
         }
 
         with patch.object(bm.db, "get_shop_settings", side_effect=lambda s: settings_db.get(s, {})):
-            client = TestClient(app)
+            client = TestClient(app, headers=AUTH_HEADERS)
             resp_alpha = client.get("/api/settings/whatsapp?shop=store-alpha.myshopify.com")
             resp_beta = client.get("/api/settings/whatsapp?shop=store-beta.myshopify.com")
 
@@ -291,6 +294,7 @@ class TestTier5FullPipelineE2EStress(unittest.TestCase):
     """
 
     def setUp(self):
+        allow_vip_compliance(self)
         self.cadence = DripCadenceManager()
         self.post_delivery = PostDeliveryService()
         self.email_disp = EmailDispatcher()
@@ -470,7 +474,9 @@ class TestTier5FullPipelineE2EStress(unittest.TestCase):
             lang="ro"
         )
         self.assertIn("MGVIP15", vip_msg)
-        self.assertIn("15% reducere VIP", vip_msg)
+        self.assertIn("15% la următoarea comandă", vip_msg)
+        # The discount is a thank-you, never conditioned on a (5-star) review
+        self.assertNotIn("5 stele", vip_msg)
 
         # Alert 4: VIP Review & Upsell Alert (Purple)
         alert_vip_data = {
@@ -664,7 +670,7 @@ class TestTier5PayloadMalformationChaos(unittest.TestCase):
         must fail gracefully without raising exceptions.
         """
         for bad_phone in ["N/A", "undefined", "null", "+", "  ", None, "12345", "(---)"]:
-            res = asyncio.run(self.wa.send_message(bad_phone, "Testing bad phone"))
+            res = asyncio.run(send_transport(self.wa, bad_phone, "Testing bad phone"))
             self.assertFalse(res["ok"])
             self.assertEqual(res["provider"], "none")
             self.assertIsNone(res["wa_me_url"])
@@ -701,6 +707,16 @@ class TestTier5WebhookSecurityIdempotency(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
 
+    def _post(self, path, payload, shop="boutique.myshopify.com"):
+        body = json.dumps(payload).encode()
+        return self.client.post(path, content=body, headers=webhook_headers(body, shop))
+
+    def test_webhook_forged_signature_rejected(self):
+        resp = self.client.post("/webhooks/orders/create", json={"id": "x"},
+                                headers={"x-shopify-shop-domain": "boutique.myshopify.com",
+                                         "x-shopify-hmac-sha256": "Zm9yZ2Vk"})
+        self.assertEqual(resp.status_code, 401)
+
     def test_webhook_order_created_replay_10x_idempotent(self):
         """
         Adversarial probe:
@@ -719,26 +735,25 @@ class TestTier5WebhookSecurityIdempotency(unittest.TestCase):
 
         call_counts = {"convert": 0, "notify": 0}
 
-        def fake_mark_converted(shop, order_dict):
+        def fake_reconcile(shop, order_dict):
             call_counts["convert"] += 1
-            # First time converts 1 row, subsequent times 0 rows
-            return call_counts["convert"] == 1
+            # First time converts 1 Jarvis-messaged row, subsequent times 0 rows
+            first = call_counts["convert"] == 1
+            return {"converted": 1 if first else 0, "attributed": first}
 
         async def fake_notify(event, data, settings):
             call_counts["notify"] += 1
             return {"ok": True}
 
-        with patch.object(bm.cadence_mgr, "mark_order_converted", side_effect=fake_mark_converted):
+        with patch.object(bm.cadence_mgr, "reconcile_order", side_effect=fake_reconcile):
             with patch.object(bm.mobile_notifier, "notify_merchant", side_effect=fake_notify):
                 with patch.object(bm.db, "get_shop_settings", return_value={"shop": "boutique.myshopify.com"}):
-                    headers = {"x-shopify-shop-domain": "boutique.myshopify.com"}
-
                     for i in range(10):
-                        resp = self.client.post("/webhooks/orders/create", json=order_payload, headers=headers)
+                        resp = self._post("/webhooks/orders/create", order_payload)
                         self.assertEqual(resp.status_code, 200)
                         self.assertEqual(resp.json(), {"status": "ok"})
 
-                    # mark_order_converted called 10 times
+                    # reconcile_order called 10 times
                     self.assertEqual(call_counts["convert"], 10)
                     # Merchant notified ONLY ONCE on initial conversion
                     self.assertEqual(call_counts["notify"], 1)
@@ -752,7 +767,7 @@ class TestTier5WebhookSecurityIdempotency(unittest.TestCase):
         """
         cancel_payload = {"id": "ord_cancel_early_999"}
         with patch.object(bm.db, "cancel_post_delivery_automation", return_value=False) as mock_cancel:
-            resp = self.client.post("/webhooks/orders/cancelled", json=cancel_payload)
+            resp = self._post("/webhooks/orders/cancelled", cancel_payload)
             self.assertEqual(resp.status_code, 200)
             self.assertEqual(resp.json(), {"status": "ok"})
             mock_cancel.assert_called_once_with("ord_cancel_early_999")
@@ -772,20 +787,19 @@ class TestTier5WebhookSecurityIdempotency(unittest.TestCase):
             return False
 
         with patch.object(bm.db, "cancel_post_delivery_automation", side_effect=fake_cancel):
-            resp = self.client.post("/webhooks/orders/cancelled", json={"id": "ord_vip_cancel"})
+            resp = self._post("/webhooks/orders/cancelled", {"id": "ord_vip_cancel"})
             self.assertEqual(resp.status_code, 200)
             self.assertEqual(table["ord_vip_cancel"]["status"], "canceled")
 
     def test_webhook_order_created_unmatched_checkout_graceful(self):
         """
         Order created for a customer who never had an abandoned cart in Jarvis.
-        mark_order_converted returns False (0 rows updated).
+        reconcile_order reports nothing attributed (0 rows updated).
         Webhook handler returns HTTP 200 cleanly without error.
         """
-        with patch.object(bm.cadence_mgr, "mark_order_converted", return_value=False):
+        with patch.object(bm.cadence_mgr, "reconcile_order", return_value={"converted": 0, "attributed": False}):
             with patch.object(bm.mobile_notifier, "notify_merchant") as mock_notify:
-                headers = {"x-shopify-shop-domain": "boutique.myshopify.com"}
-                resp = self.client.post("/webhooks/orders/create", json={"id": "ord_unmatched"}, headers=headers)
+                resp = self._post("/webhooks/orders/create", {"id": "ord_unmatched"})
                 self.assertEqual(resp.status_code, 200)
                 mock_notify.assert_not_called()
 
@@ -828,6 +842,7 @@ class TestTier5DaemonResilience(unittest.TestCase):
     """
 
     def setUp(self):
+        allow_vip_compliance(self)
         self.cadence = DripCadenceManager()
         self.post_delivery = PostDeliveryService()
 
@@ -873,7 +888,7 @@ class TestTier5DaemonResilience(unittest.TestCase):
     def test_daemon_mobile_notifier_failure_does_not_abort_recovery(self):
         """
         If MobileNotifier throws httpx.ConnectError during process_single_checkout_recovery,
-        the recovery email/WhatsApp and database stage update must still succeed.
+        the recovery email/WhatsApp and the drip-stage claim must still succeed.
         """
         checkout = make_sample_checkout(
             checkout_id="ch_resil_mobile_err",
@@ -881,36 +896,33 @@ class TestTier5DaemonResilience(unittest.TestCase):
             email="resil@test.com",
             phone="+393400000000"
         )
+        checkout["created_at"] = (datetime.now(timezone.utc) - timedelta(minutes=40)).isoformat()
         settings = make_sample_shop_settings()
 
-        updated_stages = []
-        def fake_update_stage(checkout_id, stage, sent_at=None):
-            updated_stages.append((checkout_id, stage))
+        claims = []
+        def fake_claim(checkout_id, expected_stage, new_stage, sent_at=None):
+            claims.append((checkout_id, expected_stage, new_stage))
             return True
 
-        with patch.object(bm.email_dispatcher, "send_email", new_callable=AsyncMock) as mock_mail:
-            mock_mail.return_value = {"success": True}
-            with patch.object(bm.wa_dispatcher, "send_message", new_callable=AsyncMock) as mock_wa:
-                mock_wa.return_value = {"ok": True, "success": True}
-                with patch.object(bm.mobile_notifier, "notify_merchant", new_callable=AsyncMock) as mock_mobile:
-                    mock_mobile.side_effect = httpx.ConnectError("Discord unreachable")
-                    with patch.object(bm.db, "update_drip_stage", side_effect=fake_update_stage):
-                        with patch.object(bm.db, "save_autopilot_log"):
-                            with patch.object(bm.db, "get_checkout_drip_state", return_value=None):
-                                with patch.object(bm.db, "upsert_checkout_drip_state", return_value={"status": "active", "current_stage": 0}):
-                                    with patch.object(bm.db, "get_shop_settings", return_value=settings):
-                                        client_mock = MagicMock()
-                                        res = asyncio.run(process_single_checkout_recovery(
-                                            shop="boutique.myshopify.com",
-                                            client=client_mock,
-                                            shop_name="Boutique",
-                                            c=checkout,
-                                            force=True
-                                        ))
+        with patch.object(bm.email_dispatcher, "send_email", new_callable=AsyncMock, return_value={"success": True}), \
+                patch.object(bm.wa_dispatcher, "send_message", new_callable=AsyncMock, return_value={"success": True}), \
+                patch.object(bm.mobile_notifier, "notify_merchant", new_callable=AsyncMock,
+                             side_effect=httpx.ConnectError("Discord unreachable")), \
+                patch.object(bm.db, "claim_drip_stage", side_effect=fake_claim), \
+                patch.object(bm.db, "release_drip_stage") as mock_release, \
+                patch.object(bm.db, "save_autopilot_log"), \
+                patch.object(bm.db, "record_marketing_consent"), \
+                patch.object(bm, "can_dispatch_to_customer", return_value=(True, "OK")), \
+                patch.object(bm, "log_customer_dispatch", return_value=True), \
+                patch.object(bm.db, "upsert_checkout_drip_state",
+                             return_value={"status": "active", "current_stage": 0, "created_at": checkout["created_at"]}), \
+                patch.object(bm.db, "get_shop_settings", return_value=settings):
+            res = asyncio.run(process_single_checkout_recovery(
+                shop="boutique.myshopify.com", client=MagicMock(), shop_name="Boutique", c=checkout))
 
-                                        self.assertIsNotNone(res)
-                                        self.assertEqual(len(updated_stages), 1)
-                                        self.assertEqual(updated_stages[0][0], "ch_resil_mobile_err")
+        self.assertIsNotNone(res)
+        self.assertEqual(claims, [("ch_resil_mobile_err", 0, 1)])
+        mock_release.assert_not_called()
 
     def test_daemon_email_failure_does_not_abort_vip_whatsapp_or_mark_sent(self):
         """
@@ -934,13 +946,13 @@ class TestTier5DaemonResilience(unittest.TestCase):
             return True
 
         wa_called = []
-        async def fake_wa_send(phone, message, settings=None, customer_name=None):
+        async def fake_wa_send(phone, message, settings=None, customer_name=None, **kwargs):
             wa_called.append(phone)
             return {"ok": True, "success": True}
 
         service = PostDeliveryService()
 
-        with patch.object(service.email_dispatcher, "send_email", new_callable=AsyncMock) as mock_mail:
+        with patch.object(service.email_dispatcher, "send_email", new_callable=AsyncMock, return_value=dict(EMAIL_SENT_OK)) as mock_mail:
             mock_mail.side_effect = RuntimeError("SMTP connection drop")
             with patch.object(service.wa_dispatcher, "send_message", side_effect=fake_wa_send):
                 with patch.object(service.mobile_notifier, "notify_merchant", new_callable=AsyncMock):

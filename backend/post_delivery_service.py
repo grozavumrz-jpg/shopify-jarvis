@@ -1,8 +1,15 @@
 """
 backend/post_delivery_service.py
-Autonomous Post-Delivery VIP Review & Upsell Engine.
-Captures order fulfillments, schedules 5-day post-delivery VIP review sequence,
-and dispatches dual-channel (Email + WhatsApp) with MGVIP15 15% discount code.
+Post-Delivery VIP thank-you engine.
+Captures order fulfillments, schedules a thank-you 5 days after fulfillment and sends it
+(Email and/or WhatsApp) with the MGVIP15 code for the NEXT order. The discount is a
+thank-you — it is never conditioned on a review; the review request is separate and optional.
+
+Compliance (CONTRACT.md): each channel is checked with
+compliance_guard.can_dispatch_to_customer (email consent for email, phone/WhatsApp consent
+for WhatsApp, opt-out, quiet hours Europe/Madrid, frequency policy with
+sequence_key "vip:<order_id>") and every successful send is logged with
+log_customer_dispatch. Consent is never invented: unknown == no consent.
 """
 
 import os
@@ -10,7 +17,7 @@ import json
 import asyncio
 import concurrent.futures
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional, Union, Tuple
 
 try:
     import database as db
@@ -41,9 +48,59 @@ except ImportError:
     from backend.mobile_notifier import MobileNotifier
 
 try:
-    from compliance_guard import can_dispatch_to_customer, log_customer_dispatch
+    from compliance_guard import can_dispatch_to_customer, log_customer_dispatch, is_transient_block
 except ImportError:
-    from backend.compliance_guard import can_dispatch_to_customer, log_customer_dispatch
+    from backend.compliance_guard import can_dispatch_to_customer, log_customer_dispatch, is_transient_block
+
+import threading
+
+_VIP_PROCESS_LOCK = threading.Lock()
+
+
+def _consent_from_state(value: Any) -> Optional[bool]:
+    """Shopify consent value -> True / False / None (unknown)."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, dict):
+        state = str(value.get("state") or "").strip().lower()
+        if state == "subscribed":
+            return True
+        if state in ("unsubscribed", "not_subscribed", "redacted", "invalid"):
+            return False
+        return None
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("subscribed", "true", "yes"):
+            return True
+        if v in ("unsubscribed", "not_subscribed", "false", "no", "redacted", "invalid"):
+            return False
+    return None
+
+
+def extract_order_consent(order: Dict[str, Any]) -> Tuple[Optional[bool], Optional[bool]]:
+    """
+    (email_consent, sms_consent) from a Shopify order, tri-state, never invented.
+    Priority: normalized keys added by ShopifyClient (email_marketing_consent /
+    sms_marketing_consent) > customer.*_marketing_consent.state > order
+    buyer_accepts_marketing / customer.accepts_marketing (email only).
+    """
+    customer = order.get("customer") if isinstance(order.get("customer"), dict) else {}
+    email_c = _consent_from_state(order.get("email_marketing_consent"))
+    if email_c is None:
+        email_c = _consent_from_state(customer.get("email_marketing_consent"))
+    if email_c is None:
+        email_c = _consent_from_state(order.get("buyer_accepts_marketing"))
+    if email_c is None:
+        email_c = _consent_from_state(customer.get("accepts_marketing"))
+
+    sms_c = _consent_from_state(order.get("sms_marketing_consent"))
+    if sms_c is None:
+        sms_c = _consent_from_state(customer.get("sms_marketing_consent"))
+    if sms_c is None:
+        sms_c = _consent_from_state(order.get("buyer_accepts_sms_marketing"))
+    return email_c, sms_c
 
 
 def _run_coroutine(coro):
@@ -66,38 +123,63 @@ class PostDeliveryService:
     DISCOUNT_CODE_MGVIP15 = "MGVIP15"
     VIP_DISCOUNT_CODE = "MGVIP15"
 
+    # Max days after scheduled_for a pending thank-you may still go out (then 'expired').
+    VIP_MAX_LATE_DAYS = 14
+
+    # Thank-you + code for the NEXT order + separate, optional review request.
+    # Never "review for a discount", never "5 stars".
     VIP_TEMPLATES: Dict[str, Dict[str, str]] = {
         "it": {
-            "msg": "Ciao {customer_name}! Grazie per aver scelto la nostra collezione. Speriamo che tu stia amando il tuo {purchased_item}! Se hai un momento, ci farebbe immenso piacere una tua recensione onesta a 5 stelle. Come ringraziamento speciale, ecco per te uno sconto esclusivo del 15% sul tuo prossimo acquisto{upsell_clause} con il codice VIP {discount_code}.",
+            "greeting": "Ciao {customer_name}!",
+            "greeting_generic": "Ciao!",
+            "msg": "{greeting} Grazie per il tuo ordine su {brand}. Speriamo che il tuo {purchased_item} ti stia piacendo. Come ringraziamento, ecco uno sconto esclusivo del 15% sul tuo prossimo ordine{upsell_clause} con il codice {discount_code}. Se hai un momento, una recensione sincera ci aiuta molto (è del tutto facoltativa).",
             "upsell": " (perfetto da abbinare a {upsell_item})",
-            "subject": "{customer_name}, speriamo che tu stia amando i tuoi articoli! 15% sconto VIP con {discount_code} 👑",
+            "subject": "{name_prefix}grazie! 15% di sconto sul prossimo ordine con {discount_code}",
+            "item_default": "articolo",
         },
         "ro": {
-            "msg": "Salut {customer_name}! Îți mulțumim din suflet pentru comandă. Sperăm că iubești noul tău {purchased_item}! Ne-ar ajuta enorm o recenzie sinceră de 5 stele. Drept mulțumire, ți-am pregătit 15% reducere VIP pentru următoarea ta comandă{upsell_clause} cu codul {discount_code}.",
-            "upsell": " (perfect pentru {upsell_item})",
-            "subject": "{customer_name}, sperăm că îți plac produsele tale! 15% reducere VIP cu {discount_code} 👑",
+            "greeting": "Salut {customer_name}!",
+            "greeting_generic": "Salut!",
+            "msg": "{greeting} Îți mulțumim pentru comanda de la {brand}. Sperăm că te bucuri de {purchased_item}. Drept mulțumire, ai o reducere exclusivă de 15% la următoarea comandă{upsell_clause} cu codul {discount_code}. Dacă ai un moment, o recenzie sinceră ne ajută mult (este complet opțională).",
+            "upsell": " (perfect cu {upsell_item})",
+            "subject": "{name_prefix}îți mulțumim! 15% reducere la următoarea comandă cu {discount_code}",
+            "item_default": "noul tău articol",
         },
         "en": {
-            "msg": "Hi {customer_name}! Thank you for your order. Hope you are loving your {purchased_item}! Leave an honest review and enjoy 15% off your next order{upsell_clause} with VIP code {discount_code}.",
-            "upsell": " (perfect paired with {upsell_item})",
-            "subject": "{customer_name}, hope you are loving your items! 15% VIP discount with {discount_code} 👑",
+            "greeting": "Hi {customer_name}!",
+            "greeting_generic": "Hi!",
+            "msg": "{greeting} Thank you for your order from {brand}. We hope you're enjoying your {purchased_item}. As a thank-you, here is an exclusive 15% off your next order{upsell_clause} with the code {discount_code}. If you have a moment, an honest review helps us a lot (completely optional).",
+            "upsell": " (pairs well with {upsell_item})",
+            "subject": "{name_prefix}thank you! 15% off your next order with {discount_code}",
+            "item_default": "new piece",
         },
         "es": {
-            "msg": "¡Hola {customer_name}! Muchas gracias por tu compra. ¡Esperamos que estés disfrutando de tu {purchased_item}! Si nos dejas una reseña honesta de 5 estrellas, podrás disfrutar de un 15% de descuento en tu próximo pedido{upsell_clause} con el código {discount_code}.",
+            "greeting": "¡Hola {customer_name}!",
+            "greeting_generic": "¡Hola!",
+            "msg": "{greeting} Gracias por tu pedido en {brand}. Esperamos que estés disfrutando de tu {purchased_item}. Como agradecimiento, aquí tienes un 15% de descuento exclusivo en tu próximo pedido{upsell_clause} con el código {discount_code}. Si tienes un momento, una reseña sincera nos ayuda mucho (es totalmente opcional).",
             "upsell": " (ideal para combinar con {upsell_item})",
-            "subject": "{customer_name}, ¡esperamos que te encanten tus prendas! 15% dto. VIP con {discount_code} 👑",
+            "subject": "{name_prefix}¡gracias! 15% de descuento en tu próximo pedido con {discount_code}",
+            "item_default": "nueva prenda",
         },
         "de": {
-            "msg": "Hallo {customer_name}! Vielen Dank für deine Bestellung. Wir hoffen, du liebst dein(e) {purchased_item}! Hinterlasse eine ehrliche 5-Sterne-Bewertung und erhalte 15% Rabatt auf deine nächste Bestellung{upsell_clause} mit dem VIP-Code {discount_code}.",
-            "upsell": " (perfekt kombinierbar mit {upsell_item})",
-            "subject": "{customer_name}, wir hoffen, du liebst deine Artikel! 15% VIP-Rabatt mit {discount_code} 👑",
+            "greeting": "Hallo {customer_name}!",
+            "greeting_generic": "Hallo!",
+            "msg": "{greeting} Danke für deine Bestellung bei {brand}. Wir hoffen, dir gefällt dein(e) {purchased_item}. Als Dankeschön bekommst du exklusiv 15% Rabatt auf deine nächste Bestellung{upsell_clause} mit dem Code {discount_code}. Wenn du einen Moment Zeit hast, hilft uns eine ehrliche Bewertung sehr (natürlich freiwillig).",
+            "upsell": " (passt perfekt zu {upsell_item})",
+            "subject": "{name_prefix}danke! 15% Rabatt auf deine nächste Bestellung mit {discount_code}",
+            "item_default": "neues Teil",
         },
         "fr": {
-            "msg": "Bonjour {customer_name} ! Merci infiniment pour votre commande. Nous espérons que vous adorez votre {purchased_item} ! Laissez-nous un avis honnête 5 étoiles et profitez de 15% de réduction sur votre prochaine commande{upsell_clause} avec le code VIP {discount_code}.",
+            "greeting": "Bonjour {customer_name} !",
+            "greeting_generic": "Bonjour !",
+            "msg": "{greeting} Merci pour votre commande chez {brand}. Nous espérons que vous appréciez votre {purchased_item}. Pour vous remercier, voici 15% de réduction exclusive sur votre prochaine commande{upsell_clause} avec le code {discount_code}. Si vous avez un moment, un avis honnête nous aide beaucoup (c'est entièrement facultatif).",
             "upsell": " (idéal à associer avec {upsell_item})",
-            "subject": "{customer_name}, nous espérons que vous adorez vos articles ! 15% de réduction VIP avec {discount_code} 👑",
+            "subject": "{name_prefix}merci ! 15% de réduction sur votre prochaine commande avec {discount_code}",
+            "item_default": "nouvelle pièce",
         },
     }
+
+    DEFAULT_BRAND = "Grozavu"
 
     def __init__(self):
         self.email_dispatcher = EmailDispatcher()
@@ -125,28 +207,55 @@ class PostDeliveryService:
             return None
 
     @classmethod
+    def _template(cls, lang: Optional[str]) -> Tuple[str, Dict[str, str]]:
+        clean_lang = (lang or "en").strip().lower().replace("_", "-").split("-")[0]
+        if clean_lang not in cls.VIP_TEMPLATES:
+            clean_lang = "en"
+        return clean_lang, cls.VIP_TEMPLATES[clean_lang]
+
+    @classmethod
     def build_vip_message(
         cls,
         customer_name: str,
         purchased_item: str = "",
         upsell_item: Optional[str] = None,
         discount_code: str = "MGVIP15",
-        lang: str = "en"
+        lang: str = "en",
+        shop_name: Optional[str] = None,
     ) -> str:
         """
-        Builds VIP gratitude, 5-star review request, and 15% upsell copy with discount code.
-        Directly tested by test_f4_04.
+        Thank-you copy: gratitude + exclusive 15% code for the NEXT order + a separate,
+        optional review request. The code is never conditioned on a review or rating.
+        Brand = shop_name passed in (Shopify store name, e.g. "Grozavu").
+        Empty customer name -> generic greeting (never "Client").
         """
-        clean_lang = (lang or "en").lower().split("-")[0]
-        tmpl = cls.VIP_TEMPLATES.get(clean_lang) or cls.VIP_TEMPLATES["en"]
-
-        upsell_clause = tmpl["upsell"].format(upsell_item=upsell_item) if upsell_item else ""
+        _, tmpl = cls._template(lang)
+        name = (customer_name or "").strip()
+        greeting = tmpl["greeting"].format(customer_name=name) if name else tmpl["greeting_generic"]
+        upsell = (upsell_item or "").strip()
+        upsell_clause = tmpl["upsell"].format(upsell_item=upsell) if upsell else ""
         return tmpl["msg"].format(
-            customer_name=customer_name or "Client",
-            purchased_item=purchased_item or "Articol",
+            greeting=greeting,
+            brand=(shop_name or "").strip() or cls.DEFAULT_BRAND,
+            purchased_item=(purchased_item or "").strip() or tmpl["item_default"],
             upsell_clause=upsell_clause,
-            discount_code=discount_code or cls.DISCOUNT_CODE_MGVIP15
+            discount_code=(discount_code or "").strip() or cls.DISCOUNT_CODE_MGVIP15,
         )
+
+    @classmethod
+    def build_vip_subject(cls, customer_name: str, discount_code: str = "MGVIP15", lang: str = "en") -> str:
+        _, tmpl = cls._template(lang)
+        name = (customer_name or "").strip()
+        subject = tmpl["subject"].format(
+            name_prefix=f"{name}, " if name else "",
+            discount_code=(discount_code or "").strip() or cls.DISCOUNT_CODE_MGVIP15,
+        )
+        return subject[:1].upper() + subject[1:] if subject else subject
+
+    @staticmethod
+    def sequence_key(order_id: Any) -> str:
+        """Frequency-policy key for the post-delivery thank-you (max 1 per order)."""
+        return f"vip:{order_id}"
 
     def sync_fulfilled_orders(self, shop: str, days_back: int = 14, delay_days: int = 5) -> int:
         """
@@ -176,7 +285,13 @@ class PostDeliveryService:
         enqueued_count = 0
         for order in orders:
             # 1. Suppression check: Cancelled or refunded orders are ignored (test_f4_b03)
-            if order.get("cancelled_at") or order.get("cancel_reason") or order.get("financial_status") == "refunded":
+            if order.get("cancelled_at") or order.get("cancel_reason") or order.get("financial_status") in ("refunded", "voided"):
+                # Cancelled/refunded after it was queued: make sure no "thank you" goes out
+                try:
+                    if db and order.get("id") is not None:
+                        db.mark_post_delivery_status(str(order.get("id")), "canceled")
+                except Exception as cancel_err:
+                    print(f"[PostDeliverySync] cancel pending VIP for {order.get('id')}: {cancel_err}")
                 continue
 
             # 2. Fulfillment check: Order must have successful fulfillments (test_f4_b01)
@@ -206,9 +321,9 @@ class PostDeliveryService:
                 continue
 
             # 5. Customer info
-            c_first = customer.get("first_name", "") if isinstance(customer, dict) else ""
-            c_last = customer.get("last_name", "") if isinstance(customer, dict) else ""
-            c_name = f"{c_first} {c_last}".strip() or order.get("customer_name") or "Valued Client"
+            c_first = str(customer.get("first_name") or "") if isinstance(customer, dict) else ""
+            c_last = str(customer.get("last_name") or "") if isinstance(customer, dict) else ""
+            c_name = f"{c_first} {c_last}".strip() or (order.get("customer_name") or "").strip()
             order_id = str(order.get("id"))
             order_number = str(order.get("order_number") or order.get("name") or order_id).lstrip("#")
 
@@ -218,7 +333,7 @@ class PostDeliveryService:
             # 7. Line items summary
             items_summary = [
                 {
-                    "title": item.get("title") or item.get("name") or "Articol",
+                    "title": item.get("title") or item.get("name") or "",
                     "quantity": item.get("quantity", 1),
                     "price": str(item.get("price", "0.00")),
                     "variant_title": item.get("variant_title", ""),
@@ -228,15 +343,12 @@ class PostDeliveryService:
             ]
 
             try:
-                if db and (c_email or c_phone):
-                    buyer_mkt = order.get("buyer_accepts_marketing")
-                    if buyer_mkt is None and isinstance(customer, dict):
-                        buyer_mkt = customer.get("accepts_marketing")
-                    db.record_marketing_consent(
-                        shop, email=c_email or None, phone=c_phone or None,
-                        accepts_marketing=bool(buyer_mkt if buyer_mkt is not None else True),
-                        source="order"
-                    )
+                # Consent is recorded ONLY when Shopify tells us (True/False); unknown -> nothing.
+                email_consent, sms_consent = extract_order_consent(order)
+                if c_email and email_consent is not None:
+                    db.record_marketing_consent(shop, email=c_email, accepts_marketing=email_consent, source="order")
+                if c_phone and sms_consent is not None:
+                    db.record_marketing_consent(shop, phone=c_phone, accepts_marketing=sms_consent, source="order")
 
                 ok = db.enqueue_post_delivery_automation(
                     shop=shop,
@@ -257,23 +369,62 @@ class PostDeliveryService:
 
         return enqueued_count
 
+    @staticmethod
+    def _send_succeeded(result: Any) -> bool:
+        return isinstance(result, dict) and result.get("success") is True
+
+    def _resolve_brand(self, shop: str, settings: Dict[str, Any], shop_name: Optional[str]) -> str:
+        if shop_name and str(shop_name).strip():
+            return str(shop_name).strip()
+        if db:
+            try:
+                rec = db.get_shop(shop) or {}
+                if rec.get("shop_name"):
+                    return str(rec["shop_name"]).strip()
+            except Exception:
+                pass
+        return str(settings.get("sender_name") or "").strip() or self.DEFAULT_BRAND
+
     def process_due_vip_automations(
         self,
         shop: str,
         settings: Optional[Dict] = None,
-        now_dt: Optional[datetime] = None
+        now_dt: Optional[datetime] = None,
+        shop_name: Optional[str] = None,
     ) -> int:
         """
-        Dispatches due VIP review & upsell requests with MGVIP15 discount code via Email & WhatsApp.
-        Returns count of dispatched automations (int).
+        Sends due post-delivery thank-you messages (MGVIP15 for the next order) per channel,
+        only where compliance_guard allows it (consent for that channel, opt-out, quiet hours
+        Europe/Madrid, frequency policy with sequence_key "vip:<order_id>").
+        - Sent on at least one channel  -> record 'sent', dispatch logged, merchant notified.
+        - Blocked only transiently (quiet hours / frequency) or provider failure -> stays
+          'pending' and is retried next cycle (until VIP_MAX_LATE_DAYS -> 'expired').
+        - Blocked permanently on every channel (no consent / opted out / no contact) -> 'suppressed'.
+        Returns the number of automations actually delivered on >= 1 channel.
         """
+        if not _VIP_PROCESS_LOCK.acquire(blocking=False):
+            print(f"[PostDelivery] VIP processing already running; skipping concurrent run for {shop}")
+            return 0
+        try:
+            return self._process_due_vip_automations_locked(shop, settings, now_dt, shop_name)
+        finally:
+            _VIP_PROCESS_LOCK.release()
+
+    def _process_due_vip_automations_locked(
+        self,
+        shop: str,
+        settings: Optional[Dict],
+        now_dt: Optional[datetime],
+        shop_name: Optional[str],
+    ) -> int:
         now = self.parse_datetime(now_dt) or datetime.now(timezone.utc)
-        resolved_settings = settings or {}
+        resolved_settings = dict(settings or {})
         if not resolved_settings and db:
             try:
                 resolved_settings = db.get_shop_settings(shop) or {}
             except Exception:
                 resolved_settings = {}
+        resolved_settings.setdefault("shop", shop)
 
         due_records = []
         if db:
@@ -286,106 +437,218 @@ class PostDeliveryService:
         if not due_records:
             return 0
 
+        brand = self._resolve_brand(shop, resolved_settings, shop_name)
         dispatched_count = 0
         for record in due_records:
-            order_id = record["order_id"]
-            order_number = record.get("order_number") or order_id
-            c_name = record.get("customer_name") or "Client"
-            c_email = record.get("customer_email")
-            c_phone = record.get("customer_phone")
-            discount_code = record.get("discount_code") or self.DISCOUNT_CODE_MGVIP15
-            items_summary = record.get("items_summary") or []
-            if isinstance(items_summary, str):
-                try:
-                    items_summary = json.loads(items_summary)
-                except Exception:
-                    items_summary = []
-
-            first_item = items_summary[0].get("title", "Selection") if (items_summary and isinstance(items_summary, list)) else "Selection"
-            geo = detect_customer_language_and_country(c_name, c_email or "", c_phone or "", "", "")
-            lang = geo.get("lang", "en")
-
-            vip_message = self.build_vip_message(
-                customer_name=c_name,
-                purchased_item=first_item,
-                discount_code=discount_code,
-                lang=lang
-            )
-
-            # 1. Dispatch Email if email present
-            if c_email and "@" in c_email:
-                clean_lang = lang if lang in self.VIP_TEMPLATES else "en"
-                tmpl = self.VIP_TEMPLATES[clean_lang]
-                subject = tmpl["subject"].format(customer_name=c_name, discount_code=discount_code)
-                shop_name = resolved_settings.get("sender_name") or shop
-                html_body = self.email_dispatcher.build_html_email(
-                    shop_name=shop_name,
-                    customer_name=c_name,
-                    text_body=vip_message,
-                    discount_code=discount_code,
-                    line_items=items_summary,
-                    lang=lang
-                )
-                try:
-                    _run_coroutine(self.email_dispatcher.send_email(
-                        to_email=c_email,
-                        subject=subject,
-                        body_text=vip_message,
-                        body_html=html_body,
-                        settings=resolved_settings
-                    ))
-                except Exception as mail_err:
-                    print(f"[VIP Email Error {order_id}]: {mail_err}")
-
-            # 2. Dispatch WhatsApp if phone present
-            if c_phone:
-                try:
-                    _run_coroutine(self.wa_dispatcher.send_message(
-                        phone=c_phone,
-                        message=vip_message,
-                        settings=resolved_settings,
-                        customer_name=c_name
-                    ))
-                except Exception as wa_err:
-                    print(f"[VIP WhatsApp Error {order_id}]: {wa_err}")
-
-            # 3. Notify merchant via MobileNotifier
             try:
-                event_data = {
-                    "customer_name": c_name,
-                    "order_number": order_number,
-                    "discount_code": discount_code
-                }
-                _run_coroutine(self.mobile_notifier.notify_merchant(
-                    "vip_upsell_sent",
-                    event_data,
-                    resolved_settings
-                ))
-            except Exception as notify_err:
-                print(f"[VIP Merchant Mobile Alert Error {order_id}]: {notify_err}")
-
-            # 4. Mark automation record as sent in PostgreSQL
-            try:
-                db.mark_post_delivery_sent(order_id=order_id, sent_at=now)
-            except Exception as mark_err:
-                print(f"[VIP Mark Sent Error {order_id}]: {mark_err}")
-
-            # 5. Log to autopilot_logs
-            try:
-                db.save_autopilot_log(
-                    shop=shop,
-                    action_type="vip_review_upsell",
-                    target_name=c_name,
-                    target_email=c_email or c_phone or "VIP Customer",
-                    subject=f"VIP Review Request ({discount_code})",
-                    message=vip_message,
-                    revenue=0.0,
-                    status="vip_sent",
-                    lang=lang
-                )
-            except Exception as log_err:
-                print(f"[VIP Autopilot Log Error {order_id}]: {log_err}")
-
-            dispatched_count += 1
+                dispatched_count += self._process_vip_record(shop, record, now, resolved_settings, brand)
+            except Exception as rec_err:
+                # One malformed record must never abort the batch (it stays pending).
+                print(f"[VIP Record Error {record.get('order_id') if isinstance(record, dict) else '?'}]: {rec_err}")
 
         return dispatched_count
+
+    def _process_vip_record(self, shop: str, record: Dict[str, Any], now: datetime,
+                            resolved_settings: Dict[str, Any], brand: str) -> int:
+        """Compliance-gated send of one due thank-you. Returns 1 if delivered on >= 1 channel."""
+        order_id = record["order_id"]
+        order_number = record.get("order_number") or order_id
+        c_name = (record.get("customer_name") or "").strip()
+        if c_name.lower() in ("client", "valued client"):
+            c_name = ""
+        c_email = (record.get("customer_email") or "").strip() or None
+        c_phone = (record.get("customer_phone") or "").strip() or None
+        discount_code = record.get("discount_code") or self.DISCOUNT_CODE_MGVIP15
+        seq_key = self.sequence_key(order_id)
+        items_summary = record.get("items_summary") or []
+        if isinstance(items_summary, str):
+            try:
+                items_summary = json.loads(items_summary)
+            except Exception:
+                items_summary = []
+        if isinstance(items_summary, dict):
+            items_summary = [items_summary]
+        if not isinstance(items_summary, list):
+            items_summary = []
+        # Malformed rows (plain strings, None) must never crash the batch.
+        items_summary = [
+            it if isinstance(it, dict) else {"title": str(it)}
+            for it in items_summary if it is not None and (isinstance(it, dict) or str(it).strip())
+        ]
+
+        first_item = ""
+        if items_summary and isinstance(items_summary[0], dict):
+            first_item = str(items_summary[0].get("title") or "").strip()
+        geo = detect_customer_language_and_country(c_name, c_email or "", c_phone or "", "", "")
+        lang = (geo or {}).get("lang", "en") or "en"
+
+        vip_message = self.build_vip_message(
+            customer_name=c_name,
+            purchased_item=first_item,
+            discount_code=discount_code,
+            lang=lang,
+            shop_name=brand,
+        )
+
+        # ── Compliance gate per channel ──
+        email_ok, email_reason = (False, "no email address")
+        if c_email and "@" in c_email:
+            email_ok, email_reason = can_dispatch_to_customer(
+                shop, email=c_email, phone=c_phone, channel="email", now_dt=now,
+                message_type="vip_post_delivery", sequence_key=seq_key,
+            )
+        wa_ok, wa_reason = (False, "no phone number")
+        if c_phone:
+            wa_ok, wa_reason = can_dispatch_to_customer(
+                shop, email=c_email, phone=c_phone, channel="whatsapp", now_dt=now,
+                message_type="vip_post_delivery", sequence_key=seq_key,
+            )
+
+        if not email_ok and not wa_ok:
+            transient = (c_email and is_transient_block(email_reason)) or (c_phone and is_transient_block(wa_reason))
+            late = False
+            sched = self.parse_datetime(record.get("scheduled_for"))
+            if sched is not None and (now - sched) > timedelta(days=self.VIP_MAX_LATE_DAYS):
+                late = True
+            if transient and not late:
+                print(f"[VIP Hold {order_id}]: email={email_reason} | whatsapp={wa_reason}")
+                return 0
+            final_status = "expired" if (transient and late) else "suppressed"
+            self._close_without_send(shop, order_id, c_name, c_email, c_phone, discount_code, lang,
+                                     final_status, f"email: {email_reason} | whatsapp: {wa_reason}")
+            return 0
+
+        sent_channels: List[str] = []
+        failures: List[str] = []
+
+        # 1. Email (only if allowed for the email identity)
+        if email_ok:
+            subject = self.build_vip_subject(c_name, discount_code, lang)
+            html_body = self.email_dispatcher.build_html_email(
+                shop_name=brand,
+                customer_name=c_name,
+                text_body=vip_message,
+                discount_code=discount_code,
+                line_items=items_summary,
+                lang=lang,
+                customer_email=c_email,
+                shop_domain=shop,
+                email_kind="vip",
+            )
+            try:
+                mail_res = _run_coroutine(self.email_dispatcher.send_email(
+                    to_email=c_email,
+                    subject=subject,
+                    body_text=vip_message,
+                    body_html=html_body,
+                    settings=resolved_settings,
+                    shop_domain=shop,
+                ))
+                if self._send_succeeded(mail_res):
+                    sent_channels.append("email")
+                    try:
+                        log_customer_dispatch(shop, c_email, "email", "vip_post_delivery", sequence_key=seq_key)
+                    except Exception as log_err:
+                        print(f"[VIP Dispatch Log Error {order_id}]: {log_err}")
+                else:
+                    failures.append(f"email: {(mail_res or {}).get('reason') if isinstance(mail_res, dict) else 'no result'}")
+            except Exception as mail_err:
+                failures.append(f"email: {mail_err}")
+                print(f"[VIP Email Error {order_id}]: {mail_err}")
+
+        # 2. WhatsApp (only if allowed for the phone identity)
+        if wa_ok:
+            try:
+                wa_res = _run_coroutine(self.wa_dispatcher.send_message(
+                    phone=c_phone,
+                    message=vip_message,
+                    settings=resolved_settings,
+                    customer_name=c_name,
+                    shop_domain=shop,
+                    message_type="marketing",
+                    lang=lang,
+                ))
+                if self._send_succeeded(wa_res):
+                    sent_channels.append("whatsapp")
+                    try:
+                        log_customer_dispatch(shop, c_phone, "whatsapp", "vip_post_delivery", sequence_key=seq_key)
+                    except Exception as log_err:
+                        print(f"[VIP Dispatch Log Error {order_id}]: {log_err}")
+                else:
+                    failures.append(f"whatsapp: {(wa_res or {}).get('reason') if isinstance(wa_res, dict) else 'no result'}")
+            except Exception as wa_err:
+                failures.append(f"whatsapp: {wa_err}")
+                print(f"[VIP WhatsApp Error {order_id}]: {wa_err}")
+
+        if not sent_channels:
+            # Nothing was delivered: keep pending for a retry next cycle (never report "sent").
+            print(f"[VIP Not Sent {order_id}]: {' | '.join(failures) or 'no channel delivered'}")
+            return 0
+
+        # 3. Notify merchant via MobileNotifier
+        try:
+            event_data = {
+                "customer_name": c_name or "—",
+                "order_number": order_number,
+                "discount_code": discount_code,
+                "channels": sent_channels,
+            }
+            _run_coroutine(self.mobile_notifier.notify_merchant(
+                "vip_upsell_sent",
+                event_data,
+                resolved_settings
+            ))
+        except Exception as notify_err:
+            print(f"[VIP Merchant Mobile Alert Error {order_id}]: {notify_err}")
+
+        # 4. Mark automation record as sent
+        try:
+            db.mark_post_delivery_sent(order_id=order_id, sent_at=now)
+        except Exception as mark_err:
+            print(f"[VIP Mark Sent Error {order_id}]: {mark_err}")
+
+        # 5. Log to autopilot_logs (truthful: only channels that were accepted)
+        try:
+            db.save_autopilot_log(
+                shop=shop,
+                action_type="vip_review_upsell",
+                target_name=c_name,
+                target_email=c_email or c_phone or "",
+                subject=f"VIP thank-you ({discount_code}) via {', '.join(sent_channels)}",
+                message=vip_message,
+                revenue=0.0,
+                status="vip_sent_" + "_".join(sent_channels),
+                lang=lang
+            )
+        except Exception as log_err:
+            print(f"[VIP Autopilot Log Error {order_id}]: {log_err}")
+
+        return 1
+
+    def _close_without_send(self, shop: str, order_id: str, c_name: str, c_email: Optional[str],
+                            c_phone: Optional[str], discount_code: str, lang: str, status: str, reason: str) -> None:
+        """Terminal non-sent outcome ('suppressed' / 'expired'), logged truthfully once."""
+        print(f"[VIP {status.upper()} {order_id}]: {reason}")
+        if not db:
+            return
+        try:
+            changed = db.mark_post_delivery_status(order_id, status)
+        except Exception as mark_err:
+            print(f"[VIP Mark {status} Error {order_id}]: {mark_err}")
+            changed = False
+        if not changed:
+            return
+        try:
+            db.save_autopilot_log(
+                shop=shop,
+                action_type="vip_review_upsell",
+                target_name=c_name,
+                target_email=c_email or c_phone or "",
+                subject=f"VIP thank-you NOT sent ({status})",
+                message=reason[:500],
+                revenue=0.0,
+                status=f"vip_{status}",
+                lang=lang
+            )
+        except Exception as log_err:
+            print(f"[VIP Autopilot Log Error {order_id}]: {log_err}")

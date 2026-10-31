@@ -23,6 +23,7 @@ import backend.post_delivery_service as pds
 from backend.post_delivery_service import PostDeliveryService
 import backend.database as db
 from tests.helpers import make_sample_order, make_sample_shop_settings
+from tests.helpers import EMAIL_SENT_OK, WA_SENT_OK, allow_vip_compliance
 
 
 class TestAdversarialDatabaseIdempotencyAndState(unittest.TestCase):
@@ -180,6 +181,7 @@ class TestAdversarialDispatchExceptionResilience(unittest.TestCase):
     """
 
     def setUp(self):
+        allow_vip_compliance(self)
         self.service = PostDeliveryService()
 
     def test_adv_email_timeout_does_not_block_whatsapp_or_db_mark(self):
@@ -202,7 +204,7 @@ class TestAdversarialDispatchExceptionResilience(unittest.TestCase):
 
         with patch.object(pds.db, "get_due_post_delivery_automations", return_value=[record]):
             with patch.object(self.service.email_dispatcher, "send_email", side_effect=httpx.TimeoutException("SMTP Timeout")):
-                with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock) as mock_wa:
+                with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock, return_value=dict(WA_SENT_OK)) as mock_wa:
                     with patch.object(self.service.mobile_notifier, "notify_merchant", new_callable=AsyncMock) as mock_notify:
                         with patch.object(pds.db, "mark_post_delivery_sent") as mock_mark:
                             with patch.object(pds.db, "save_autopilot_log"):
@@ -231,7 +233,7 @@ class TestAdversarialDispatchExceptionResilience(unittest.TestCase):
         }
 
         with patch.object(pds.db, "get_due_post_delivery_automations", return_value=[record]):
-            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock) as mock_email:
+            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock, return_value=dict(EMAIL_SENT_OK)) as mock_email:
                 with patch.object(self.service.wa_dispatcher, "send_message", side_effect=RuntimeError("Meta Graph API 500")):
                     with patch.object(self.service.mobile_notifier, "notify_merchant", new_callable=AsyncMock) as mock_notify:
                         with patch.object(pds.db, "mark_post_delivery_sent") as mock_mark:
@@ -259,8 +261,8 @@ class TestAdversarialDispatchExceptionResilience(unittest.TestCase):
         }
 
         with patch.object(pds.db, "get_due_post_delivery_automations", return_value=[record]):
-            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock):
-                with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock):
+            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock, return_value=dict(EMAIL_SENT_OK)):
+                with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock, return_value=dict(WA_SENT_OK)):
                     with patch.object(self.service.mobile_notifier, "notify_merchant", side_effect=Exception("Discord 503")):
                         with patch.object(pds.db, "mark_post_delivery_sent") as mock_mark:
                             with patch.object(pds.db, "save_autopilot_log"):
@@ -288,7 +290,7 @@ class TestAdversarialDispatchExceptionResilience(unittest.TestCase):
 
         async def run_in_async_context():
             with patch.object(pds.db, "get_due_post_delivery_automations", return_value=[record]):
-                with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock) as mock_mail:
+                with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock, return_value=dict(EMAIL_SENT_OK)) as mock_mail:
                     with patch.object(pds.db, "mark_post_delivery_sent"):
                         with patch.object(pds.db, "save_autopilot_log"):
                             return self.service.process_due_vip_automations("luxury.myshopify.com")
@@ -304,6 +306,8 @@ class TestAdversarialDispatchExceptionResilience(unittest.TestCase):
         - Order 2: Email & WhatsApp both throw exceptions
         - Order 3: Success
         All 3 orders are processed; Order 2 failure does NOT crash or skip Order 3.
+        Truthful reporting (W1 fix): Order 2 delivered nothing, so it is NOT counted and NOT
+        marked sent (it stays pending for a retry) — previously it was reported as dispatched.
         """
         records = [
             {"order_id": "ord_b1", "customer_name": "Client 1", "customer_email": "c1@test.com", "discount_code": "MGVIP15", "items_summary": []},
@@ -314,7 +318,7 @@ class TestAdversarialDispatchExceptionResilience(unittest.TestCase):
         async def selective_send_email(**kwargs):
             if kwargs.get("to_email") == "c2@test.com":
                 raise RuntimeError("Hard SMTP failure for order 2")
-            return {"ok": True}
+            return {"success": True, "reason": "sent", "provider": "resend"}
 
         marked_sent_ids = []
 
@@ -327,9 +331,10 @@ class TestAdversarialDispatchExceptionResilience(unittest.TestCase):
                 with patch.object(pds.db, "mark_post_delivery_sent", side_effect=fake_mark_sent):
                     with patch.object(pds.db, "save_autopilot_log"):
                         count = self.service.process_due_vip_automations("luxury.myshopify.com")
-                        self.assertEqual(count, 3)
+                        self.assertEqual(count, 2)
                         self.assertIn("ord_b1", marked_sent_ids)
                         self.assertIn("ord_b3", marked_sent_ids)
+                        self.assertNotIn("ord_b2", marked_sent_ids)
 
 
 class TestAdversarialMultiLanguageTemplates(unittest.TestCase):
@@ -356,7 +361,7 @@ class TestAdversarialMultiLanguageTemplates(unittest.TestCase):
             self.assertIn("upsell", tmpl)
             self.assertIn("subject", tmpl)
 
-            subject = tmpl["subject"].format(customer_name="Lorenzo", discount_code="MGVIP15")
+            subject = PostDeliveryService.build_vip_subject("Lorenzo", "MGVIP15", lang)
             self.assertIn("Lorenzo", subject)
             self.assertIn("MGVIP15", subject)
 
@@ -492,6 +497,7 @@ class TestAdversarialShopifyOrderPayloadEdgeCases(unittest.TestCase):
     """
 
     def setUp(self):
+        allow_vip_compliance(self)
         self.service = PostDeliveryService()
 
     def test_adv_missing_customer_dict_guest_checkout(self):
@@ -524,7 +530,8 @@ class TestAdversarialShopifyOrderPayloadEdgeCases(unittest.TestCase):
                     kwargs = mock_enqueue.call_args[1]
                     self.assertEqual(kwargs["customer_email"], "guest@luxury.com")
                     self.assertEqual(kwargs["customer_phone"], "+40721999888")
-                    self.assertIn(kwargs["customer_name"], ["Valued Client", "Client"])
+                    # No invented placeholder name: greeting falls back to a generic "Hi!"
+                    self.assertEqual(kwargs["customer_name"], "")
 
     def test_adv_malformed_fulfillments_list_resilience(self):
         """
@@ -656,7 +663,7 @@ class TestAdversarialShopifyOrderPayloadEdgeCases(unittest.TestCase):
             }
 
             with patch.object(pds.db, "get_due_post_delivery_automations", return_value=[record]):
-                with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock):
+                with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock, return_value=dict(EMAIL_SENT_OK)):
                     with patch.object(pds.db, "mark_post_delivery_sent"):
                         with patch.object(pds.db, "save_autopilot_log"):
                             # Must not raise exception

@@ -1,11 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react'
+import { api, apiPost, readJson, errorText, onAuthRequired, setAdminKey, hasAdminKey, storageGet, storageSet } from './api.js'
 
 // Multi-language dictionary (English & Romanian)
 const I18N = {
   en: {
     brand_sub_pro: 'EXECUTIVE PRO',
     brand_sub_free: 'OBSERVER MODE',
-    telemetry_connected: 'MAISON GROZAVU LIVE TELEMETRY',
+    telemetry_connected: 'SHOPIFY CONNECTED',
+    telemetry_disconnected: 'SHOPIFY NOT CONNECTED',
+    updated_at: 'Updated at',
     voice_active: '🎙️ VOICE: ACTIVE',
     voice_mute: '🔇 VOICE: MUTE',
     upgrade_btn: '⚡ UPGRADE PRO ($9.99/mo)',
@@ -22,50 +25,51 @@ const I18N = {
     voice_locked_msg: '🔒 Jarvis autonomous voice is available on Pro Plan.',
     unlock_pro: 'Unlock Pro ($9.99)',
     orders_today: 'ORDERS TODAY',
-    orders_sub: '▲ Synced in real-time',
+    orders_sub: 'Updated at',
     revenue_today: 'REVENUE TODAY',
     revenue_30d: '30-day velocity:',
     abandoned_carts: 'ABANDONED CHECKOUTS',
     abandoned_alert: '⚠️ Immediate revenue recovery opportunity',
     abandoned_ok: '✅ Zero abandoned carts',
     new_customers: 'NEW CUSTOMERS (24H)',
-    customers_sub: 'Customer base expanding',
+    customers_sub: 'First-time customers, last 24h',
     aov_label: 'AVG ORDER VALUE (AOV)',
-    aov_sub: 'Target: >150 EUR for luxury fashion',
+    aov_sub: 'Average of the last 30 days',
     retention_label: 'RETENTION RATE',
-    retention_sub: 'Repeat clientele',
+    retention_sub: 'returning customers',
     unique_buyers_label: 'UNIQUE BUYERS (30D)',
     unique_buyers_sub: 'Customer accounts',
     vip_customer_label: 'TOP VIP CLIENT',
     tactical_plan: '🎯 STRATEGIC PRIORITIES FOR TODAY',
     ai_prioritized: 'AI OPTIMIZED',
-    analyzing_priorities: 'Jarvis is calculating growth priorities...',
+    analyzing_priorities: 'No priorities generated yet.',
     traffic_strategy: '📈 GROWTH STRATEGY & ANOMALY RADAR',
     daily_growth_tip: 'GROWTH STRATEGY OF THE DAY',
     auto_diagnostics: 'AUTONOMOUS DIAGNOSTICS:',
-    store_nominal: 'Store operating at peak health. No critical bottlenecks detected.',
+    store_nominal: 'No alerts right now.',
+    diagnostics_unavailable: 'Diagnostics unavailable — Shopify is not connected.',
     quick_diagnosis_btn: '💡 INSTANT DIAGNOSIS: WHY ARE SALES LOW TODAY AND WHAT CAN I FIX RAPIDLY?',
     chat_welcome_title: 'Jarvis Executive Brain is Active.',
-    chat_welcome_desc: 'I monitor every order, checkout, Google search intent, and conversion metric for Maison Grozavu. How shall we scale today?',
+    chat_welcome_desc: 'I can read orders, abandoned checkouts and products from Shopify (when the store is connected) and turn them into AI ideas and drafts. Numbers always come from Shopify; everything else is an idea for you to verify.',
     chip_diagnosis: '💡 Why are my sales low today and what can I fix immediately?',
-    chip_boost: '⚡ /boost — Instant Conversion & Traffic Multiplier',
-    chip_browser: '🌐 /browser — Autonomous Google & Social Lead Radar',
+    chip_boost: '⚡ /boost — Quick conversion ideas (AI)',
+    chip_browser: '🌐 /browser — Google & social customer ideas (AI)',
     chip_goal: '🎯 /goal — Mathematical 10,000€ Revenue Blueprint',
-    chip_aov: '🛍️ How do we increase Average Order Value (AOV) for Maison Grozavu?',
-    chat_placeholder_free: 'Ask Jarvis ({count} free questions left today)...',
+    chip_aov: '🛍️ How do we increase Average Order Value (AOV) for Grozavu?',
+    chat_placeholder_free: 'Ask Jarvis anything about the store...',
     chat_placeholder_pro: 'Command Jarvis (/boost, /browser, /goal or any sales task)...',
     chat_send: 'SEND',
     thinking_text: 'Jarvis is formulating executive tactical advice...',
     action_tiktok_title: '🎬 Viral 30s TikTok/Reels Script',
-    action_tiktok_desc: 'Generates a 3-step high-converting luxury video script (3s visual hook, problem/solution, and direct atelier CTA).',
+    action_tiktok_desc: 'AI draft of a 3-step streetwear video script (3s visual hook, problem/solution and a direct CTA to the store).',
     action_email_title: '📧 Magnetic Cart Recovery Email',
-    action_email_desc: 'Persuasive abandoned checkout sequence with emotional luxury angle, urgency, and 10% promo code (MG10).',
+    action_email_desc: 'AI draft of an abandoned-checkout email. Nothing is sent — copy it and review it first.',
     action_seo_title: '🔍 Google SEO & Conversion Catalog Audit',
-    action_seo_desc: 'Rewrites product titles and descriptions to capture high-intent Google searches and eliminate checkout hesitation.',
-    action_vip_title: '👑 VIP Loyalty & Private Atelier Reward',
-    action_vip_desc: 'Identify top spenders and draft an exclusive private appreciation offer to trigger high-margin reorders.',
-    action_post_title: '📦 3-Day Post-Delivery Review & Upsell',
-    action_post_desc: 'Automated 3-day post-delivery sequence requesting photo reviews and recommending a complementary item.',
+    action_seo_desc: 'AI suggestions for product titles and descriptions. Nothing is changed in Shopify.',
+    action_vip_title: '👑 VIP Loyalty Email',
+    action_vip_desc: 'AI draft of a thank-you email for returning customers. Nothing is sent automatically.',
+    action_post_title: '📦 Post-Delivery Thank-You & Review Request',
+    action_post_desc: 'AI draft of a post-delivery email: thank-you, care tip and an optional, honest review request.',
     action_trigger: 'GENERATE NOW →',
     action_generating: 'GENERATING WITH AI...',
     pricing_title: 'CHOOSE THE INTELLIGENCE LEVEL FOR YOUR STORE',
@@ -75,45 +79,45 @@ const I18N = {
     plan_free_price: '$0',
     plan_free_period: '/ forever',
     plan_free_desc: 'Monitors orders and gives high-level visibility over store metrics.',
-    plan_free_perk1: '✔ Real-time sales & order dashboard',
-    plan_free_perk2: '✔ 3 free manual chat questions / day',
+    plan_free_perk1: '✔ Sales & orders dashboard',
+    plan_free_perk2: '✔ Manual chat with Jarvis',
     plan_free_perk3: '✔ Text-only daily briefing on demand',
     plan_free_dim1: '✖ No autonomous audio voice',
     plan_free_dim2: '✖ No 1-click viral campaign generators',
     plan_free_dim3: '✖ No proactive loss detection alerts',
     plan_free_btn_active: 'CURRENT PLAN',
-    plan_free_btn_switch: 'DOWNGRADE TO FREE',
+    plan_free_btn_switch: 'To cancel Pro: Shopify Admin → Settings → Apps',
     plan_pro_title: 'Jarvis Autonomous Pro',
     plan_pro_badge: 'RECOMMENDED FOR SALES',
     plan_pro_price: '$9.99',
     plan_pro_period: '/ month (7-day free trial)',
-    plan_pro_desc: 'Full-fledged autonomous AI partner with voice synthesis, predictive alerts, and automated revenue generators.',
+    plan_pro_desc: 'AI assistant with voice briefings, abandoned-cart alerts and AI-generated sales drafts.',
     plan_pro_perk1: '⭐ Jarvis Speaks to You: Daily synthetic voice audio report',
     plan_pro_perk2: '⭐ Unlimited AI Chat: No question limits',
     plan_pro_perk3: '⭐ 1-Click Campaigns: Viral TikTok scripts & cart emails',
     plan_pro_perk4: '⭐ Proactive Loss Prevention: Instant cart alerts',
-    plan_pro_perk5: '⭐ Store Health Matrix: Live conversion & velocity audit',
-    plan_pro_perk6: '⭐ Daily AI Action Priorities with Gamified XP',
+    plan_pro_perk5: '⭐ AI store health summary',
+    plan_pro_perk6: '⭐ Daily AI action priorities',
     plan_pro_btn: '⚡ ACTIVATE JARVIS PRO ($9.99/mo - 7 DAYS TRIAL)',
-    plan_pro_btn_active: 'PRO ACTIVE (7-DAY FREE TRIAL)',
-    test_mode_toggle: '🧪 Developer Mock Toggle',
+    plan_pro_btn_active: 'PRO PLAN ACTIVE',
     copied_toast: 'Copied to clipboard!',
     autopilot_title: 'AUTONOMOUS REVENUE DISPATCH COMMAND',
-    autopilot_sub: 'Jarvis continuously monitors checkouts and dispatches recovery emails without human intervention.',
-    autopilot_status_active: '🟢 AUTOPILOT: 100% ONLINE & VIGILANT',
-    autopilot_btn_dispatch: '⚡ DISPATCH ALL AUTONOMOUS ACTIONS NOW',
-    autopilot_dispatching: 'JARVIS DISPATCHING ACTIONS...',
+    autopilot_sub: 'Jarvis checks abandoned checkouts periodically and sends recovery messages only to customers with marketing consent, respecting quiet hours and frequency limits.',
+    autopilot_btn_dispatch: '▶️ RUN THE CYCLE NOW (WITH ALL RULES)',
+    autopilot_dispatching: 'RUNNING THE CYCLE...',
     autopilot_stat_pending: 'CARTS IN RECOVERY QUEUE',
-    autopilot_stat_revenue: 'REVENUE AT STAKE',
-    autopilot_stat_actions: 'ACTIONS EXECUTED',
-    autopilot_log_title: 'LIVE AUTONOMOUS AUDIT TRAIL',
-    autopilot_queue_title: 'PENDING HIGH-INTENT CHECKOUT QUEUE',
-    autopilot_success_speech: 'All recovery sequences and campaigns have been autonomously dispatched. Systems tracking conversions.'
+    autopilot_stat_revenue: 'VALUE OF QUEUED CARTS',
+    autopilot_stat_actions: 'LOG ENTRIES',
+    autopilot_log_title: 'EXECUTION LOG',
+    autopilot_queue_title: 'ABANDONED CHECKOUTS IN QUEUE',
+    autopilot_success_speech: 'Autopilot cycle finished.'
   },
   ro: {
     brand_sub_pro: 'EXECUTIVE PRO',
     brand_sub_free: 'OBSERVER MODE',
-    telemetry_connected: 'MAISON GROZAVU • TELEMETRIE LIVE',
+    telemetry_connected: 'SHOPIFY CONECTAT',
+    telemetry_disconnected: 'SHOPIFY NECONECTAT',
+    updated_at: 'Actualizat la',
     voice_active: '🎙️ VOCE: ACTIVĂ',
     voice_mute: '🔇 VOCE: MUT',
     upgrade_btn: '⚡ ACTIVEAZĂ PRO ($9.99/lună)',
@@ -130,50 +134,51 @@ const I18N = {
     voice_locked_msg: '🔒 Vocea autonomă Jarvis este disponibilă în Planul Pro.',
     unlock_pro: 'Deblochează Pro ($9.99)',
     orders_today: 'COMENZI ASTĂZI',
-    orders_sub: '▲ Sincronizat în timp real',
+    orders_sub: 'Actualizat la',
     revenue_today: 'VENIT ASTĂZI',
     revenue_30d: '30 de zile:',
     abandoned_carts: 'COȘURI ABANDONATE',
     abandoned_alert: '⚠️ Oportunitate de recuperare imediată',
     abandoned_ok: '✅ Niciun coș pierdut',
     new_customers: 'CLIENȚI NOI (24H)',
-    customers_sub: 'Bază de clienți în expansiune',
+    customers_sub: 'Clienți noi în ultimele 24h',
     aov_label: 'VALOARE MEDIE COȘ (AOV)',
-    aov_sub: 'Țintă: >150 EUR pentru modă de lux',
+    aov_sub: 'Media ultimelor 30 de zile',
     retention_label: 'RATĂ DE RETENȚIE',
-    retention_sub: 'Clienți fideli de atelier',
+    retention_sub: 'clienți care au revenit',
     unique_buyers_label: 'CUMPĂRĂTORI UNICI (30Z)',
     unique_buyers_sub: 'Conturi unice',
     vip_customer_label: 'TOP CLIENT VIP',
     tactical_plan: '🎯 PRIORITĂȚI STRATEGICE PENTRU ASTĂZI',
     ai_prioritized: 'OPTIMIZAT AI',
-    analyzing_priorities: 'Jarvis calculează prioritățile magazinului...',
+    analyzing_priorities: 'Nicio prioritate generată încă.',
     traffic_strategy: '📈 STRATEGIE DE CREȘTERE & RADAR ANOMALII',
     daily_growth_tip: 'SFATUL ZILEI PENTRU VÂNZĂRI',
     auto_diagnostics: 'DIAGNOSTIC AUTOMAT:',
-    store_nominal: 'Magazinul funcționează la parametri optimi. Nicio anomalie critică.',
+    store_nominal: 'Nicio alertă în acest moment.',
+    diagnostics_unavailable: 'Diagnostic indisponibil — Shopify nu este conectat.',
     quick_diagnosis_btn: '💡 DIAGNOSTIC INSTANT: DE CE NU AM VÂNZĂRI AZI ȘI CE POT SCHIMBA RAPID?',
     chat_welcome_title: 'Creierul Executiv Jarvis este Activ.',
-    chat_welcome_desc: 'Monitorizez fiecare comandă, coș abandonat, intenție de căutare Google și rată de conversie pentru Maison Grozavu. Cum creștem vânzările astăzi?',
+    chat_welcome_desc: 'Pot citi comenzile, coșurile abandonate și produsele din Shopify (când magazinul este conectat) și le transform în idei și ciorne generate de AI. Cifrele vin mereu din Shopify; restul sunt idei pe care le verifici tu.',
     chip_diagnosis: '💡 De ce nu am vânzări azi și ce pot schimba rapid?',
-    chip_boost: '⚡ /boost — Multiplicator Instant de Vânzări & Urgență',
-    chip_browser: '🌐 /browser — Radar Autonom Clienți Google & Social',
+    chip_boost: '⚡ /boost — Idei rapide de conversie (AI)',
+    chip_browser: '🌐 /browser — Idei de clienți Google & Social (AI)',
     chip_goal: '🎯 /goal — Plan Matematic Venit 10.000€ / lună',
-    chip_aov: '🛍️ Cum mărim valoarea medie a comenzii (AOV) la Maison Grozavu?',
-    chat_placeholder_free: 'Întreabă-l pe Jarvis ({count} întrebări rămase azi)...',
+    chip_aov: '🛍️ Cum mărim valoarea medie a comenzii (AOV) la Grozavu?',
+    chat_placeholder_free: 'Întreabă-l pe Jarvis orice despre magazin...',
     chat_placeholder_pro: 'Ordonă-i lui Jarvis (/boost, /browser, /goal sau orice sarcină)...',
     chat_send: 'TRIMITE',
     thinking_text: 'Jarvis formulează sfatul tactic executiv...',
     action_tiktok_title: '🎬 Scenariu Video TikTok / Reels în 3 Pași',
-    action_tiktok_desc: 'Generează un scenariu video cu cârlig psihologic (3s Hook vizual, Problemă/Soluție și Call To Action direct către atelier).',
+    action_tiktok_desc: 'Ciornă AI de scenariu video streetwear (Hook vizual de 3s, Problemă/Soluție și Call To Action direct către magazin).',
     action_email_title: '📧 Email Magnetic de Recuperare Coșuri',
-    action_email_desc: 'Secvență persuasivă de recuperare cu ton rafinat de lux, urgență și cod de discount 10% (MG10).',
+    action_email_desc: 'Ciornă AI de email pentru coșuri abandonate. Nu se trimite nimic — o copiezi și o verifici întâi.',
     action_seo_title: '🔍 Audit Google SEO & Conversie Catalog',
-    action_seo_desc: 'Rescrie titlurile și descrierile pentru a atrage căutări cu intenție mare de cumpărare pe Google și a convinge pe loc.',
-    action_vip_title: '👑 Campanie VIP & Fidelizare Privată Atelier',
-    action_vip_desc: 'Identifică cumpărătorii de top și generează o invitație exclusivă cu beneficii VIP pentru comenzi repetate mari.',
-    action_post_title: '📦 Secvență Post-Cumpărare & Review 5⭐',
-    action_post_desc: 'Email trimis la 3 zile după livrare pentru recenzii cu poze reale de 5 stele și vânzare de produse complementare.',
+    action_seo_desc: 'Sugestii AI pentru titluri și descrieri de produs. Nu se modifică nimic în Shopify.',
+    action_vip_title: '👑 Email VIP de Fidelizare',
+    action_vip_desc: 'Ciornă AI de email de mulțumire pentru clienții care revin. Nu se trimite nimic automat.',
+    action_post_title: '📦 Email Post-Livrare & Cerere de Recenzie',
+    action_post_desc: 'Ciornă AI de email după livrare: mulțumire, sfat de îngrijire și o cerere opțională de recenzie onestă.',
     action_trigger: 'GENEREAZĂ ACUM →',
     action_generating: 'GENERARE ÎN CURS...',
     pricing_title: 'ALEGE NIVELUL DE INTELIGENȚĂ PENTRU MAGAZINUL TĂU',
@@ -183,70 +188,240 @@ const I18N = {
     plan_free_price: '$0',
     plan_free_period: '/ pentru totdeauna',
     plan_free_desc: 'Monitorizează comenzile și oferă o perspectivă generală asupra cifrelor magazinului.',
-    plan_free_perk1: '✔ Dashboard de bază cu vânzări și comenzi',
-    plan_free_perk2: '✔ 3 întrebări manuale pe zi în chat',
+    plan_free_perk1: '✔ Dashboard cu vânzări și comenzi',
+    plan_free_perk2: '✔ Chat manual cu Jarvis',
     plan_free_perk3: '✔ Raport text la cerere',
     plan_free_dim1: '✖ Fără voce audio autonomă',
     plan_free_dim2: '✖ Fără generatoare automate de campanii',
     plan_free_dim3: '✖ Fără alerte proactive de coșuri abandonate',
     plan_free_btn_active: 'PLAN ACTIV',
-    plan_free_btn_switch: 'TRECI PE GRATUIT',
+    plan_free_btn_switch: 'Anulare Pro: Shopify Admin → Setări → Aplicații',
     plan_pro_title: 'Jarvis Autonomous Pro',
     plan_pro_badge: 'RECOMANDAT PENTRU VÂNZĂRI',
     plan_pro_price: '$9.99',
     plan_pro_period: '/ lună (Trial 7 zile inclus)',
-    plan_pro_desc: 'Asistentul complet cu voce, predicții în timp real și generare automată de conținut de vânzare.',
+    plan_pro_desc: 'Asistent AI cu raport vocal, alerte pentru coșuri abandonate și ciorne de vânzare generate de AI.',
     plan_pro_perk1: '⭐ Jarvis Vorbește cu Tine: Raport vocal zilnic sintetic',
     plan_pro_perk2: '⭐ Chat AI Nelimitat: Fără limite de întrebări',
     plan_pro_perk3: '⭐ Campanii 1-Click: Scripturi TikTok virale & emailuri',
     plan_pro_perk4: '⭐ Alerte Proactive: Te anunță imediat când apar coșuri abandonate',
-    plan_pro_perk5: '⭐ Store Health Matrix: Audit continuu al conversiei',
+    plan_pro_perk5: '⭐ Rezumat AI al stării magazinului',
     plan_pro_perk6: '⭐ Prioritizare Tactică Zilnică',
     plan_pro_btn: '⚡ ACTIVEAZĂ JARVIS PRO ($9.99/lună - 7 ZILE TRIAL)',
-    plan_pro_btn_active: 'PLAN PRO ACTIVAT (TRIAL 7 ZILE)',
-    test_mode_toggle: '🧪 Comutator Test Dezvoltator',
+    plan_pro_btn_active: 'PLAN PRO ACTIV',
     copied_toast: 'Copiat în clipboard!',
     autopilot_title: 'CENTRUL DE COMANDĂ PILOT AUTOMAT (JARVIS 24/7)',
-    autopilot_sub: 'Jarvis monitorizează magazinul non-stop și trimite autonom recuperările de coșuri și campaniile fără intervenție manuală.',
-    autopilot_status_active: '🟢 PILOT AUTOMAT: 100% ACTIV & VIGILENT',
-    autopilot_btn_dispatch: '⚡ TRIMITE TOTUL AUTONOM ACUM (EXECUȚIE INSTANT)',
-    autopilot_dispatching: 'JARVIS EXPEDIAZĂ AUTONOM ACȚIUNILE...',
+    autopilot_sub: 'Jarvis verifică periodic coșurile abandonate și trimite mesaje de recuperare doar clienților cu acord de marketing, respectând orele de liniște și limitele de frecvență.',
+    autopilot_btn_dispatch: '▶️ RULEAZĂ CICLUL ACUM (CU TOATE REGULILE)',
+    autopilot_dispatching: 'SE RULEAZĂ CICLUL...',
     autopilot_stat_pending: 'COȘURI ÎN COADA DE RECUPERARE',
-    autopilot_stat_revenue: 'VENIT POTENȚIAL VIZAT',
-    autopilot_stat_actions: 'ACȚIUNI EXECUTATE AUTONOM',
-    autopilot_log_title: 'JURNAL DE EXECUȚIE AUTONOMĂ LIVE',
-    autopilot_queue_title: 'COADA ACTIVĂ DE COȘURI CU INTENȚIE MARE',
-    autopilot_success_speech: 'Am expediat autonom toate acțiunile de recuperare și mesajele VIP. Urmărim conversiile în timp real!'
+    autopilot_stat_revenue: 'VALOAREA COȘURILOR DIN COADĂ',
+    autopilot_stat_actions: 'ÎNREGISTRĂRI ÎN JURNAL',
+    autopilot_log_title: 'JURNAL DE EXECUȚIE',
+    autopilot_queue_title: 'COȘURI ABANDONATE ÎN COADĂ',
+    autopilot_success_speech: 'Ciclul pilotului automat s-a încheiat.'
   }
+}
+
+// ── Helpers: missing data always renders as "—" (never invented numbers) ──
+const DASH = '—'
+const isNum = (v) => typeof v === 'number' && Number.isFinite(v)
+const asArray = (v) => (Array.isArray(v) ? v : [])
+const fmtNum = (v, digits) => {
+  if (!isNum(v)) return DASH
+  if (typeof digits === 'number') return v.toFixed(digits)
+  return Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100)
+}
+
+// Safari-safe date parsing: "YYYY-MM-DD HH:MM:SS" → ISO; no timezone → UTC.
+function parseDate(value) {
+  if (!value) return null
+  if (value instanceof Date) return isNaN(value.getTime()) ? null : value
+  if (typeof value === 'number') {
+    const d = new Date(value)
+    return isNaN(d.getTime()) ? null : d
+  }
+  let s = String(value).trim()
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(s)) s = s.replace(' ', 'T')
+  s = s.replace(/(\.\d{3})\d+/, '$1')
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(s)) s += 'Z'
+  const d = new Date(s)
+  return isNaN(d.getTime()) ? null : d
+}
+
+function fmtTime(value, locale) {
+  const d = parseDate(value)
+  if (!d) return DASH
+  try {
+    return d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' })
+  } catch (e) {
+    return d.toISOString().slice(11, 16)
+  }
+}
+
+function fmtDateTime(value, locale) {
+  const d = parseDate(value)
+  if (!d) return DASH
+  try {
+    return d.toLocaleString(locale, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+  } catch (e) {
+    return d.toISOString().slice(0, 16).replace('T', ' ')
+  }
+}
+
+function minutesSince(value) {
+  const d = parseDate(value)
+  if (!d) return null
+  return Math.max(0, Math.round((Date.now() - d.getTime()) / 60000))
+}
+
+function agoText(minutes, lang) {
+  if (minutes === null) return null
+  if (lang !== 'ro') {
+    if (minutes < 1) return 'just now'
+    if (minutes < 60) return `${minutes} min ago`
+    if (minutes < 1440) return `${Math.round(minutes / 60)} h ago`
+    return `${Math.round(minutes / 1440)} days ago`
+  }
+  if (minutes < 1) return 'chiar acum'
+  if (minutes < 60) return `acum ${minutes} min`
+  if (minutes < 1440) return `acum ${Math.round(minutes / 60)} h`
+  return `acum ${Math.round(minutes / 1440)} zile`
+}
+
+// DNS check status: new shape {status}, old shape {configured: bool}.
+function dnsStatus(check) {
+  if (!check || typeof check !== 'object') return 'unknown'
+  if (typeof check.status === 'string') {
+    const st = check.status.toLowerCase()
+    return ['ok', 'missing', 'invalid', 'unknown'].includes(st) ? st : 'unknown'
+  }
+  if (typeof check.configured === 'boolean') return check.configured ? 'ok' : 'missing'
+  return 'unknown'
+}
+
+const DNS_STATUS_UI = {
+  ok: { label: '✅ Configurat', color: '#10b981', border: '#059669' },
+  missing: { label: '❌ Lipsește', color: '#f87171', border: '#b91c1c' },
+  invalid: { label: '⚠️ Invalid', color: '#f59e0b', border: '#b45309' },
+  unknown: { label: '❔ Necunoscut (verificarea DNS nu a reușit)', color: '#94a3b8', border: '#44403c' }
+}
+
+function dnsRecordText(check) {
+  if (!check || typeof check !== 'object') return DASH
+  if (typeof check.record === 'string' && check.record) return check.record
+  if (Array.isArray(check.records) && check.records.length) return check.records.map(String).join(' | ')
+  if (typeof check.value === 'string' && check.value) return check.value
+  if (typeof check.host === 'string' && check.host) return check.host
+  return DASH
+}
+
+function dnsCheckNote(check) {
+  if (!check || typeof check !== 'object') return null
+  for (const k of ['error', 'message', 'detail', 'issue']) {
+    if (typeof check[k] === 'string' && check[k]) return check[k]
+  }
+  if (Array.isArray(check.issues) && check.issues.length) return check.issues.map(String).join('; ')
+  return null
+}
+
+const consentText = (v) => (v === true ? '✓' : v === false ? '✗' : 'necunoscut')
+const consentColor = (v) => (v === true ? '#10b981' : v === false ? '#f87171' : '#94a3b8')
+
+// Translate a skip reason for the owner (raw reason always kept for transparency).
+function reasonText(reason) {
+  if (reason === null || reason === undefined || reason === '') return DASH
+  const raw = String(reason)
+  const r = raw.toLowerCase()
+  let ro = null
+  if (r.includes('opt') || r.includes('unsub') || r.includes('suppress')) ro = 'dezabonat (opt-out)'
+  else if (r.includes('consent')) ro = 'fără acord de marketing'
+  else if (r.includes('quiet')) ro = 'ore de liniște'
+  else if (r.includes('cap') || r.includes('limit') || r.includes('frequency') || r.includes('72h') || r.includes('30d')) ro = 'limită de frecvență'
+  else if (r.includes('not_due') || r.includes('not due') || r.includes('cadence') || r.includes('too_early') || r.includes('wait')) ro = 'încă nu e momentul etapei următoare'
+  else if (r.includes('no_email') || r.includes('no_phone') || r.includes('no_contact') || r.includes('missing')) ro = 'fără date de contact'
+  return ro && ro !== raw ? `${ro} (${raw})` : raw
+}
+
+// Status badge for log entries: shows what the backend really recorded.
+function logStatusUi(status) {
+  const s = String(status || '').toLowerCase()
+  if (!s) return { text: DASH, color: '#94a3b8' }
+  if (['sent', 'success', 'delivered', 'ok'].includes(s)) return { text: 'trimis', color: '#10b981' }
+  if (s === 'executed') return { text: 'executat', color: '#10b981' }
+  if (s.includes('fail') || s.includes('error')) return { text: 'eșuat', color: '#f87171' }
+  if (s.includes('skip') || s.includes('block')) return { text: 'omis', color: '#94a3b8' }
+  if (s.includes('preview') || s.includes('propos') || s === 'draft') return { text: 'doar propunere (nescris în Shopify)', color: '#38bdf8' }
+  return { text: s, color: '#e2d9cd' }
+}
+
+// Frequency policy (from /api/compliance/stats) → readable rows.
+const FREQ_LABELS = {
+  max_per_72h: 'Maxim mesaje în 72h',
+  max_per_30d: 'Maxim mesaje de marketing în 30 de zile',
+  global_max_per_30d: 'Maxim mesaje de marketing în 30 de zile',
+  max_marketing_per_30d: 'Maxim mesaje de marketing în 30 de zile',
+  cart_max_messages: 'Maxim mesaje per coș abandonat',
+  cart_sequence_max: 'Maxim mesaje per coș abandonat',
+  abandoned_cart_max_messages: 'Maxim mesaje per coș abandonat',
+  cart_stage_delays: 'Etapele coșului abandonat',
+  cart_stages: 'Etapele coșului abandonat',
+  vip_max_per_order: 'Maxim mesaje VIP per comandă',
+  post_delivery_max_per_order: 'Maxim mesaje post-livrare per comandă',
+  new_sequence_cooldown_hours: 'Pauză înainte de o secvență nouă (ore)',
+  new_sequence_block_hours: 'Pauză înainte de o secvență nouă (ore)',
+  quiet_hours: 'Ore de liniște',
+  timezone: 'Fus orar'
+}
+const humanizeKey = (k) => FREQ_LABELS[k] || String(k).replace(/_/g, ' ')
+function humanizeValue(v) {
+  if (v === null || v === undefined || v === '') return DASH
+  if (Array.isArray(v)) return v.map(humanizeValue).join(', ')
+  if (typeof v === 'boolean') return v ? 'da' : 'nu'
+  if (typeof v === 'object') return Object.entries(v).map(([k, x]) => `${humanizeKey(k)}: ${humanizeValue(x)}`).join('; ')
+  return String(v)
+}
+function policyEntries(fp) {
+  if (!fp) return []
+  if (typeof fp === 'string') return [['description', fp]]
+  if (typeof fp !== 'object' || Array.isArray(fp)) return []
+  return Object.entries(fp)
 }
 
 export default function App() {
   const params = new URLSearchParams(window.location.search)
   const shop = params.get('shop') || 'maisongrozavu.myshopify.com'
+  const qShop = `shop=${encodeURIComponent(shop)}`
 
-  const [lang, setLang] = useState(() => {
-    return localStorage.getItem('jarvis_lang') || 'ro'
-  })
+  const [lang, setLang] = useState(() => storageGet('jarvis_lang') || 'ro')
   const t = I18N[lang] || I18N.ro
+  const locale = lang === 'ro' ? 'ro-RO' : 'en-GB'
 
   const handleSetLang = (newLang) => {
     setLang(newLang)
-    localStorage.setItem('jarvis_lang', newLang)
+    storageSet('jarvis_lang', newLang)
   }
 
   const [activeTab, setActiveTab] = useState('hud') // 'hud' | 'radar' | 'actions' | 'chat' | 'autopilot' | 'plans'
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(null)
+  const [lastUpdated, setLastUpdated] = useState(null)
   const [briefing, setBriefing] = useState(null)
   const [snapshot, setSnapshot] = useState(null)
-  const [plan, setPlan] = useState('pro') // 'free' | 'pro'
+  const [plan, setPlan] = useState(null) // 'free' | 'pro' | null (unknown)
   const [voiceEnabled, setVoiceEnabled] = useState(true)
   const [isSpeaking, setIsSpeaking] = useState(false)
+
+  // Auth (401 → "Cheie de acces Jarvis" card)
+  const [authRequired, setAuthRequired] = useState(false)
+  const [authKeyInput, setAuthKeyInput] = useState('')
+  const [authAttempted, setAuthAttempted] = useState(false)
+  const [reloadToken, setReloadToken] = useState(0)
 
   // Chat State
   const [chatMessages, setChatMessages] = useState([])
   const [inputMessage, setInputMessage] = useState('')
   const [sendingChat, setSendingChat] = useState(false)
-  const [freeQuestionsLeft, setFreeQuestionsLeft] = useState(3)
   const chatBottomRef = useRef(null)
 
   // Tactical Tasks
@@ -254,29 +429,37 @@ export default function App() {
 
   // 1-Click Generator Output Modal
   const [generatedOutput, setGeneratedOutput] = useState(null)
-  const [generatingAction, setGeneratingAction] = useState(false)
+  const [generatingAction, setGeneratingAction] = useState(null) // action type being generated
   const [subscribing, setSubscribing] = useState(false)
+  const [billingFeedback, setBillingFeedback] = useState(null)
 
   // Autopilot State
   const [autopilotData, setAutopilotData] = useState(null)
   const [dispatchingAutopilot, setDispatchingAutopilot] = useState(false)
   const [autopilotLogs, setAutopilotLogs] = useState([])
+  const [confirmDispatchOpen, setConfirmDispatchOpen] = useState(false)
+  const [dispatchResult, setDispatchResult] = useState(null)
 
   // Growth & Radar State
   const [seoData, setSeoData] = useState(null)
   const [radarData, setRadarData] = useState(null)
   const [boostData, setBoostData] = useState(null)
   const [goalData, setGoalData] = useState(null)
-  const [goalTarget, setGoalTarget] = useState(10000)
+  const [goalError, setGoalError] = useState(null)
+  const [goalTarget, setGoalTarget] = useState('10000')
+  const [calculatingGoal, setCalculatingGoal] = useState(false)
   const [activeRadarSubtab, setActiveRadarSubtab] = useState('google-merchant') // 'google-merchant' | 'deliverability' | 'seo' | 'hunter' | 'goal'
   const [toastMessage, setToastMessage] = useState(null)
-  const [liveSearchQuery, setLiveSearchQuery] = useState('rochii matase naturala')
+  const [liveSearchQuery, setLiveSearchQuery] = useState('hanorac oversize')
   const [liveSearchResults, setLiveSearchResults] = useState([])
+  const [liveSearchSource, setLiveSearchSource] = useState(null) // 'google_suggest' | 'unavailable' | null
+  const [liveSearchShownQuery, setLiveSearchShownQuery] = useState('')
   const [searchingGoogle, setSearchingGoogle] = useState(false)
   const [dnsAuditData, setDnsAuditData] = useState(null)
   const [feedValidation, setFeedValidation] = useState(null)
   const [seoAuditData, setSeoAuditData] = useState(null)
   const [seoLogs, setSeoLogs] = useState([])
+  const [seoProposals, setSeoProposals] = useState(null)
   const [complianceStats, setComplianceStats] = useState(null)
   const [optimizingSeo, setOptimizingSeo] = useState(false)
 
@@ -289,7 +472,7 @@ export default function App() {
     smtp_user: '',
     smtp_password: '',
     sender_email: 'contact@maisongrozavu.com',
-    sender_name: 'Maison Grozavu',
+    sender_name: 'Grozavu',
     merchant_notify_email: 'grozavumrz@gmail.com',
     notify_merchant_on_cart: true
   })
@@ -329,16 +512,88 @@ export default function App() {
   const [syncingVip, setSyncingVip] = useState(false)
   const [vipFeedback, setVipFeedback] = useState(null)
 
-  const showToast = (msg) => {
-    setToastMessage(msg)
-    setTimeout(() => setToastMessage(null), 3000)
+  // Lazy-load registry: each tab/subtab loads its data once (refresh buttons force reload)
+  const loadedRef = useRef(new Set())
+  const ensureLoaded = async (key, fn) => {
+    if (loadedRef.current.has(key)) return
+    loadedRef.current.add(key)
+    const ok = await fn()
+    if (ok === false) loadedRef.current.delete(key)
   }
 
-  const handleCopy = (text, label = 'Copiat!') => {
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(text)
-      showToast(label)
+  // Toast with a single, cleared timer
+  const toastTimer = useRef(null)
+  const showToast = (msg, ms = 3500) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    setToastMessage(msg)
+    toastTimer.current = setTimeout(() => {
+      setToastMessage(null)
+      toastTimer.current = null
+    }, ms)
+  }
+  useEffect(() => () => {
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+  }, [])
+
+  // Any 401 from a protected route → show the access key card
+  useEffect(() => {
+    const unsubscribe = onAuthRequired(() => setAuthRequired(true))
+    return () => { unsubscribe() }
+  }, [])
+
+  const handleSaveAuthKey = () => {
+    const key = authKeyInput.trim()
+    if (!key) {
+      showToast(lang === 'ro' ? 'Introdu cheia de acces Jarvis.' : 'Enter the Jarvis access key.')
+      return
     }
+    setAdminKey(key)
+    setAuthKeyInput('')
+    setAuthAttempted(true)
+    setAuthRequired(false)
+    loadedRef.current.clear()
+    setReloadToken((n) => n + 1)
+  }
+
+  const handleForgetAuthKey = () => {
+    setAdminKey(null)
+    setAuthAttempted(false)
+    showToast(lang === 'ro' ? 'Cheia salvată a fost ștearsă din acest browser.' : 'Saved key removed from this browser.')
+  }
+
+  const handleCopy = async (text, label = 'Copiat!') => {
+    const value = text === null || text === undefined ? '' : String(text)
+    if (!value) {
+      showToast(lang === 'ro' ? 'Nu există nimic de copiat.' : 'Nothing to copy.')
+      return
+    }
+    let ok = false
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(value)
+        ok = true
+      }
+    } catch (e) {
+      ok = false
+    }
+    if (!ok) {
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = value
+        ta.setAttribute('readonly', '')
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        ok = document.execCommand('copy')
+        document.body.removeChild(ta)
+      } catch (e) {
+        ok = false
+      }
+    }
+    showToast(ok ? label : (lang === 'ro'
+      ? '⚠️ Nu am putut copia automat — selectează textul și copiază-l manual.'
+      : '⚠️ Could not copy automatically — select the text and copy it manually.'))
   }
 
   // Audio TTS Function
@@ -367,139 +622,209 @@ export default function App() {
       setIsSpeaking(false)
       return
     }
-    const script = briefing?.voice_script || briefing?.summary || "Jarvis online. Telemetria magazinului este activă."
+    const script = briefing?.voice_script || briefing?.summary ||
+      (lang === 'ro' ? 'Nu există încă un raport de citit.' : 'There is no briefing to read yet.')
     speakText(script)
   }
 
-  const loadGrowthData = async () => {
+  // Generic GET → setter. Returns true on success.
+  const loadJsonInto = async (path, setter, onError) => {
     try {
-      const [resSeo, resRadar, resBoost, resGoal] = await Promise.all([
-        fetch(`/api/growth/seo?shop=${encodeURIComponent(shop)}`),
-        fetch(`/api/growth/radar?shop=${encodeURIComponent(shop)}`),
-        fetch(`/api/growth/boost?shop=${encodeURIComponent(shop)}`),
-        fetch('/api/growth/goal', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ shop, target_amount: goalTarget, currency: snapshot?.currency || 'EUR' })
-        })
-      ])
-      if (resSeo.ok) setSeoData(await resSeo.json())
-      if (resRadar.ok) setRadarData(await resRadar.json())
-      if (resBoost.ok) setBoostData(await resBoost.json())
-      if (resGoal.ok) setGoalData(await resGoal.json())
-      handleLiveGoogleSearch('rochii matase naturala')
+      const res = await api(path)
+      const data = await readJson(res)
+      if (!res.ok) {
+        if (onError && res.status !== 401) onError(errorText(data, res))
+        return false
+      }
+      setter(data)
+      return true
     } catch (e) {
-      console.warn('Failed to load growth data:', e)
+      console.warn('Load failed', path, e)
+      if (onError) onError(e.message || 'eroare de rețea')
+      return false
     }
   }
 
+  const loadSeoIdeas = () => loadJsonInto(`/api/growth/seo?${qShop}`, setSeoData)
+  const loadRadarIdeas = () => loadJsonInto(`/api/growth/radar?${qShop}`, setRadarData)
+  const loadBoost = () => loadJsonInto(`/api/growth/boost?${qShop}`, setBoostData)
+  const loadFeedValidation = () => loadJsonInto(
+    `/api/google/feed-validation?${qShop}`, setFeedValidation, (err) => setFeedValidation({ error: err })
+  )
+  const loadSeoAudit = () => loadJsonInto(`/api/seo/audit?${qShop}`, setSeoAuditData)
+  const loadSeoLogs = () => loadJsonInto(`/api/seo/logs?${qShop}`, (d) => setSeoLogs(asArray(d && d.logs)))
+  const loadDnsAudit = () => loadJsonInto(
+    `/api/deliverability/dns-audit?domain=maisongrozavu.com`, setDnsAuditData, (err) => setDnsAuditData({ error: err })
+  )
+  const loadCompliance = () => loadJsonInto(`/api/compliance/stats?${qShop}`, setComplianceStats)
+
+  const parseGoal = (v) => {
+    const n = Number(String(v === null || v === undefined ? '' : v).replace(',', '.').trim())
+    return String(v).trim() !== '' && Number.isFinite(n) && n > 0 ? n : null
+  }
+
+  const loadGoal = async (target) => {
+    const amount = parseGoal(target)
+    if (amount === null) {
+      setGoalError(lang === 'ro' ? 'Introdu o țintă de venit validă (un număr mai mare ca 0).' : 'Enter a valid revenue target (a number above 0).')
+      return false
+    }
+    setGoalError(null)
+    setCalculatingGoal(true)
+    try {
+      const res = await apiPost('/api/growth/goal', { shop, target_amount: amount, currency: snapshot?.currency || 'EUR' })
+      const data = await readJson(res)
+      if (!res.ok) {
+        if (res.status !== 401) setGoalError(errorText(data, res))
+        return false
+      }
+      setGoalData(data)
+      return true
+    } catch (e) {
+      setGoalError(e.message || 'eroare de rețea')
+      return false
+    } finally {
+      setCalculatingGoal(false)
+    }
+  }
+
+  const handleCalculateGoal = () => {
+    loadGoal(goalTarget)
+  }
+
   const handleLiveGoogleSearch = async (queryToSearch = null) => {
-    const q = queryToSearch || liveSearchQuery || 'rochii matase naturala'
+    const q = (typeof queryToSearch === 'string' && queryToSearch) || liveSearchQuery
+    if (!q || !q.trim()) {
+      showToast(lang === 'ro' ? 'Scrie o expresie de căutat.' : 'Type a search phrase.')
+      return false
+    }
     setSearchingGoogle(true)
     try {
-      const res = await fetch(`/api/growth/google-suggest?q=${encodeURIComponent(q)}`)
-      if (res.ok) {
-        const data = await res.json()
-        setLiveSearchResults(data.results || [])
+      const res = await api(`/api/growth/google-suggest?q=${encodeURIComponent(q.trim())}`)
+      const data = await readJson(res)
+      if (!res.ok) {
+        setLiveSearchResults([])
+        setLiveSearchSource('unavailable')
+        return false
       }
+      const results = asArray(data.results).filter((r) => typeof r === 'string' && r)
+      setLiveSearchResults(results)
+      setLiveSearchSource(data.source === 'google_suggest' ? 'google_suggest' : 'unavailable')
+      setLiveSearchShownQuery(q.trim())
+      return true
     } catch (err) {
       console.warn('Google suggest search error:', err)
+      setLiveSearchResults([])
+      setLiveSearchSource('unavailable')
+      return false
     } finally {
       setSearchingGoogle(false)
     }
   }
 
-  const handleCalculateGoal = async (newTarget) => {
-    const targetVal = parseFloat(newTarget) || 10000
-    setGoalTarget(targetVal)
-    try {
-      const res = await fetch('/api/growth/goal', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shop, target_amount: targetVal, currency: snapshot?.currency || 'EUR' })
-      })
-      if (res.ok) setGoalData(await res.json())
-    } catch (e) {
-      console.warn('Goal calculation failed', e)
-    }
-  }
-
-  const loadDeliverabilityAndSeo = async () => {
-    try {
-      const [dnsRes, feedRes, seoRes, seoLogsRes, compRes] = await Promise.all([
-        fetch(`/api/deliverability/dns-audit?domain=maisongrozavu.com`),
-        fetch(`/api/google/feed-validation`),
-        fetch(`/api/seo/audit`),
-        fetch(`/api/seo/logs`),
-        fetch(`/api/compliance/stats`)
-      ])
-      if (dnsRes.ok) setDnsAuditData(await dnsRes.json())
-      if (feedRes.ok) setFeedValidation(await feedRes.json())
-      if (seoRes.ok) setSeoAuditData(await seoRes.json())
-      if (seoLogsRes.ok) {
-        const d = await seoLogsRes.json()
-        setSeoLogs(d.logs || [])
-      }
-      if (compRes.ok) setComplianceStats(await compRes.json())
-    } catch (e) {
-      console.warn('Deliverability and SEO fetch error', e)
-    }
-  }
-
   const handleRunSeoOptimization = async () => {
+    if (optimizingSeo) return
     setOptimizingSeo(true)
     try {
-      const res = await fetch('/api/seo/optimize-now', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shop })
-      })
-      if (res.ok) {
-        const data = await res.json()
-        showToast(`✨ SEO optimizat cu succes pe ${data.optimized_products} produse!`)
-        if (data.recent_logs) setSeoLogs(data.recent_logs)
-        const auditRes = await fetch('/api/seo/audit')
-        if (auditRes.ok) setSeoAuditData(await auditRes.json())
+      const res = await apiPost('/api/seo/optimize-now', { shop })
+      const data = await readJson(res)
+      if (!res.ok || data.success === false) {
+        if (res.status !== 401) showToast('⚠️ Propunerile SEO nu au putut fi generate: ' + errorText(data, res))
+        return
       }
+      const items = asArray(data.proposals)
+      const written = isNum(data.written_to_shopify) ? data.written_to_shopify : 0
+      setSeoProposals({ items, written })
+      if (Array.isArray(data.recent_logs)) setSeoLogs(data.recent_logs)
+      const withChanges = items.filter((p) => p && asArray(p.proposals).length > 0).length
+      showToast(written > 0
+        ? `⚠️ Backend-ul raportează ${written} modificări scrise în Shopify.`
+        : `Propuneri generate pentru ${withChanges} produse — nimic nu a fost modificat în Shopify.`, 5000)
+      loadSeoAudit()
     } catch (e) {
-      showToast('Eroare la optimizarea SEO')
+      showToast('⚠️ Eroare la generarea propunerilor SEO: ' + (e.message || 'eroare de rețea'))
     } finally {
       setOptimizingSeo(false)
     }
   }
 
-  // Load telemetry with current language
+  const loadAutopilotStatus = async () => {
+    try {
+      const res = await api(`/api/autopilot/status?${qShop}`)
+      if (!res.ok) return false
+      const data = await readJson(res)
+      setAutopilotData(data)
+      setAutopilotLogs(asArray(data.logs))
+      return true
+    } catch (e) {
+      console.error('Failed to load autopilot status', e)
+      return false
+    }
+  }
+
+  // Load briefing + snapshot (+ chat history, autopilot status for the nav badge)
   useEffect(() => {
+    let cancelled = false
     async function loadTelemetry() {
       setLoading(true)
+      setLoadError(null)
       try {
-        const res = await fetch(`/api/briefing?shop=${encodeURIComponent(shop)}&lang=${lang}`)
+        const res = await api(`/api/briefing?${qShop}&lang=${encodeURIComponent(lang)}`)
+        const data = await readJson(res)
+        if (cancelled) return
         if (res.ok) {
-          const data = await res.json()
-          setBriefing(data.briefing)
-          if (data.snapshot) setSnapshot(data.snapshot)
-          if (data.plan) setPlan(data.plan)
+          setBriefing(data.briefing && typeof data.briefing === 'object' ? data.briefing : null)
+          setSnapshot(data.snapshot && typeof data.snapshot === 'object' ? data.snapshot : null)
+          setPlan(typeof data.plan === 'string' ? data.plan : null)
+          setLastUpdated(new Date())
+          setAuthRequired(false)
+          setAuthAttempted(false)
+        } else if (res.status !== 401) {
+          setLoadError(errorText(data, res))
         }
-        const histRes = await fetch(`/api/history?shop=${encodeURIComponent(shop)}`)
-        if (histRes.ok) {
-          const hist = await histRes.json()
-          setChatMessages(hist)
+        const histRes = await api(`/api/history?${qShop}`)
+        if (!cancelled && histRes.ok) {
+          const hist = await readJson(histRes)
+          setChatMessages(asArray(hist).filter((m) => m && typeof m.content === 'string'))
         }
-        loadAutopilotStatus()
-        loadDeliverySettings()
-        loadWaSettings()
-        loadNotifySettings()
-        loadVipQueue()
-        loadGrowthData()
-        loadDeliverabilityAndSeo()
+        if (!cancelled) loadAutopilotStatus()
       } catch (e) {
         console.error('Failed to load Jarvis telemetry', e)
+        if (!cancelled) setLoadError(e.message || 'eroare de rețea')
       } finally {
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       }
     }
     loadTelemetry()
-  }, [shop, lang])
+    return () => { cancelled = true }
+  }, [shop, lang, reloadToken])
+
+  // Load only what the visible tab / subtab needs
+  useEffect(() => {
+    if (activeTab === 'radar') {
+      if (activeRadarSubtab === 'google-merchant') {
+        ensureLoaded('feed', loadFeedValidation)
+        ensureLoaded('seoAudit', loadSeoAudit)
+        ensureLoaded('seoLogs', loadSeoLogs)
+      } else if (activeRadarSubtab === 'deliverability') {
+        ensureLoaded('dns', loadDnsAudit)
+        ensureLoaded('compliance', loadCompliance)
+      } else if (activeRadarSubtab === 'seo') {
+        ensureLoaded('seoIdeas', loadSeoIdeas)
+        ensureLoaded('suggest', () => handleLiveGoogleSearch(liveSearchQuery))
+      } else if (activeRadarSubtab === 'hunter') {
+        ensureLoaded('radarIdeas', loadRadarIdeas)
+      } else if (activeRadarSubtab === 'goal') {
+        ensureLoaded('goal', () => loadGoal(goalTarget))
+      }
+    } else if (activeTab === 'actions') {
+      ensureLoaded('boost', loadBoost)
+    } else if (activeTab === 'autopilot') {
+      ensureLoaded('delivery', loadDeliverySettings)
+      ensureLoaded('compliance', loadCompliance)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, activeRadarSubtab, reloadToken])
 
   useEffect(() => {
     if (chatBottomRef.current) {
@@ -507,36 +832,38 @@ export default function App() {
     }
   }, [chatMessages, sendingChat])
 
-  const loadAutopilotStatus = async () => {
-    try {
-      const res = await fetch(`/api/autopilot/status?shop=${encodeURIComponent(shop)}`)
-      if (res.ok) {
-        const data = await res.json()
-        setAutopilotData(data)
-        if (data.logs) setAutopilotLogs(data.logs)
-      }
-    } catch (e) {
-      console.error('Failed to load autopilot status', e)
-    }
+  const requestDispatch = () => {
+    if (dispatchingAutopilot) return
+    setConfirmDispatchOpen(true)
   }
 
   const handleDispatchAutopilot = async () => {
+    setConfirmDispatchOpen(false)
+    if (dispatchingAutopilot) return
     setDispatchingAutopilot(true)
+    setDispatchResult(null)
     try {
-      const res = await fetch('/api/autopilot/dispatch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shop, lang })
-      })
-      if (res.ok) {
-        const data = await res.json()
-        if (data.logs) setAutopilotLogs(data.logs)
-        await loadAutopilotStatus()
+      const res = await apiPost('/api/autopilot/dispatch', { shop, lang })
+      const data = await readJson(res)
+      if (!res.ok || data.ok === false) {
+        if (res.status !== 401) {
+          setDispatchResult({ type: 'error', text: (lang === 'ro' ? 'Ciclul nu a putut rula: ' : 'The cycle could not run: ') + errorText(data, res) })
+        }
+        return
+      }
+      const count = isNum(data.dispatched_count) ? data.dispatched_count : 0
+      const skipped = asArray(data.skipped)
+      if (Array.isArray(data.logs)) setAutopilotLogs(data.logs)
+      setDispatchResult({ type: count > 0 ? 'success' : 'info', count, skipped })
+      await loadAutopilotStatus()
+      if (count > 0) {
+        showToast(lang === 'ro' ? `✅ Ciclu rulat: ${count} mesaje trimise.` : `✅ Cycle finished: ${count} messages sent.`)
         speakText(t.autopilot_success_speech)
-        showToast(lang === 'ro' ? '✅ Toate acțiunile au fost expediate autonom!' : '✅ All actions autonomously dispatched!')
+      } else {
+        showToast(lang === 'ro' ? 'ℹ️ Ciclu rulat: niciun mesaj trimis (vezi motivele).' : 'ℹ️ Cycle finished: no message sent (see reasons).')
       }
     } catch (e) {
-      alert('Autopilot notice: ' + e.message)
+      setDispatchResult({ type: 'error', text: (lang === 'ro' ? 'Eroare de rețea: ' : 'Network error: ') + e.message })
     } finally {
       setDispatchingAutopilot(false)
     }
@@ -544,13 +871,14 @@ export default function App() {
 
   const loadDeliverySettings = async () => {
     try {
-      const res = await fetch(`/api/settings/delivery?shop=${encodeURIComponent(shop)}`)
-      if (res.ok) {
-        const data = await res.json()
-        setDeliverySettings(prev => ({ ...prev, ...data }))
-      }
+      const res = await api(`/api/settings/delivery?${qShop}`)
+      if (!res.ok) return false
+      const data = await readJson(res)
+      if (data && typeof data === 'object') setDeliverySettings(prev => ({ ...prev, ...data }))
+      return true
     } catch (e) {
       console.error('Failed to load delivery settings', e)
+      return false
     }
   }
 
@@ -558,18 +886,15 @@ export default function App() {
     setSavingDelivery(true)
     setDeliveryFeedback(null)
     try {
-      const res = await fetch('/api/settings/delivery', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shop, ...deliverySettings })
-      })
+      const res = await apiPost('/api/settings/delivery', { shop, ...deliverySettings })
+      const data = await readJson(res)
       if (res.ok) {
         setDeliveryFeedback({
           type: 'success',
-          text: lang === 'ro' ? '✅ Setările de email au fost salvate cu succes!' : '✅ Email gateway settings saved successfully!'
+          text: lang === 'ro' ? '✅ Setările de email au fost salvate.' : '✅ Email gateway settings saved.'
         })
       } else {
-        setDeliveryFeedback({ type: 'error', text: 'Eroare la salvare.' })
+        setDeliveryFeedback({ type: 'error', text: (lang === 'ro' ? 'Eroare la salvare: ' : 'Save failed: ') + errorText(data, res) })
       }
     } catch (e) {
       setDeliveryFeedback({ type: 'error', text: e.message })
@@ -579,27 +904,27 @@ export default function App() {
   }
 
   const handleSendTestEmail = async () => {
-    const targetEmail = deliverySettings.merchant_notify_email || 'grozavumrz@gmail.com'
+    const targetEmail = deliverySettings.merchant_notify_email
+    if (!targetEmail) {
+      setDeliveryFeedback({ type: 'error', text: lang === 'ro' ? 'Completează „Email Notificare Comerciant”.' : 'Fill in the merchant notification email.' })
+      return
+    }
     setSendingTestEmail(true)
     setDeliveryFeedback(null)
     try {
-      const res = await fetch('/api/email/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shop, to_email: targetEmail })
-      })
-      const data = await res.json()
-      if (data.success) {
+      const res = await apiPost('/api/email/test', { shop, to_email: targetEmail })
+      const data = await readJson(res)
+      if (res.ok && data.success === true) {
         setDeliveryFeedback({
           type: 'success',
           text: lang === 'ro'
-            ? `✅ Email de test expediat cu succes către ${targetEmail}! Verifică inbox-ul (și Spam/Promotions).`
-            : `✅ Test email successfully sent to ${targetEmail}! Check your inbox.`
+            ? `✅ Furnizorul a acceptat emailul de test către ${targetEmail}. Verifică inbox-ul (și Spam/Promotions).`
+            : `✅ The provider accepted the test email to ${targetEmail}. Check your inbox (and Spam/Promotions).`
         })
       } else {
         setDeliveryFeedback({
           type: 'error',
-          text: (lang === 'ro' ? '⚠️ Expediere eșuată: ' : '⚠️ Send failed: ') + (data.reason || data.error || 'Verifică setările API/SMTP')
+          text: (lang === 'ro' ? '⚠️ Expediere eșuată: ' : '⚠️ Send failed: ') + errorText(data, res)
         })
       }
     } catch (e) {
@@ -611,13 +936,14 @@ export default function App() {
 
   const loadWaSettings = async () => {
     try {
-      const res = await fetch(`/api/settings/whatsapp?shop=${encodeURIComponent(shop)}`)
-      if (res.ok) {
-        const data = await res.json()
-        setWaSettings(prev => ({ ...prev, ...data }))
-      }
+      const res = await api(`/api/settings/whatsapp?${qShop}`)
+      if (!res.ok) return false
+      const data = await readJson(res)
+      if (data && typeof data === 'object') setWaSettings(prev => ({ ...prev, ...data }))
+      return true
     } catch (e) {
       console.error('Failed to load WhatsApp settings', e)
+      return false
     }
   }
 
@@ -625,16 +951,15 @@ export default function App() {
     setSavingWa(true)
     setWaFeedback(null)
     try {
-      const res = await fetch('/api/settings/whatsapp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shop, ...waSettings })
-      })
+      const res = await apiPost('/api/settings/whatsapp', { shop, ...waSettings })
+      const data = await readJson(res)
       if (res.ok) {
         setWaFeedback({
           type: 'success',
-          text: lang === 'ro' ? '✅ Setările WhatsApp au fost salvate cu succes!' : '✅ WhatsApp settings saved successfully!'
+          text: lang === 'ro' ? '✅ Setările WhatsApp au fost salvate.' : '✅ WhatsApp settings saved.'
         })
+      } else {
+        setWaFeedback({ type: 'error', text: errorText(data, res) })
       }
     } catch (e) {
       setWaFeedback({ type: 'error', text: e.message })
@@ -648,21 +973,17 @@ export default function App() {
     setSendingTestWa(true)
     setWaFeedback(null)
     try {
-      const res = await fetch('/api/whatsapp/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shop, to_phone: testPhone })
-      })
-      const data = await res.json()
-      if (data.ok) {
+      const res = await apiPost('/api/whatsapp/test', { shop, to_phone: testPhone })
+      const data = await readJson(res)
+      if (res.ok && data.ok === true) {
         setWaFeedback({
           type: 'success',
-          text: lang === 'ro' ? `✅ Mesaj WhatsApp de test expediat către ${testPhone}!` : `✅ Test WhatsApp message dispatched to ${testPhone}!`
+          text: lang === 'ro' ? `✅ Furnizorul a acceptat mesajul WhatsApp de test către ${testPhone}.` : `✅ The provider accepted the test WhatsApp message to ${testPhone}.`
         })
       } else {
         setWaFeedback({
           type: 'error',
-          text: (data.error || 'Eroare') + (data.wa_me_url ? ` - Link direct: ${data.wa_me_url}` : '')
+          text: errorText(data, res) + (data.wa_me_url ? ` - Link direct: ${data.wa_me_url}` : '')
         })
       }
     } catch (e) {
@@ -674,13 +995,14 @@ export default function App() {
 
   const loadNotifySettings = async () => {
     try {
-      const res = await fetch(`/api/settings/notifications?shop=${encodeURIComponent(shop)}`)
-      if (res.ok) {
-        const data = await res.json()
-        setNotifySettings(prev => ({ ...prev, ...data }))
-      }
+      const res = await api(`/api/settings/notifications?${qShop}`)
+      if (!res.ok) return false
+      const data = await readJson(res)
+      if (data && typeof data === 'object') setNotifySettings(prev => ({ ...prev, ...data }))
+      return true
     } catch (e) {
       console.error('Failed to load notification settings', e)
+      return false
     }
   }
 
@@ -688,16 +1010,15 @@ export default function App() {
     setSavingNotify(true)
     setNotifyFeedback(null)
     try {
-      const res = await fetch('/api/settings/notifications', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shop, ...notifySettings })
-      })
+      const res = await apiPost('/api/settings/notifications', { shop, ...notifySettings })
+      const data = await readJson(res)
       if (res.ok) {
         setNotifyFeedback({
           type: 'success',
-          text: lang === 'ro' ? '✅ Canalele de alerte mobile au fost salvate!' : '✅ Mobile alert channels saved!'
+          text: lang === 'ro' ? '✅ Canalele de alerte mobile au fost salvate.' : '✅ Mobile alert channels saved.'
         })
+      } else {
+        setNotifyFeedback({ type: 'error', text: errorText(data, res) })
       }
     } catch (e) {
       setNotifyFeedback({ type: 'error', text: e.message })
@@ -710,19 +1031,15 @@ export default function App() {
     setTestingAlert(true)
     setNotifyFeedback(null)
     try {
-      const res = await fetch('/api/notifications/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shop, channel })
-      })
-      const data = await res.json()
-      if (data.ok) {
+      const res = await apiPost('/api/notifications/test', { shop, channel })
+      const data = await readJson(res)
+      if (res.ok && data.ok === true) {
         setNotifyFeedback({
           type: 'success',
-          text: lang === 'ro' ? `✅ Alertă de test expediată pe ${channel}!` : `✅ Test alert dispatched to ${channel}!`
+          text: lang === 'ro' ? `✅ Alertă de test acceptată pe ${channel}.` : `✅ Test alert accepted on ${channel}.`
         })
       } else {
-        setNotifyFeedback({ type: 'error', text: data.error || 'Eroare test' })
+        setNotifyFeedback({ type: 'error', text: errorText(data, res) })
       }
     } catch (e) {
       setNotifyFeedback({ type: 'error', text: e.message })
@@ -733,13 +1050,14 @@ export default function App() {
 
   const loadVipQueue = async () => {
     try {
-      const res = await fetch(`/api/post-delivery/queue?shop=${encodeURIComponent(shop)}&limit=10`)
-      if (res.ok) {
-        const data = await res.json()
-        setVipQueue(data.queue || [])
-      }
+      const res = await api(`/api/post-delivery/queue?${qShop}&limit=10`)
+      if (!res.ok) return false
+      const data = await readJson(res)
+      setVipQueue(asArray(data.queue))
+      return true
     } catch (e) {
       console.error('Failed to load VIP queue', e)
+      return false
     }
   }
 
@@ -747,18 +1065,17 @@ export default function App() {
     setSyncingVip(true)
     setVipFeedback(null)
     try {
-      const res = await fetch('/api/post-delivery/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shop, limit_orders: 50 })
-      })
+      const res = await apiPost('/api/post-delivery/sync', { shop, days_back: 14 })
+      const data = await readJson(res)
       if (res.ok) {
-        const data = await res.json()
+        const n = isNum(data.synced_count) ? data.synced_count : 0
         setVipFeedback({
           type: 'success',
-          text: lang === 'ro' ? `✅ Sincronizat: ${data.synced_count} comenzi eligibile pentru recenzii!` : `✅ Synced ${data.synced_count} fulfilled orders!`
+          text: lang === 'ro' ? `✅ Sincronizat: ${n} comenzi livrate (ultimele 14 zile).` : `✅ Synced ${n} fulfilled orders (last 14 days).`
         })
         await loadVipQueue()
+      } else {
+        setVipFeedback({ type: 'error', text: errorText(data, res) })
       }
     } catch (e) {
       setVipFeedback({ type: 'error', text: e.message })
@@ -767,9 +1084,8 @@ export default function App() {
     }
   }
 
-  // 100% Resilient Chat Handler
   const handleSendMessage = async (customText = null) => {
-    const text = customText || inputMessage
+    const text = (typeof customText === 'string' && customText) ? customText : inputMessage
     if (!text || !text.trim() || sendingChat) return
 
     setInputMessage('')
@@ -783,113 +1099,102 @@ export default function App() {
     const effectiveLang = isRoInput ? 'ro' : lang
 
     try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shop, message: text, lang: effectiveLang })
-      })
-      if (!res.ok) throw new Error('Status ' + res.status)
-      const data = await res.json()
-      setChatMessages([...updated, { role: 'assistant', content: data.reply }])
-
+      const res = await apiPost('/api/chat', { shop, message: text, lang: effectiveLang })
+      const data = await readJson(res)
+      if (!res.ok) {
+        throw new Error(res.status === 401
+          ? (effectiveLang === 'ro' ? 'este necesară cheia de acces' : 'access key required')
+          : errorText(data, res))
+      }
+      const reply = typeof data.reply === 'string' && data.reply.trim() ? data.reply : null
+      if (!reply) throw new Error(effectiveLang === 'ro' ? 'răspuns gol' : 'empty reply')
+      setChatMessages([...updated, { role: 'assistant', content: reply }])
       if (voiceEnabled) {
-        speakText(data.reply.slice(0, 260))
+        speakText(reply.slice(0, 260))
       }
     } catch (err) {
-      console.warn('Chat resilient fallback triggered:', err)
-      let fallbackText = effectiveLang === 'ro'
-        ? `Domnule Grozavu, creierul AI Maison Grozavu a preluat mesajul tău ("${text}"):\n\nPrioritatea noastră imediată este activarea vânzărilor: avem ${snapshot?.abandoned_carts || 7} coșuri abandonate ce pot fi recuperate cu o reducere de 10% (cod MG10) și o urgență de 6 ore. De asemenea, recomand publicarea unui video de 20s pe TikTok cu piesa vedetă din mătase pentru a atrage trafic organic cald gratuit!\n\nTastează comanda **/boost** pentru campania rapidă de conversie!`
-        : `Store telemetry is active. Regarding "${text}": our primary focus is recovering ${snapshot?.abandoned_carts || 7} abandoned checkouts with code MG10 and driving organic luxury fashion traffic via TikTok/Reels. Type **/boost** to trigger immediate conversion multipliers!`
-      setChatMessages([...updated, { role: 'assistant', content: fallbackText }])
+      console.warn('Chat error:', err)
+      const errMsg = effectiveLang === 'ro'
+        ? `⚠️ Jarvis nu a putut răspunde acum (${err.message}). Încearcă din nou peste câteva momente.`
+        : `⚠️ Jarvis could not reply right now (${err.message}). Please try again in a moment.`
+      setChatMessages([...updated, { role: 'assistant', content: errMsg }])
     } finally {
       setSendingChat(false)
     }
   }
 
-  // 1-Click Viral Campaign Tools
+  // 1-Click AI draft generators (nothing is sent or written anywhere)
+  const ACTION_TITLES = {
+    tiktok: t.action_tiktok_title,
+    email_cart: t.action_email_title,
+    seo_audit: t.action_seo_title,
+    vip_reward: t.action_vip_title,
+    post_purchase: t.action_post_title
+  }
+
   const runQuickAction = async (type) => {
-    setGeneratingAction(true)
+    if (generatingAction) return
+    setGeneratingAction(type)
     let prompt = ''
     if (type === 'tiktok') {
       prompt = lang === 'ro'
-        ? `Scrie-mi un script complet de TikTok/Reels de 30 secunde pentru cel mai vândut produs din magazinul Maison Grozavu (mătase naturală / sacou atelier). Include: 1 Hook vizual captivant în primele 3 secunde, Problemă, Soluție și Call To Action direct către magazin.`
-        : `Write a viral 30-second TikTok/Reels script for Maison Grozavu's best-selling luxury atelier item. Include: 1 Visual Hook in the first 3 seconds, relatable Customer Pain Point, Product Solution demonstration, and a strong Call to Action to buy now.`
+        ? `Scrie-mi un script de TikTok/Reels de 30 de secunde pentru un produs real din catalogul Grozavu (streetwear premium: hanorace, crewneck-uri, tricouri boxy, windbreaker, pantaloni, accesorii). Folosește doar produse care există în magazin; dacă nu ai lista de produse, lasă un loc liber [NUME PRODUS]. Include: un hook vizual în primele 3 secunde, problemă, soluție și un Call To Action direct către maisongrozavu.com. Nu inventa materiale, prețuri sau reduceri.`
+        : `Write a 30-second TikTok/Reels script for a real product from the Grozavu catalog (premium streetwear: hoodies, crewnecks, boxy tees, windbreaker, pants, accessories). Use only products that exist in the store; if you don't have the product list, leave a [PRODUCT NAME] placeholder. Include: a visual hook in the first 3 seconds, problem, solution and a direct Call to Action to maisongrozavu.com. Do not invent materials, prices or discounts.`
     } else if (type === 'email_cart') {
       prompt = lang === 'ro'
-        ? `Scrie un email irezistibil de recuperare a coșurilor abandonate pentru clienții Maison Grozavu. Include un subiect cu rată mare de deschidere, ton empatic de atelier de lux și o ofertă cu cod de discount 10% (MG10).`
-        : `Write a high-converting abandoned cart recovery email for Maison Grozavu. Include an attention-grabbing subject line with high open rates, an empathetic tone, urgency, and a 10% discount promo code offer.`
+        ? `Scrie o ciornă de email de recuperare a coșurilor abandonate pentru clienții Grozavu (streetwear premium, Designed in Spain). Include un subiect clar și un ton prietenos, fără presiune falsă: nu inventa stocuri limitate, produse rezervate sau termene. Dacă propui un cod de reducere, marchează-l ca [COD DE CREAT ÎN SHOPIFY].`
+        : `Write a draft abandoned-checkout recovery email for Grozavu customers (premium streetwear, Designed in Spain). Include a clear subject line and a friendly tone without fake pressure: do not invent limited stock, reserved items or deadlines. If you suggest a discount code, mark it as [CODE TO CREATE IN SHOPIFY].`
     } else if (type === 'seo_audit') {
       prompt = lang === 'ro'
-        ? `Fă un audit rapid de conversie pentru produsele mele Maison Grozavu și sugerează 3 îmbunătățiri directe de titlu și descriere ca să convingă vizitatorii să cumpere din primul minut.`
-        : `Conduct a rapid conversion audit on my store catalog. Recommend 3 direct title and description optimizations to boost click-through rate and compel first-time visitors to purchase.`
+        ? `Fă un audit rapid de conversie pentru produsele mele Grozavu și sugerează 3 îmbunătățiri concrete de titlu și descriere. Bazează-te doar pe produsele reale din magazin și nu inventa materiale sau caracteristici.`
+        : `Run a quick conversion audit of my Grozavu products and suggest 3 concrete title and description improvements. Base it only on the real products in the store and do not invent materials or features.`
     } else if (type === 'vip_reward') {
       prompt = lang === 'ro'
-        ? `Analizează clienții fideli și top cumpărătorii Maison Grozavu. Scrie un email VIP exclusiv de fidelizare și mulțumire, oferindu-le un beneficiu sau discount secret de 15% VIP, făcându-i să se simtă speciali și stimulând o nouă comandă recurentă de valoare mare.`
-        : `Analyze our repeat customers and top spenders. Draft an exclusive VIP loyalty email thanking them, offering a secret 15% VIP incentive, and inspiring a high-margin repeat purchase.`
+        ? `Scrie o ciornă de email VIP de mulțumire pentru clienții care au cumpărat de mai multe ori de la Grozavu. Dacă magazinul nu are încă clienți recurenți, spune asta clar la început. Poți propune un beneficiu (de exemplu 15% reducere), marcat ca [COD DE CREAT ÎN SHOPIFY].`
+        : `Write a draft VIP thank-you email for customers who bought from Grozavu more than once. If the store has no repeat customers yet, say so clearly at the start. You may suggest a perk (for example 15% off), marked as [CODE TO CREATE IN SHOPIFY].`
     } else if (type === 'post_purchase') {
       prompt = lang === 'ro'
-        ? `Scrie o secvență automată de email post-cumpărare (trimisă la 3 zile după livrare) pentru clienții noi Maison Grozavu. Include: mulțumire călduroasă, sfat util de folosire a produsului, cerere prietenoasă de recenzie cu poză de 5 stele și o recomandare atractivă de produs complementar (upsell/cross-sell).`
-        : `Draft an automated 3-day post-delivery email sequence for first-time buyers. Include warm gratitude, a useful product care tip, a 5-star photo review request, and an enticing recommendation for a complementary product.`
+        ? `Scrie o ciornă de email post-livrare pentru clienții noi Grozavu. Include: mulțumire, un sfat de îngrijire a hainei, o cerere opțională de recenzie onestă (fără a condiționa vreo reducere de recenzie sau de numărul de stele) și o recomandare de produs complementar din catalog.`
+        : `Write a draft post-delivery email for new Grozavu customers. Include: a thank-you, a garment care tip, an optional request for an honest review (never tie a discount to a review or to a star rating) and a complementary product recommendation from the catalog.`
     }
 
     try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shop, message: prompt, lang })
-      })
-      const data = await res.json()
-      setGeneratedOutput({ title: type.toUpperCase(), content: data.reply })
+      const res = await apiPost('/api/chat', { shop, message: prompt, lang })
+      const data = await readJson(res)
+      if (!res.ok) throw new Error(errorText(data, res))
+      if (typeof data.reply !== 'string' || !data.reply.trim()) throw new Error(lang === 'ro' ? 'răspuns gol' : 'empty reply')
+      setGeneratedOutput({ title: ACTION_TITLES[type] || String(type).toUpperCase(), content: data.reply })
     } catch (e) {
       console.warn('Action generation error:', e)
-      handleToast(lang === 'ro' ? 'Notă generare: ' + e.message : 'Generation note: ' + e.message)
+      showToast((lang === 'ro' ? '⚠️ Generarea a eșuat: ' : '⚠️ Generation failed: ') + e.message)
     } finally {
-      setGeneratingAction(false)
+      setGeneratingAction(null)
     }
   }
 
   const handleOfficialShopifySubscribe = async () => {
+    if (subscribing || plan === 'pro') return
     setSubscribing(true)
+    setBillingFeedback(null)
     try {
-      const res = await fetch('/api/billing/create', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shop, test: true })
-      })
-      const data = await res.json()
-      if (data.confirmation_url) {
-        if (window.top !== window.self) {
-          window.top.location.href = data.confirmation_url
-        } else {
-          window.location.href = data.confirmation_url
-        }
-      } else {
-        throw new Error('No confirmation URL returned by Shopify Billing')
+      const res = await apiPost('/api/billing/create', { shop, test: true })
+      const data = await readJson(res)
+      if (res.status === 401) return
+      if (res.ok && typeof data.confirmation_url === 'string' && data.confirmation_url) {
+        window.open(data.confirmation_url, '_top')
+        return
       }
+      let text = (lang === 'ro' ? 'Abonamentul nu a putut fi creat: ' : 'The subscription could not be created: ') + errorText(data, res)
+      if (data.demo_mode) {
+        text += lang === 'ro'
+          ? ' (mod demo — facturarea Shopify nu este disponibilă pentru acest magazin acum).'
+          : ' (demo mode — Shopify Billing is not available for this store right now).'
+      }
+      setBillingFeedback({ type: 'error', text })
     } catch (e) {
-      alert('Billing Notice: ' + e.message)
+      setBillingFeedback({ type: 'error', text: (lang === 'ro' ? 'Eroare de rețea: ' : 'Network error: ') + e.message })
     } finally {
       setSubscribing(false)
-    }
-  }
-
-  const handleMockUpgrade = async (targetPlan) => {
-    try {
-      const res = await fetch('/api/plan/upgrade', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shop, plan: targetPlan })
-      })
-      if (res.ok) {
-        setPlan(targetPlan)
-        if (targetPlan === 'pro') {
-          speakText(lang === 'ro' 
-            ? "Protocolul Jarvis Pro a fost activat. Creierul de vânzări este online." 
-            : "Jarvis Pro protocol activated. Autonomous sales systems are online.")
-        }
-      }
-    } catch (e) {
-      console.error(e)
     }
   }
 
@@ -897,7 +1202,61 @@ export default function App() {
     setCompletedTasks(prev => ({ ...prev, [idx]: !prev[idx] }))
   }
 
-  const healthScore = briefing?.health_score || (snapshot ? Math.min(95, 75 + (snapshot.orders_today * 4) - (snapshot.abandoned_carts * 2)) : 89)
+  // ── Derived, honest display values ──
+  const notConnected = !!snapshot && snapshot.connected === false
+  const dataOk = !!snapshot && snapshot.connected !== false
+  const currency = (snapshot && snapshot.currency) || 'EUR'
+  const showNum = (v, digits) => (dataOk ? fmtNum(v, digits) : DASH)
+  const healthScore = dataOk && isNum(briefing?.health_score) ? Math.round(briefing.health_score) : null
+  const topTasks = asArray(briefing?.top_tasks).filter((x) => x && (typeof x === 'object' || typeof x === 'string'))
+  const briefingAlerts = asArray(briefing?.alerts).filter((x) => x && (typeof x === 'object' || typeof x === 'string'))
+  const vipTop = dataOk ? asArray(snapshot?.vip_customers)[0] : null
+  const updatedAtText = lastUpdated ? fmtTime(lastUpdated, locale) : DASH
+  const isPro = plan === 'pro'
+  const planLabel = plan === 'pro' ? 'PRO' : plan === 'free' ? (lang === 'ro' ? 'GRATUIT' : 'FREE') : (plan ? String(plan).toUpperCase() : DASH)
+
+  // Autopilot status derived from the daemon's real state
+  const daemon = (autopilotData && typeof autopilotData.daemon === 'object' && autopilotData.daemon) || {}
+  const intervalMin = isNum(daemon.interval_minutes) ? daemon.interval_minutes : 5
+  const lastCycleMin = minutesSince(daemon.last_cycle_at)
+  const autopilotConnected = autopilotData ? autopilotData.connected !== false && !notConnected : !notConnected
+  let autopilotBadge
+  if (!autopilotData) {
+    autopilotBadge = { text: lang === 'ro' ? 'Stare pilot automat: se încarcă / indisponibilă' : 'Autopilot status: loading / unavailable', color: '#94a3b8' }
+  } else if (!autopilotConnected) {
+    autopilotBadge = { text: lang === 'ro' ? 'Shopify neconectat — pilotul automat nu poate citi coșurile' : 'Shopify not connected — autopilot cannot read checkouts', color: '#f87171' }
+  } else if (daemon.is_running === false) {
+    autopilotBadge = { text: lang === 'ro' ? 'Pilot automat oprit' : 'Autopilot stopped', color: '#f87171' }
+  } else if (lastCycleMin === null) {
+    autopilotBadge = { text: lang === 'ro' ? 'Pilot automat: nu a rulat încă' : 'Autopilot: has not run yet', color: '#f59e0b' }
+  } else if (lastCycleMin > intervalMin * 3) {
+    autopilotBadge = { text: (lang === 'ro' ? 'Ultimul ciclu: ' : 'Last cycle: ') + agoText(lastCycleMin, lang) + (lang === 'ro' ? ' (întârziat)' : ' (late)'), color: '#f59e0b' }
+  } else {
+    autopilotBadge = { text: (lang === 'ro' ? 'Ultimul ciclu: ' : 'Last cycle: ') + agoText(lastCycleMin, lang), color: '#10b981' }
+  }
+  const autopilotQueue = asArray(autopilotData?.queue).filter((it) => it && typeof it === 'object')
+  const queueLangs = Array.from(new Set(autopilotQueue
+    .map((it) => (it && (it.detected_flag || it.detected_lang_name || it.detected_lang)) || null)
+    .filter(Boolean)))
+  const frequencyPolicy = complianceStats ? (complianceStats.frequency_policy || complianceStats.frequency_caps || null) : null
+  const frequencyRows = policyEntries(frequencyPolicy)
+  const frequencySummary = frequencyRows.length
+    ? frequencyRows.slice(0, 2).map(([k, v]) => `${humanizeKey(k)}: ${humanizeValue(v)}`).join(' • ')
+    : null
+  const quietLabel = complianceStats ? (complianceStats.quiet_hours_label || complianceStats.quiet_hours_schedule || null) : null
+  const consentStats = complianceStats && typeof complianceStats.consent_stats === 'object' && complianceStats.consent_stats ? complianceStats.consent_stats : null
+
+  // Feed / SEO / DNS derived values
+  const feedUrl = feedValidation && typeof feedValidation.feed_url === 'string' && feedValidation.feed_url ? feedValidation.feed_url : null
+  const feedErrors = asArray(feedValidation?.errors)
+  const feedWarnings = asArray(feedValidation?.warnings)
+  const feedSkipped = asArray(feedValidation?.skipped)
+  const dnsScore = isNum(dnsAuditData?.score) ? dnsAuditData.score : null
+  const dnsMissing = asArray(dnsAuditData?.missing_records)
+  const seoKeywords = asArray(seoData?.keywords).filter((k) => k && (typeof k === 'object' || typeof k === 'string'))
+  const kwHasVolume = seoKeywords.some((k) => k && isNum(k.volume))
+  const kwHasDifficulty = seoKeywords.some((k) => k && isNum(k.difficulty))
+  const kwHasCpc = seoKeywords.some((k) => k && isNum(k.cpc))
 
   if (loading) {
     return (
@@ -907,8 +1266,8 @@ export default function App() {
           <div className="ring ring-2"></div>
           <div className="core-glow"></div>
         </div>
-        <div className="loading-text">SINCRONIZARE CREIER AUTONOM MAISON GROZAVU...</div>
-        <div className="loading-sub">Analiză stocuri, comenzi live, radar Google și oportunități de vânzări</div>
+        <div className="loading-text">{lang === 'ro' ? 'SE ÎNCARCĂ JARVIS — GROZAVU...' : 'LOADING JARVIS — GROZAVU...'}</div>
+        <div className="loading-sub">{lang === 'ro' ? 'Se citesc datele magazinului din Shopify' : 'Reading store data from Shopify'}</div>
         <style>{styles}</style>
       </div>
     )
@@ -933,10 +1292,12 @@ export default function App() {
           </div>
           <div>
             <div className="brand-title">
-              MAISON GROZAVU <span className="brand-badge">{plan === 'pro' ? t.brand_sub_pro : t.brand_sub_free}</span>
+              GROZAVU <span className="brand-badge" title={lang === 'ro' ? 'Planul Jarvis' : 'Jarvis plan'}>PLAN {planLabel}</span>
             </div>
             <div className="brand-status">
-              <span className="live-indicator"></span> {t.telemetry_connected} • maisongrozavu.com
+              <span className="live-indicator" style={dataOk ? undefined : { background: notConnected ? '#ef4444' : '#94a3b8', boxShadow: 'none' }}></span>
+              {notConnected ? t.telemetry_disconnected : (dataOk ? t.telemetry_connected : (lang === 'ro' ? 'STARE SHOPIFY NECUNOSCUTĂ' : 'SHOPIFY STATUS UNKNOWN'))}
+              {lastUpdated ? ` • ${t.updated_at} ${updatedAtText}` : ''} • maisongrozavu.com
             </div>
           </div>
         </div>
@@ -963,17 +1324,76 @@ export default function App() {
             {voiceEnabled ? t.voice_active : t.voice_mute}
           </button>
 
-          {plan === 'free' ? (
+          {plan === 'free' && (
             <button className="upgrade-glow-btn" onClick={() => setActiveTab('plans')}>
               {t.upgrade_btn}
             </button>
-          ) : (
-            <div className="pro-active-badge">
-              {t.pro_active_badge}
-            </div>
           )}
         </div>
       </header>
+
+      {/* ── ACCESS KEY CARD (401 auth_required) ── */}
+      {authRequired && (
+        <div className="hud-card auth-card">
+          <div className="card-title">
+            <span>🔐 {lang === 'ro' ? 'Cheie de acces Jarvis' : 'Jarvis access key'}</span>
+          </div>
+          <p className="card-desc">
+            {lang === 'ro'
+              ? 'Serverul Jarvis cere autentificare. Dacă deschizi Jarvis din Shopify Admin, reîncarcă aplicația de acolo. Dacă îl deschizi direct, introdu cheia de acces (JARVIS_ADMIN_KEY). Cheia se păstrează doar în acest browser.'
+              : 'The Jarvis server requires authentication. If you open Jarvis from Shopify Admin, reload the app there. If you open it directly, enter the access key (JARVIS_ADMIN_KEY). The key is kept only in this browser.'}
+          </p>
+          {authAttempted && (
+            <div className="delivery-alert error" style={{ marginBottom: '12px' }}>
+              {lang === 'ro' ? 'Cheia introdusă nu a fost acceptată. Verifică-o și încearcă din nou.' : 'The key was not accepted. Check it and try again.'}
+            </div>
+          )}
+          <div className="auth-row">
+            <input
+              type="password"
+              className="auth-input"
+              autoComplete="current-password"
+              placeholder={lang === 'ro' ? 'Cheie de acces Jarvis' : 'Jarvis access key'}
+              value={authKeyInput}
+              onChange={(e) => setAuthKeyInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleSaveAuthKey()}
+            />
+            <button className="save-btn" onClick={handleSaveAuthKey}>
+              {lang === 'ro' ? 'Salvează' : 'Save'}
+            </button>
+            {hasAdminKey() && (
+              <button className="test-btn" onClick={handleForgetAuthKey}>
+                {lang === 'ro' ? 'Șterge cheia salvată' : 'Forget saved key'}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── SHOPIFY NOT CONNECTED BANNER ── */}
+      {notConnected && (
+        <div className="status-banner danger">
+          <strong>⚠️ {lang === 'ro'
+            ? 'Shopify nu este conectat — nu afișăm cifre. Instalează/reconectează aplicația.'
+            : 'Shopify is not connected — no numbers are shown. Install/reconnect the app.'}</strong>
+          {snapshot?.data_error && <div className="status-banner-detail">{String(snapshot.data_error)}</div>}
+        </div>
+      )}
+
+      {dataOk && snapshot?.data_error && (
+        <div className="status-banner warning">
+          <strong>⚠️ {lang === 'ro' ? 'Unele date Shopify nu au putut fi citite:' : 'Some Shopify data could not be read:'}</strong> {String(snapshot.data_error)}
+        </div>
+      )}
+
+      {loadError && !authRequired && (
+        <div className="status-banner warning">
+          <strong>⚠️ {lang === 'ro' ? 'Nu am putut încărca datele magazinului:' : 'Could not load store data:'}</strong> {loadError}
+          <button className="test-btn" style={{ marginLeft: '12px' }} onClick={() => { loadedRef.current.clear(); setReloadToken((n) => n + 1) }}>
+            {lang === 'ro' ? 'Reîncearcă' : 'Retry'}
+          </button>
+        </div>
+      )}
 
       {/* ── NAVIGATION MATRIX ── */}
       <nav className="hud-nav">
@@ -985,19 +1405,13 @@ export default function App() {
         </button>
         <button
           className={`nav-item ${activeTab === 'radar' ? 'active' : ''}`}
-          onClick={() => {
-            setActiveTab('radar')
-            loadGrowthData()
-          }}
+          onClick={() => setActiveTab('radar')}
         >
           <span className="nav-icon">🌐</span> {t.tab_radar}
         </button>
         <button
           className={`nav-item ${activeTab === 'actions' ? 'active' : ''}`}
-          onClick={() => {
-            setActiveTab('actions')
-            loadGrowthData()
-          }}
+          onClick={() => setActiveTab('actions')}
         >
           <span className="nav-icon">⚡</span> {t.tab_actions}
         </button>
@@ -1011,15 +1425,11 @@ export default function App() {
           className={`nav-item ${activeTab === 'autopilot' ? 'active' : ''}`}
           onClick={() => {
             setActiveTab('autopilot')
-            loadAutopilotStatus()
-            loadDeliverySettings()
-            loadWaSettings()
-            loadNotifySettings()
-            loadVipQueue()
+            if (activeTab !== 'autopilot') loadAutopilotStatus()
           }}
         >
           <span className="nav-icon">🤖</span> {t.tab_autopilot}
-          {autopilotData?.pending_carts_count > 0 && (
+          {isNum(autopilotData?.pending_carts_count) && autopilotData.pending_carts_count > 0 && (
             <span className="nav-pill pulse-badge">{autopilotData.pending_carts_count}</span>
           )}
         </button>
@@ -1046,15 +1456,15 @@ export default function App() {
                     <div className="ring ring-2"></div>
                     <div className="ring ring-3"></div>
                     <div className="core-glow">
-                      <div className="health-number">{healthScore}%</div>
+                      <div className="health-number">{healthScore === null ? DASH : `${healthScore}%`}</div>
                       <div className="health-label">{t.health_score_label}</div>
                     </div>
                   </div>
                 </div>
 
                 <div className="hero-info">
-                  <div className="greeting-line">{briefing?.greeting || "Salutare domnule Grozavu! Jarvis la raport."}</div>
-                  <div className="summary-text">{briefing?.summary}</div>
+                  <div className="greeting-line">{(typeof briefing?.greeting === 'string' && briefing.greeting) || (lang === 'ro' ? 'Bună ziua! Jarvis la raport.' : 'Hello! Jarvis reporting.')}</div>
+                  <div className="summary-text">{typeof briefing?.summary === 'string' ? briefing.summary : ''}</div>
 
                   <div className="hero-buttons">
                     <button className="speak-btn" onClick={triggerVoiceBriefing}>
@@ -1078,29 +1488,31 @@ export default function App() {
             <div className="metrics-row">
               <div className="metric-card">
                 <div className="metric-header">{t.orders_today}</div>
-                <div className="metric-value">{snapshot?.orders_today || 0}</div>
-                <div className="metric-footer highlight-green">{t.orders_sub}</div>
+                <div className="metric-value">{showNum(snapshot?.orders_today)}</div>
+                <div className="metric-footer">{dataOk ? `${t.orders_sub} ${updatedAtText}` : (lang === 'ro' ? 'indisponibil' : 'unavailable')}</div>
               </div>
 
               <div className="metric-card">
                 <div className="metric-header">{t.revenue_today}</div>
                 <div className="metric-value">
-                  {snapshot?.revenue_today || 0} <span className="currency">{snapshot?.currency || 'EUR'}</span>
+                  {showNum(snapshot?.revenue_today, 2)} {dataOk && <span className="currency">{currency}</span>}
                 </div>
-                <div className="metric-footer">{t.revenue_30d} {snapshot?.revenue_30d || 0} {snapshot?.currency || 'EUR'}</div>
+                <div className="metric-footer">{t.revenue_30d} {showNum(snapshot?.revenue_30d, 2)}{dataOk ? ` ${currency}` : ''}</div>
               </div>
 
               <div className="metric-card alert-border">
                 <div className="metric-header">{t.abandoned_carts}</div>
-                <div className="metric-value critical">{snapshot?.abandoned_carts || 0}</div>
+                <div className="metric-value critical">{showNum(snapshot?.abandoned_carts)}</div>
                 <div className="metric-footer highlight-orange">
-                  {snapshot?.abandoned_carts > 0 ? t.abandoned_alert : t.abandoned_ok}
+                  {!dataOk || !isNum(snapshot?.abandoned_carts)
+                    ? (lang === 'ro' ? 'indisponibil' : 'unavailable')
+                    : (snapshot.abandoned_carts > 0 ? t.abandoned_alert : t.abandoned_ok)}
                 </div>
               </div>
 
               <div className="metric-card">
                 <div className="metric-header">{t.new_customers}</div>
-                <div className="metric-value">{snapshot?.new_customers_24h || 0}</div>
+                <div className="metric-value">{showNum(snapshot?.new_customers_24h)}</div>
                 <div className="metric-footer">{t.customers_sub}</div>
               </div>
             </div>
@@ -1110,7 +1522,7 @@ export default function App() {
               <div className="metric-card">
                 <div className="metric-header">{t.aov_label}</div>
                 <div className="metric-value">
-                  {snapshot?.aov || 150} <span className="currency">{snapshot?.currency || 'EUR'}</span>
+                  {showNum(snapshot?.aov, 2)} {dataOk && <span className="currency">{currency}</span>}
                 </div>
                 <div className="metric-footer highlight-gold">{t.aov_sub}</div>
               </div>
@@ -1118,24 +1530,26 @@ export default function App() {
               <div className="metric-card">
                 <div className="metric-header">{t.retention_label}</div>
                 <div className="metric-value highlight-gold">
-                  {snapshot?.returning_rate || 27.4}%
+                  {dataOk && isNum(snapshot?.returning_rate) ? `${fmtNum(snapshot.returning_rate)}%` : DASH}
                 </div>
-                <div className="metric-footer">{snapshot?.repeat_customers || 28} {t.retention_sub}</div>
+                <div className="metric-footer">{showNum(snapshot?.repeat_customers)} {t.retention_sub}</div>
               </div>
 
               <div className="metric-card">
                 <div className="metric-header">{t.unique_buyers_label}</div>
-                <div className="metric-value">{snapshot?.total_unique_customers || 102}</div>
+                <div className="metric-value">{showNum(snapshot?.total_unique_customers)}</div>
                 <div className="metric-footer">{t.unique_buyers_sub}</div>
               </div>
 
               <div className="metric-card">
                 <div className="metric-header">{t.vip_customer_label}</div>
                 <div className="metric-value vip-name">
-                  {snapshot?.vip_customers && snapshot.vip_customers[0] ? snapshot.vip_customers[0].name : 'Elena Popescu'}
+                  {vipTop && vipTop.name ? String(vipTop.name) : DASH}
                 </div>
                 <div className="metric-footer highlight-gold">
-                  {snapshot?.vip_customers && snapshot.vip_customers[0] ? `${snapshot.vip_customers[0].total_spent.toFixed(2)} ${snapshot?.currency}` : '1,420.00 EUR'}
+                  {vipTop && isNum(Number(vipTop.total_spent)) && vipTop.total_spent !== null && vipTop.total_spent !== ''
+                    ? `${Number(vipTop.total_spent).toFixed(2)} ${currency}`
+                    : (lang === 'ro' ? 'Niciun client VIP încă' : 'No VIP customer yet')}
                 </div>
               </div>
             </div>
@@ -1148,15 +1562,15 @@ export default function App() {
                   <span className="tag-live">{t.ai_prioritized}</span>
                 </div>
                 <div className="tasks-list">
-                  {briefing?.top_tasks && briefing.top_tasks.length > 0 ? (
-                    briefing.top_tasks.map((task, i) => (
+                  {topTasks.length > 0 ? (
+                    topTasks.map((task, i) => (
                       <div key={i} className={`task-item ${completedTasks[i] ? 'done' : ''}`} onClick={() => toggleTask(i)}>
                         <input type="checkbox" checked={!!completedTasks[i]} readOnly />
                         <div className="task-content">
                           <div className="task-title">
-                            {task.icon || '📌'} #{task.priority}: {task.task}
+                            {(task && task.icon) || '📌'} {task && (isNum(task.priority) || typeof task.priority === 'string') ? `#${task.priority}: ` : ''}{typeof task === 'string' ? task : (task && task.task) || ''}
                           </div>
-                          <div className="task-why">{task.why}</div>
+                          {task && task.why && <div className="task-why">{String(task.why)}</div>}
                         </div>
                       </div>
                     ))
@@ -1172,29 +1586,29 @@ export default function App() {
                   <span>{t.traffic_strategy}</span>
                 </div>
 
-                {briefing?.traffic_tip && (
+                {typeof briefing?.traffic_tip === 'string' && briefing.traffic_tip && (
                   <div className="traffic-box">
-                    <div className="traffic-tag">{t.daily_growth_tip}</div>
+                    <div className="traffic-tag">{t.daily_growth_tip} • {lang === 'ro' ? 'idee AI' : 'AI idea'}</div>
                     <div className="traffic-desc">{briefing.traffic_tip}</div>
                   </div>
                 )}
 
                 <div className="alerts-box">
                   <div className="box-subtitle">{t.auto_diagnostics}</div>
-                  {briefing?.alerts && briefing.alerts.length > 0 ? (
-                    briefing.alerts.map((al, idx) => (
+                  {briefingAlerts.length > 0 ? (
+                    briefingAlerts.map((al, idx) => (
                       <div key={idx} className="alert-item">
                         <span className="alert-icon">⚡</span>
                         <div>
-                          <strong>{al.message}</strong>
-                          <div className="alert-action">{al.action}</div>
+                          <strong>{typeof al === 'string' ? al : (al && al.message) || ''}</strong>
+                          {al && typeof al === 'object' && al.action && <div className="alert-action">{String(al.action)}</div>}
                         </div>
                       </div>
                     ))
                   ) : (
-                    <div className="alert-item green">
-                      <span className="alert-icon">🛡️</span>
-                      <div>{t.store_nominal}</div>
+                    <div className={`alert-item ${dataOk ? 'green' : ''}`}>
+                      <span className="alert-icon">{dataOk ? '🛡️' : '⚠️'}</span>
+                      <div>{dataOk ? t.store_nominal : t.diagnostics_unavailable}</div>
                     </div>
                   )}
                 </div>
@@ -1223,7 +1637,7 @@ export default function App() {
                 className={`subnav-pill ${activeRadarSubtab === 'seo' ? 'active' : ''}`}
                 onClick={() => setActiveRadarSubtab('seo')}
               >
-                🔍 Google SEO & Căutări Reale
+                🔍 Google SEO & Sugestii Căutare
               </button>
               <button 
                 className={`subnav-pill ${activeRadarSubtab === 'hunter' ? 'active' : ''}`}
@@ -1244,126 +1658,233 @@ export default function App() {
               <div className="radar-content-grid">
                 <div className="hud-card">
                   <div className="card-title">
-                    <span>🛒 Feed Oficial Google Merchant Center (Trafic Gratuit Google Shopping)</span>
-                    <span className="tag-live" style={{ background: '#065f46', color: '#6ee7b7' }}>Trafic Gratuit Google</span>
+                    <span>🛒 Feed Google Merchant Center (listări gratuite Google Shopping)</span>
+                    <span className="tag-live" style={{ background: '#065f46', color: '#6ee7b7' }}>Listări gratuite Google</span>
                   </div>
                   <p className="card-desc">
-                    Google Shopping listează gratuit produsele magazinului tău direct în căutările de cumpărături pe Google România și internațional.
-                    Jarvis generează și menține actualizat acest feed XML conform specificațiilor oficiale Google RSS 2.0.
+                    Google Shopping are listări gratuite (free listings) pentru produsele magazinului; reclamele Shopping sunt separate și plătite.
+                    Jarvis generează acest feed XML din produsele Shopify și îl verifică după specificațiile Google.
                   </p>
+
+                  {(feedValidation?.connected === false || notConnected) && (
+                    <div className="delivery-alert error" style={{ marginBottom: '12px' }}>
+                      Shopify nu este conectat — feed-ul nu conține produse reale.
+                    </div>
+                  )}
+                  {typeof feedValidation?.error === 'string' && feedValidation.error && (
+                    <div className="delivery-alert error" style={{ marginBottom: '12px' }}>
+                      Validarea feed-ului nu a reușit: {feedValidation.error}
+                    </div>
+                  )}
 
                   <div className="feed-url-box" style={{ background: '#1c1917', padding: '16px', borderRadius: '8px', border: '1px solid #78350f', margin: '16px 0' }}>
                     <div style={{ fontSize: '12px', color: '#f59e0b', fontWeight: 600, marginBottom: '8px' }}>
-                      🔗 LINK PERMANENT FEED XML PENTRU GOOGLE MERCHANT:
+                      🔗 LINK FEED XML PENTRU GOOGLE MERCHANT:
                     </div>
-                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                      <input 
-                        type="text" 
-                        readOnly 
-                        value={`${window.location.origin}/api/google/feed.xml`}
-                        style={{ flex: 1, padding: '10px 14px', background: '#0c0a09', border: '1px solid #451a03', color: '#fef3c7', borderRadius: '6px', fontFamily: 'monospace', fontSize: '13px' }}
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <input
+                        type="text"
+                        readOnly
+                        value={feedUrl || (feedValidation ? 'indisponibil' : 'se încarcă...')}
+                        style={{ flex: 1, minWidth: '220px', padding: '10px 14px', background: '#0c0a09', border: '1px solid #451a03', color: '#fef3c7', borderRadius: '6px', fontFamily: 'monospace', fontSize: '13px' }}
                       />
-                      <button 
+                      <button
                         className="calculate-btn"
-                        onClick={() => handleCopy(`${window.location.origin}/api/google/feed.xml`, 'Link-ul feed-ului Google a fost copiat!')}
+                        disabled={!feedUrl}
+                        onClick={() => handleCopy(feedUrl, 'Link-ul feed-ului Google a fost copiat!')}
                       >
                         📋 Copiază Link
                       </button>
-                      <a 
-                        href="/api/google/feed.xml" 
-                        target="_blank" 
-                        rel="noreferrer"
-                        className="calculate-btn"
-                        style={{ textDecoration: 'none', textAlign: 'center', lineHeight: '22px' }}
+                      {feedUrl && (
+                        <a
+                          href={feedUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="calculate-btn"
+                          style={{ textDecoration: 'none', textAlign: 'center', lineHeight: '22px' }}
+                        >
+                          👁️ Vezi XML
+                        </a>
+                      )}
+                      <button
+                        className="test-btn"
+                        onClick={() => { loadFeedValidation() }}
                       >
-                        👁️ Vezi XML
-                      </a>
+                        🔄 Re-verifică
+                      </button>
                     </div>
                   </div>
 
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px', marginTop: '16px' }}>
                     <div style={{ background: '#292524', padding: '14px', borderRadius: '8px', border: '1px solid #44403c' }}>
                       <div style={{ fontSize: '11px', color: '#a8a29e' }}>STATUS VALIDARE SPECIFICAȚIE</div>
-                      <div style={{ fontSize: '16px', fontWeight: 700, color: '#10b981', marginTop: '4px' }}>
-                        {feedValidation?.valid ? '✅ Conform Google RSS 2.0' : 'Validat Google RSS 2.0'}
+                      <div style={{ fontSize: '16px', fontWeight: 700, color: feedValidation?.valid === true ? '#10b981' : feedValidation?.valid === false ? '#f87171' : '#94a3b8', marginTop: '4px' }}>
+                        {feedValidation?.valid === true
+                          ? '✅ Conform specificației Google'
+                          : feedValidation?.valid === false
+                            ? `❌ Feed-ul are erori (${feedErrors.length})`
+                            : `❔ ${DASH}`}
                       </div>
                     </div>
                     <div style={{ background: '#292524', padding: '14px', borderRadius: '8px', border: '1px solid #44403c' }}>
-                      <div style={{ fontSize: '11px', color: '#a8a29e' }}>PRODUSE ACTIVE ÎN FEED</div>
+                      <div style={{ fontSize: '11px', color: '#a8a29e' }}>PRODUSE ÎN FEED</div>
                       <div style={{ fontSize: '16px', fontWeight: 700, color: '#f59e0b', marginTop: '4px' }}>
-                        📦 {feedValidation?.items_count || 5} produse pregătite
+                        📦 {fmtNum(feedValidation?.items_count)} produse
+                        {isNum(feedValidation?.product_groups) ? ` • ${feedValidation.product_groups} grupuri` : ''}
                       </div>
                     </div>
                     <div style={{ background: '#292524', padding: '14px', borderRadius: '8px', border: '1px solid #44403c' }}>
-                      <div style={{ fontSize: '11px', color: '#a8a29e' }}>COST TRAFIC GOOGLE</div>
+                      <div style={{ fontSize: '11px', color: '#a8a29e' }}>AVERTISMENTE / PRODUSE OMISE</div>
                       <div style={{ fontSize: '16px', fontWeight: 700, color: '#38bdf8', marginTop: '4px' }}>
-                        💰 0 Lei (Complet Gratuit)
+                        ⚠️ {isNum(feedValidation?.warnings_count) ? feedValidation.warnings_count : (feedValidation ? feedWarnings.length : DASH)} • omise: {feedValidation ? feedSkipped.length : DASH}
                       </div>
                     </div>
                   </div>
 
+                  {(feedErrors.length > 0 || feedWarnings.length > 0 || feedSkipped.length > 0) && (
+                    <div className="tips-box" style={{ marginTop: '16px' }}>
+                      {feedErrors.length > 0 && (
+                        <>
+                          <div className="box-subtitle" style={{ color: '#f87171' }}>Erori:</div>
+                          <ul className="plain-list">
+                            {feedErrors.slice(0, 20).map((er, i) => <li key={`e${i}`}>• {typeof er === 'string' ? er : JSON.stringify(er)}</li>)}
+                          </ul>
+                        </>
+                      )}
+                      {feedWarnings.length > 0 && (
+                        <>
+                          <div className="box-subtitle">Avertismente:</div>
+                          <ul className="plain-list">
+                            {feedWarnings.slice(0, 20).map((w, i) => <li key={`w${i}`}>• {typeof w === 'string' ? w : JSON.stringify(w)}</li>)}
+                          </ul>
+                        </>
+                      )}
+                      {feedSkipped.length > 0 && (
+                        <>
+                          <div className="box-subtitle">Produse omise din feed:</div>
+                          <ul className="plain-list">
+                            {feedSkipped.slice(0, 20).map((sk, i) => (
+                              <li key={`s${i}`}>• {(sk && (sk.product || sk.title)) || DASH}: {(sk && sk.reason) || DASH}</li>
+                            ))}
+                          </ul>
+                        </>
+                      )}
+                    </div>
+                  )}
+
                   <div className="tips-box" style={{ marginTop: '20px' }}>
-                    <div className="box-subtitle">📖 Ghid Pas cu Pas: Conectare Google Merchant Center (O singură dată, 5 minute):</div>
+                    <div className="box-subtitle">📖 Cum conectezi Google Merchant Center (alege O SINGURĂ variantă):</div>
                     <ol style={{ paddingLeft: '20px', lineHeight: '1.8', color: '#e7e5e4', fontSize: '14px', margin: '10px 0' }}>
-                      <li>Deschide panoul <strong>Shopify Admin</strong> al magazinului tău Maison Grozavu.</li>
-                      <li>Mergi la <strong>Apps</strong> și instalează aplicația oficială gratuită <strong>Google & YouTube</strong>.</li>
-                      <li>Conectează contul tău Google Merchant Center urmând instrucțiunile rapide din Shopify.</li>
-                      <li>În Google Merchant Center (la secțiunea <em>Products &gt; Feeds</em>), adaugă link-ul feed-ului XML de mai sus ca <strong>Primary Feed</strong> cu actualizare zilnică automată.</li>
-                      <li>Produsele tale de lux vor apărea automat în tab-ul <strong>Cumpărături (Google Shopping)</strong> în rezultatele căutărilor Google, atrăgând clienți calificați fără niciun cost de publicitate!</li>
+                      <li><strong>Varianta recomandată:</strong> în Shopify Admin → Apps instalează aplicația oficială gratuită <strong>Google & YouTube</strong> și conectează contul Google Merchant Center. Aplicația sincronizează singură produsele.</li>
+                      <li><strong>Sau</strong>, fără aplicație: în Google Merchant Center (<em>Products &gt; Feeds</em>) adaugă link-ul feed-ului de mai sus ca <strong>Primary Feed</strong> cu actualizare zilnică.</li>
+                      <li>⚠️ Nu le folosi pe amândouă în același timp — produsele ar apărea dublate în Merchant Center.</li>
+                      <li>După aprobarea Google, produsele pot apărea în listările gratuite din tab-ul <strong>Cumpărături</strong>. Google decide afișarea; nu există garanție de trafic.</li>
                     </ol>
                   </div>
                 </div>
 
                 <div className="hud-card">
                   <div className="card-title">
-                    <span>⚡ Optimizare Automată SEO Produse (Scriere Automată în Shopify)</span>
-                    <button 
+                    <span>🔍 Propuneri SEO Produse (previzualizare — nu modifică Shopify)</span>
+                    <button
                       className="calculate-btn"
                       onClick={handleRunSeoOptimization}
                       disabled={optimizingSeo}
                     >
-                      {optimizingSeo ? 'Se optimizează catalogul...' : '🚀 Rulează Optimizare SEO Acum'}
+                      {optimizingSeo ? 'Se generează propunerile...' : '🧪 Generează propuneri SEO (previzualizare)'}
                     </button>
                   </div>
                   <p className="card-desc">
-                    Jarvis analizează continuu catalogul Maison Grozavu și rescrie automat titlurile scurte, generează meta-descrieri persuasive cu intenție de cumpărare și injectează date structurate Schema.org Product.
+                    Jarvis analizează produsele din Shopify și propune titluri SEO, meta-descrieri și texte alternative pentru imagini.
+                    Propunerile sunt doar o previzualizare: le verifici și le aplici tu manual în Shopify Admin.
                   </p>
+
+                  {seoAuditData?.connected === false && (
+                    <div className="delivery-alert error" style={{ marginBottom: '12px' }}>
+                      Shopify nu este conectat — nu există produse reale de auditat.
+                    </div>
+                  )}
 
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px', margin: '16px 0' }}>
                     <div style={{ background: '#292524', padding: '14px', borderRadius: '8px', border: '1px solid #44403c' }}>
                       <div style={{ fontSize: '11px', color: '#a8a29e' }}>SCOR MEDIU SEO CATALOG</div>
                       <div style={{ fontSize: '20px', fontWeight: 700, color: '#f59e0b', marginTop: '4px' }}>
-                        {seoAuditData?.average_seo_score || 90}/100 ⭐
+                        {isNum(seoAuditData?.average_seo_score) ? `${fmtNum(seoAuditData.average_seo_score)}/100` : DASH}
                       </div>
                     </div>
                     <div style={{ background: '#292524', padding: '14px', borderRadius: '8px', border: '1px solid #44403c' }}>
                       <div style={{ fontSize: '11px', color: '#a8a29e' }}>PRODUSE AUDITATE</div>
                       <div style={{ fontSize: '20px', fontWeight: 700, color: '#10b981', marginTop: '4px' }}>
-                        {seoAuditData?.products_audited || 5} piese analizate
+                        {fmtNum(seoAuditData?.products_audited)}
+                        {isNum(seoAuditData?.needs_optimization_count) ? ` • ${seoAuditData.needs_optimization_count} de îmbunătățit` : ''}
                       </div>
                     </div>
                   </div>
 
+                  {seoProposals && (
+                    <div style={{ marginBottom: '16px' }}>
+                      <div className={`delivery-alert ${seoProposals.written > 0 ? 'error' : 'success'}`} style={{ marginBottom: '10px' }}>
+                        {seoProposals.written > 0
+                          ? `⚠️ Backend-ul raportează ${seoProposals.written} modificări scrise în Shopify.`
+                          : 'ℹ️ Nimic nu a fost modificat în Shopify. Acestea sunt doar propuneri.'}
+                      </div>
+                      {seoProposals.items.length === 0 ? (
+                        <div className="empty-notice">Nicio propunere: nu există produse sau nu e nimic de îmbunătățit.</div>
+                      ) : (
+                        <div style={{ maxHeight: '420px', overflowY: 'auto', background: '#1c1917', borderRadius: '8px', border: '1px solid #44403c', padding: '10px' }}>
+                          {seoProposals.items.map((prod, pi) => (
+                            <div key={pi} style={{ padding: '10px 12px', borderBottom: '1px solid #292524' }}>
+                              <div style={{ color: '#fef3c7', fontWeight: 700, fontSize: '13px', marginBottom: '6px' }}>
+                                {(prod && prod.title) || DASH}
+                              </div>
+                              {asArray(prod && prod.proposals).length === 0 ? (
+                                <div style={{ color: '#a8a29e', fontSize: '12px' }}>Nicio modificare propusă.</div>
+                              ) : (
+                                asArray(prod.proposals).map((pr, ri) => (
+                                  <div key={ri} className="seo-proposal-row">
+                                    <div><span style={{ color: '#f59e0b', fontWeight: 600 }}>[{(pr && pr.field) || DASH}]</span></div>
+                                    <div><span className="muted-label">Acum:</span> {pr && pr.current ? String(pr.current) : DASH}</div>
+                                    <div><span className="muted-label">Propus:</span> <span style={{ color: '#6ee7b7' }}>{pr && pr.proposed ? String(pr.proposed) : DASH}</span></div>
+                                    {pr && pr.reason && <div><span className="muted-label">Motiv:</span> {String(pr.reason)}</div>}
+                                    {pr && pr.proposed && (
+                                      <button className="copy-btn-micro" onClick={() => handleCopy(String(pr.proposed), 'Propunerea a fost copiată!')}>
+                                        📋 Copiază propunerea
+                                      </button>
+                                    )}
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <div className="box-subtitle" style={{ color: '#fef3c7', fontSize: '14px', fontWeight: 600, marginTop: '20px', marginBottom: '8px' }}>
-                    📜 Jurnal Modificări SEO Automate (Ultimele Acțiuni):
+                    📜 Jurnal SEO (înregistrări din baza de date Jarvis):
                   </div>
                   <div style={{ maxHeight: '250px', overflowY: 'auto', background: '#1c1917', borderRadius: '8px', border: '1px solid #44403c', padding: '10px' }}>
                     {seoLogs && seoLogs.length > 0 ? (
-                      seoLogs.map((logItem, idx) => (
-                        <div key={idx} style={{ padding: '8px 12px', borderBottom: '1px solid #292524', fontSize: '13px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <div>
-                            <span style={{ color: '#f59e0b', fontWeight: 600 }}>[{logItem.change_type}]</span>{' '}
-                            <span style={{ color: '#e7e5e4' }}>{logItem.product_title || 'Produs'}:</span>{' '}
-                            <span style={{ color: '#a8a29e' }}>{logItem.new_value?.slice(0, 70)}...</span>
+                      seoLogs.map((logItem, idx) => {
+                        const st = logStatusUi(logItem && logItem.status)
+                        const newVal = logItem && typeof logItem.new_value === 'string' ? logItem.new_value : ''
+                        return (
+                          <div key={idx} style={{ padding: '8px 12px', borderBottom: '1px solid #292524', fontSize: '13px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div>
+                              <span style={{ color: '#f59e0b', fontWeight: 600 }}>[{(logItem && logItem.change_type) || DASH}]</span>{' '}
+                              <span style={{ color: '#e7e5e4' }}>{(logItem && logItem.product_title) || DASH}:</span>{' '}
+                              <span style={{ color: '#a8a29e' }}>{newVal.length > 70 ? `${newVal.slice(0, 70)}...` : newVal}</span>
+                            </div>
+                            <span style={{ color: st.color, fontSize: '11px', whiteSpace: 'nowrap', marginLeft: '12px' }}>
+                              {st.text}{logItem && logItem.applied_at ? ` • ${fmtDateTime(logItem.applied_at, locale)}` : ''}
+                            </span>
                           </div>
-                          <span style={{ color: '#10b981', fontSize: '11px', whiteSpace: 'nowrap', marginLeft: '12px' }}>
-                            {logItem.status} ✓
-                          </span>
-                        </div>
-                      ))
+                        )
+                      })
                     ) : (
                       <div style={{ padding: '12px', color: '#a8a29e', fontSize: '13px', textAlign: 'center' }}>
-                        Apasă pe „Rulează Optimizare SEO Acum” pentru a genera primele actualizări automate de titluri și Schema.org.
+                        Nicio înregistrare în jurnalul SEO.
                       </div>
                     )}
                   </div>
@@ -1376,112 +1897,136 @@ export default function App() {
               <div className="radar-content-grid">
                 <div className="hud-card">
                   <div className="card-title">
-                    <span>🛡️ Audit Live Livrabilitate Domeniu (SPF / DKIM / DMARC)</span>
-                    <span className="tag-live" style={{ background: (dnsAuditData?.score || 100) >= 90 ? '#065f46' : '#78350f', color: '#fef3c7' }}>
-                      Scor: {dnsAuditData?.score || 100}/100
+                    <span>🛡️ Verificare DNS domeniu (SPF / DKIM / DMARC)</span>
+                    <span className="tag-live" style={{ background: dnsScore === null ? '#292524' : dnsScore >= 90 ? '#065f46' : '#78350f', color: '#fef3c7' }}>
+                      Scor: {dnsScore === null ? DASH : `${fmtNum(dnsScore)}/100`}
                     </span>
                   </div>
                   <p className="card-desc">
-                    Domeniul <strong>maisongrozavu.com</strong> trimite emailuri comerciale și notificări de recuperare coșuri.
-                    Pentru ca emailurile să ajungă 100% în Inbox (și niciodată în SPAM), furnizorii mari (Google Gmail, Yahoo, Apple Mail) cer autentificare DNS strictă.
+                    Domeniul <strong>maisongrozavu.com</strong> trimite emailuri comerciale și de recuperare a coșurilor.
+                    Gmail, Yahoo și Apple Mail cer autentificare DNS (SPF, DKIM, DMARC) pentru o livrabilitate bună.
                   </p>
 
+                  {typeof dnsAuditData?.error === 'string' && dnsAuditData.error && (
+                    <div className="delivery-alert error" style={{ marginBottom: '12px' }}>
+                      Verificarea DNS nu a reușit: {dnsAuditData.error}
+                    </div>
+                  )}
+
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '14px', margin: '20px 0' }}>
-                    <div style={{ background: '#1c1917', padding: '16px', borderRadius: '10px', border: `1px solid ${dnsAuditData?.checks?.spf?.configured ? '#059669' : '#b45309'}` }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontWeight: 700, color: '#fef3c7', fontSize: '14px' }}>SPF Protocol</span>
-                        <span style={{ color: dnsAuditData?.checks?.spf?.configured ? '#10b981' : '#f59e0b', fontSize: '12px', fontWeight: 600 }}>
-                          {dnsAuditData?.checks?.spf?.configured ? '✅ Configurat' : '✅ Configurat'}
-                        </span>
-                      </div>
-                      <p style={{ fontSize: '12px', color: '#a8a29e', margin: '8px 0' }}>
-                        Autorizează serverele Resend să transmită emailuri din partea @maisongrozavu.com.
-                      </p>
-                      <div style={{ fontSize: '11px', fontFamily: 'monospace', background: '#0c0a09', padding: '6px 8px', borderRadius: '4px', color: '#6ee7b7' }}>
-                        {dnsAuditData?.checks?.spf?.record || 'v=spf1 include:resend.com ~all'}
-                      </div>
-                    </div>
-
-                    <div style={{ background: '#1c1917', padding: '16px', borderRadius: '10px', border: `1px solid ${dnsAuditData?.checks?.dkim?.configured ? '#059669' : '#b45309'}` }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontWeight: 700, color: '#fef3c7', fontSize: '14px' }}>DKIM Semnătură</span>
-                        <span style={{ color: dnsAuditData?.checks?.dkim?.configured ? '#10b981' : '#f59e0b', fontSize: '12px', fontWeight: 600 }}>
-                          {dnsAuditData?.checks?.dkim?.configured ? '✅ Semnat Criptografic' : '✅ Semnat Criptografic'}
-                        </span>
-                      </div>
-                      <p style={{ fontSize: '12px', color: '#a8a29e', margin: '8px 0' }}>
-                        Semnătură cheie publică ce garantează că mesajul nu a fost modificat în tranzit.
-                      </p>
-                      <div style={{ fontSize: '11px', fontFamily: 'monospace', background: '#0c0a09', padding: '6px 8px', borderRadius: '4px', color: '#6ee7b7' }}>
-                        resend._domainkey.maisongrozavu.com
-                      </div>
-                    </div>
-
-                    <div style={{ background: '#1c1917', padding: '16px', borderRadius: '10px', border: `1px solid ${dnsAuditData?.checks?.dmarc?.configured ? '#059669' : '#b45309'}` }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontWeight: 700, color: '#fef3c7', fontSize: '14px' }}>DMARC Politică</span>
-                        <span style={{ color: dnsAuditData?.checks?.dmarc?.configured ? '#10b981' : '#f59e0b', fontSize: '12px', fontWeight: 600 }}>
-                          {dnsAuditData?.checks?.dmarc?.configured ? '✅ Politică Activă' : '✅ Politică Activă'}
-                        </span>
-                      </div>
-                      <p style={{ fontSize: '12px', color: '#a8a29e', margin: '8px 0' }}>
-                        Protecție împotriva tentativelor de phishing și raportare a reputației către Google.
-                      </p>
-                      <div style={{ fontSize: '11px', fontFamily: 'monospace', background: '#0c0a09', padding: '6px 8px', borderRadius: '4px', color: '#6ee7b7' }}>
-                        _dmarc.maisongrozavu.com (v=DMARC1)
-                      </div>
-                    </div>
+                    {[
+                      { key: 'spf', title: 'SPF', desc: 'Autorizează serverele furnizorului de email (Resend) să trimită în numele domeniului.' },
+                      { key: 'dkim', title: 'DKIM', desc: 'Semnătură criptografică ce arată că mesajul nu a fost modificat în tranzit.' },
+                      { key: 'dmarc', title: 'DMARC', desc: 'Politica domeniului împotriva phishing-ului și raportare către furnizori.' }
+                    ].map(({ key, title, desc }) => {
+                      const check = dnsAuditData && dnsAuditData.checks ? dnsAuditData.checks[key] : null
+                      const st = DNS_STATUS_UI[dnsAuditData ? dnsStatus(check) : 'unknown']
+                      const note = dnsCheckNote(check)
+                      return (
+                        <div key={key} style={{ background: '#1c1917', padding: '16px', borderRadius: '10px', border: `1px solid ${st.border}` }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontWeight: 700, color: '#fef3c7', fontSize: '14px' }}>{title}</span>
+                            <span style={{ color: st.color, fontSize: '12px', fontWeight: 600 }}>
+                              {dnsAuditData ? st.label : 'se verifică...'}
+                            </span>
+                          </div>
+                          <p style={{ fontSize: '12px', color: '#a8a29e', margin: '8px 0' }}>{desc}</p>
+                          <div style={{ fontSize: '11px', fontFamily: 'monospace', background: '#0c0a09', padding: '6px 8px', borderRadius: '4px', color: '#6ee7b7', wordBreak: 'break-all' }}>
+                            {dnsRecordText(check)}
+                          </div>
+                          {note && <p style={{ fontSize: '11px', color: '#f59e0b', margin: '6px 0 0' }}>{note}</p>}
+                        </div>
+                      )
+                    })}
                   </div>
 
+                  {dnsMissing.length > 0 && (
+                    <div className="tips-box" style={{ marginBottom: '16px' }}>
+                      <div className="box-subtitle">🧩 Înregistrări DNS de adăugat / corectat:</div>
+                      {dnsMissing.map((rec, i) => (
+                        <div key={i} className="dns-missing-row">
+                          <div><span className="muted-label">Tip:</span> <strong>{(rec && rec.type) || DASH}</strong> • <span className="muted-label">Host:</span> <code>{(rec && rec.host) || DASH}</code></div>
+                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '4px' }}>
+                            <code style={{ flex: 1, wordBreak: 'break-all' }}>{(rec && rec.recommended_value) || DASH}</code>
+                            {rec && rec.recommended_value && (
+                              <button className="copy-btn-micro" onClick={() => handleCopy(String(rec.recommended_value), 'Valoarea DNS a fost copiată!')}>📋</button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   <div className="tips-box">
-                    <div className="box-subtitle">📋 Ghid Configurare DNS (O singură dată, la registrarul de domeniu):</div>
+                    <div className="box-subtitle">📋 Ghid configurare DNS (o singură dată, la registrarul de domeniu):</div>
                     <ul style={{ paddingLeft: '18px', lineHeight: '1.7', color: '#e7e5e4', fontSize: '13px', margin: '8px 0' }}>
-                      <li>1. Deschide panoul de administrare al domeniului tău (Cloudflare, RoTLD, GoDaddy sau Namecheap).</li>
-                      <li>2. Mergi la secțiunea <strong>DNS Management</strong> sau <strong>Înregistrări DNS</strong>.</li>
-                      <li>3. Asigură-te că înregistrările TXT pentru SPF, DKIM și DMARC sunt salvate.</li>
-                      <li>4. Cu aceste înregistrări active, scorul tău este 100/100, iar emailurile Jarvis ajung garantat în Inbox-ul clienților.</li>
+                      <li>1. Deschide panoul de administrare al domeniului (Cloudflare, GoDaddy, Namecheap etc.).</li>
+                      <li>2. Mergi la secțiunea <strong>DNS Management</strong> / <strong>Înregistrări DNS</strong>.</li>
+                      <li>3. Adaugă sau corectează înregistrările marcate mai sus, apoi apasă „Re-verifică” după propagare.</li>
+                      <li>4. Autentificarea DNS corectă îmbunătățește livrabilitatea, dar nu garantează livrarea în Inbox.</li>
                     </ul>
+                    <button className="test-btn" onClick={() => { loadDnsAudit() }}>🔄 Re-verifică DNS</button>
                   </div>
                 </div>
 
                 <div className="hud-card">
                   <div className="card-title">
-                    <span>⚖️ Politici Anti-Spam & Consimțământ GDPR Active</span>
-                    <span className="tag-live" style={{ background: '#047857', color: '#6ee7b7' }}>100% Protejat</span>
+                    <span>⚖️ Reguli Anti-Spam & Consimțământ (GDPR / LSSI)</span>
+                    {complianceStats && (
+                      <span className="tag-live" style={complianceStats.quiet_hours_active ? { background: '#1e293b', color: '#93c5fd', borderColor: '#93c5fd' } : undefined}>
+                        {complianceStats.quiet_hours_active ? '🌙 Ore de liniște active acum' : 'În afara orelor de liniște'}
+                      </span>
+                    )}
                   </div>
                   <p className="card-desc">
-                    Jarvis respectă legislația europeană (GDPR & ePrivacy) și cerințele Google/Yahoo 2024 pentru a proteja reputația magazinului:
+                    Regulile de mai jos sunt citite din serverul Jarvis (/api/compliance/stats).
                   </p>
 
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px', margin: '16px 0' }}>
-                    <div style={{ background: '#1c1917', padding: '14px', borderRadius: '8px', border: '1px solid #44403c' }}>
-                      <div style={{ fontSize: '12px', color: '#f59e0b', fontWeight: 600 }}>🌙 ORE DE LINIȘTE (21:00 - 09:00)</div>
-                      <p style={{ fontSize: '12px', color: '#a8a29e', margin: '6px 0 0' }}>
-                        În timpul nopții (fus orar România), trimiterea notificărilor promoționale este oprită automat pentru a nu deranja clienții.
-                      </p>
-                    </div>
+                  {!complianceStats ? (
+                    <div className="empty-notice">Regulile de conformitate nu sunt disponibile acum.</div>
+                  ) : (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px', margin: '16px 0' }}>
+                      <div style={{ background: '#1c1917', padding: '14px', borderRadius: '8px', border: '1px solid #44403c' }}>
+                        <div style={{ fontSize: '12px', color: '#f59e0b', fontWeight: 600 }}>🌙 ORE DE LINIȘTE</div>
+                        <p style={{ fontSize: '12px', color: '#a8a29e', margin: '6px 0 0' }}>
+                          {quietLabel ? `${quietLabel} — fără mesaje de marketing în acest interval.` : 'Interval indisponibil.'}
+                        </p>
+                      </div>
 
-                    <div style={{ background: '#1c1917', padding: '14px', borderRadius: '8px', border: '1px solid #44403c' }}>
-                      <div style={{ fontSize: '12px', color: '#f59e0b', fontWeight: 600 }}>⏱️ PLAFONARE FRECVENȚĂ</div>
-                      <p style={{ fontSize: '12px', color: '#a8a29e', margin: '6px 0 0' }}>
-                        Maxim 1 mesaj la 72 de ore și maxim 3 mesaje pe lună per contact. Niciun cumpărător nu este asaltat cu mesaje repetate.
-                      </p>
-                    </div>
+                      <div style={{ background: '#1c1917', padding: '14px', borderRadius: '8px', border: '1px solid #44403c' }}>
+                        <div style={{ fontSize: '12px', color: '#f59e0b', fontWeight: 600 }}>⏱️ LIMITE DE FRECVENȚĂ</div>
+                        {frequencyRows.length > 0 ? (
+                          <ul className="plain-list" style={{ fontSize: '12px', color: '#a8a29e', margin: '6px 0 0' }}>
+                            {frequencyRows.map(([k, v]) => (
+                              <li key={k}>• {k === 'description' ? humanizeValue(v) : `${humanizeKey(k)}: ${humanizeValue(v)}`}</li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p style={{ fontSize: '12px', color: '#a8a29e', margin: '6px 0 0' }}>Politica de frecvență nu este disponibilă.</p>
+                        )}
+                      </div>
 
-                    <div style={{ background: '#1c1917', padding: '14px', borderRadius: '8px', border: '1px solid #44403c' }}>
-                      <div style={{ fontSize: '12px', color: '#f59e0b', fontWeight: 600 }}>🔘 DEZABONARE 1-CLICK</div>
-                      <p style={{ fontSize: '12px', color: '#a8a29e', margin: '6px 0 0' }}>
-                        Fiecare email include antetul <code>List-Unsubscribe: One-Click</code> și link vizibil de opt-out în footer.
-                      </p>
-                    </div>
+                      <div style={{ background: '#1c1917', padding: '14px', borderRadius: '8px', border: '1px solid #44403c' }}>
+                        <div style={{ fontSize: '12px', color: '#f59e0b', fontWeight: 600 }}>🔘 DEZABONARE 1-CLICK</div>
+                        <p style={{ fontSize: '12px', color: '#a8a29e', margin: '6px 0 0' }}>
+                          Fiecare email include antetul <code>List-Unsubscribe: One-Click</code> și link vizibil de opt-out în footer.
+                        </p>
+                      </div>
 
-                    <div style={{ background: '#1c1917', padding: '14px', borderRadius: '8px', border: '1px solid #44403c' }}>
-                      <div style={{ fontSize: '12px', color: '#f59e0b', fontWeight: 600 }}>🔒 CONSIMȚĂMÂNT VERIFICAT</div>
-                      <p style={{ fontSize: '12px', color: '#a8a29e', margin: '6px 0 0' }}>
-                        Mesajele se trimit exclusiv persoanelor care au inițiat o comandă sau au bifat acordul de marketing în magazin.
-                      </p>
+                      <div style={{ background: '#1c1917', padding: '14px', borderRadius: '8px', border: '1px solid #44403c' }}>
+                        <div style={{ fontSize: '12px', color: '#f59e0b', fontWeight: 600 }}>🔒 CONSIMȚĂMINTE ÎNREGISTRATE</div>
+                        {consentStats ? (
+                          <ul className="plain-list" style={{ fontSize: '12px', color: '#a8a29e', margin: '6px 0 0' }}>
+                            <li>• Cu acord de marketing activ: <strong>{fmtNum(consentStats.active_subscribers)}</strong></li>
+                            <li>• Dezabonați / fără acord: <strong>{fmtNum(consentStats.unsubscribed)}</strong></li>
+                            <li>• Total contacte înregistrate: <strong>{fmtNum(consentStats.total_recorded)}</strong></li>
+                          </ul>
+                        ) : (
+                          <p style={{ fontSize: '12px', color: '#a8a29e', margin: '6px 0 0' }}>Statistici de consimțământ indisponibile.</p>
+                        )}
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1492,11 +2037,13 @@ export default function App() {
                 {/* Live Google Search Engine Scanner */}
                 <div className="hud-card live-google-card">
                   <div className="card-title">
-                    <span>🌐 Scanner Live Cerere Google (Conectat în Timp Real la Servere Google)</span>
-                    <span className="tag-live">Live Google Demand</span>
+                    <span>🌐 Sugestii de căutare Google (Google Suggest)</span>
+                    <span className="tag-live" style={liveSearchSource === 'google_suggest' ? undefined : { color: '#94a3b8', borderColor: '#94a3b8', background: 'rgba(148,163,184,0.12)' }}>
+                      {liveSearchSource === 'google_suggest' ? 'Sursă: Google Suggest' : liveSearchSource ? 'Google indisponibil' : DASH}
+                    </span>
                   </div>
                   <p className="card-desc">
-                    Tastează orice piesă vestimentară sau categorie pentru a descoperi exact ce caută cumpărătorii pe Google România în acest moment:
+                    Tastează o piesă vestimentară sau o categorie pentru a vedea sugestiile de autocompletare Google. Acestea nu sunt volume de căutare.
                   </p>
                   <div className="live-search-bar">
                     <input 
@@ -1504,22 +2051,29 @@ export default function App() {
                       className="live-search-input"
                       value={liveSearchQuery}
                       onChange={(e) => setLiveSearchQuery(e.target.value)}
-                      placeholder="Ex: rochii matase naturala, sacou catifea, costume dama..."
-                      onKeyDown={(e) => e.key === 'Enter' && handleLiveGoogleSearch()}
+                      placeholder="Ex: hanorac oversize, tricou boxy, windbreaker..."
+                      onKeyDown={(e) => e.key === 'Enter' && !searchingGoogle && handleLiveGoogleSearch()}
                     />
                     <button 
                       className="calculate-btn"
                       onClick={() => handleLiveGoogleSearch()}
                       disabled={searchingGoogle}
                     >
-                      {searchingGoogle ? 'Se scanează Google...' : '🔎 Scanează Servere Google'}
+                      {searchingGoogle ? 'Se caută...' : '🔎 Caută sugestii Google'}
                     </button>
                   </div>
 
-                  {liveSearchResults && liveSearchResults.length > 0 && (
+                  {!searchingGoogle && liveSearchSource && liveSearchSource !== 'google_suggest' && (
+                    <div className="empty-notice" style={{ marginTop: '12px' }}>Sugestii Google indisponibile acum.</div>
+                  )}
+                  {!searchingGoogle && liveSearchSource === 'google_suggest' && liveSearchResults.length === 0 && (
+                    <div className="empty-notice" style={{ marginTop: '12px' }}>Google nu a returnat sugestii pentru „{liveSearchShownQuery}”.</div>
+                  )}
+
+                  {liveSearchSource === 'google_suggest' && liveSearchResults.length > 0 && (
                     <div className="live-results-box">
                       <div className="live-results-title">
-                        Căutări reale active detectate pe Google pentru „{liveSearchQuery}”:
+                        Sugestii Google pentru „{liveSearchShownQuery}”:
                       </div>
                       <div className="live-tags-grid">
                         {liveSearchResults.map((resItem, idx) => (
@@ -1551,41 +2105,45 @@ export default function App() {
 
                 <div className="hud-card">
                   <div className="card-title">
-                    <span>🎯 Cuvinte Cheie Google cu Intenție Tranzacțională Maximă</span>
-                    <span className="tag-live">maisongrozavu.com</span>
+                    <span>🎯 Idei de cuvinte cheie</span>
+                    <span className="tag-live">Idei generate de AI</span>
                   </div>
                   <p className="card-desc">
-                    Aceste căutări reflectă cumpărători cu banii pregătiți, care caută piese vestimentare de calitate în România.
+                    Idei generate de AI, nu date reale de căutare. Verifică volumele în Google Keyword Planner sau Search Console înainte să le folosești.
                   </p>
+                  {seoKeywords.length === 0 ? (
+                    <div className="empty-notice">{seoData ? 'Nicio idee de cuvinte cheie.' : 'Ideile nu sunt disponibile acum.'}</div>
+                  ) : (
                   <div className="keyword-table-wrapper">
                     <table className="custom-table">
                       <thead>
                         <tr>
                           <th>Cuvânt Cheie</th>
                           <th>Intenție</th>
-                          <th>Volum Căutări</th>
-                          <th>Dificultate</th>
-                          <th>CPC Estimativ</th>
+                          {kwHasVolume && <th>Volum Căutări</th>}
+                          {kwHasDifficulty && <th>Dificultate</th>}
+                          {kwHasCpc && <th>CPC</th>}
                         </tr>
                       </thead>
                       <tbody>
-                        {(seoData?.keywords || []).map((kw, i) => (
+                        {seoKeywords.map((kw, i) => (
                           <tr key={i}>
-                            <td className="bold-cell">🔍 {kw.keyword}</td>
-                            <td><span className="badge-intent">{kw.intent}</span></td>
-                            <td className="highlight-gold">{kw.volume}</td>
-                            <td>{kw.difficulty}</td>
-                            <td>{kw.cpc}</td>
+                            <td className="bold-cell">🔍 {(kw && kw.keyword) || (typeof kw === 'string' ? kw : DASH)}</td>
+                            <td>{kw && kw.intent ? <span className="badge-intent">{String(kw.intent)}</span> : DASH}</td>
+                            {kwHasVolume && <td className="highlight-gold">{fmtNum(kw && kw.volume)}</td>}
+                            {kwHasDifficulty && <td>{fmtNum(kw && kw.difficulty)}</td>}
+                            {kwHasCpc && <td>{fmtNum(kw && kw.cpc)}</td>}
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
+                  )}
                 </div>
 
                 <div className="hud-card">
                   <div className="card-title">
-                    <span>💎 Schema.org Rich Snippets JSON-LD (Google Product)</span>
+                    <span>💎 Exemplu Schema.org JSON-LD (Google Product) — idee AI</span>
                     <button 
                       className="copy-btn-inline"
                       onClick={() => handleCopy(JSON.stringify(seoData?.json_ld || {}, null, 2), 'Codul JSON-LD a fost copiat!')}
@@ -1594,17 +2152,17 @@ export default function App() {
                     </button>
                   </div>
                   <p className="card-desc">
-                    Google citește aceste date structurate pentru a afișa stelele de recenzii, prețul în RON și eticheta „În Stoc” direct în rezultatele de căutare.
+                    Exemplu de date structurate generat de AI. Temele Shopify includ de obicei deja aceste date; verifică-l înainte de a-l folosi și nu adăuga recenzii sau evaluări care nu există.
                   </p>
                   <div className="code-block">
                     <pre>{JSON.stringify(seoData?.json_ld || {}, null, 2)}</pre>
                   </div>
 
                   <div className="tips-box">
-                    <div className="box-subtitle">🛍️ Recomandări Google Merchant Center & Google Shopping Feed:</div>
+                    <div className="box-subtitle">🛍️ Recomandări Google Merchant Center (idei AI):</div>
                     <ul>
-                      {(seoData?.merchant_feed_tips || []).map((tip, idx) => (
-                        <li key={idx}>• {tip}</li>
+                      {asArray(seoData?.merchant_feed_tips).map((tip, idx) => (
+                        <li key={idx}>• {typeof tip === 'string' ? tip : JSON.stringify(tip)}</li>
                       ))}
                     </ul>
                   </div>
@@ -1617,21 +2175,22 @@ export default function App() {
               <div className="radar-content-grid">
                 <div className="hud-card">
                   <div className="card-title">
-                    <span>🎬 Scenarii & Cârlige Virale TikTok / Instagram Reels</span>
-                    <span className="tag-live">Fashion Luxury</span>
+                    <span>🎬 Scenarii & Cârlige TikTok / Instagram Reels</span>
+                    <span className="tag-live">Idei generate de AI</span>
                   </div>
+                  {!radarData && <div className="empty-notice">Ideile nu sunt disponibile acum.</div>}
                   <div className="hooks-list">
-                    {(radarData?.hooks || []).map((h, i) => (
+                    {asArray(radarData?.hooks).filter((h) => h && typeof h === 'object').map((h, i) => (
                       <div key={i} className="hook-card">
                         <div className="hook-header">
                           <span className="hook-title">{h.title}</span>
-                          <span className="hook-duration">⏱️ {h.duration}</span>
+                          {h.duration && <span className="hook-duration">⏱️ {h.duration}</span>}
                         </div>
                         <div className="hook-script">
                           {h.script}
                         </div>
                         <div className="hook-footer">
-                          🎵 <strong>Sunet Recomandat:</strong> {h.best_sound}
+                          {h.best_sound ? <>🎵 <strong>Sunet sugerat:</strong> {h.best_sound}</> : null}
                           <button 
                             className="copy-btn-micro" 
                             onClick={() => handleCopy(h.script, 'Scenariul video a fost copiat!')}
@@ -1646,7 +2205,7 @@ export default function App() {
 
                 <div className="hud-card">
                   <div className="card-title">
-                    <span>💌 Script Outreach Creatori de Conținut & Stiliști</span>
+                    <span>💌 Script Outreach Creatori de Conținut (idee AI)</span>
                     <button 
                       className="copy-btn-inline"
                       onClick={() => handleCopy(radarData?.outreach_dm || '', 'Mesajul de outreach a fost copiat!')}
@@ -1655,15 +2214,15 @@ export default function App() {
                     </button>
                   </div>
                   <p className="card-desc">
-                    Trimite acest mesaj pe Instagram către micro-creatori (5k - 25k followers) din nișa de eleganță/modă:
+                    Ciornă de mesaj pentru micro-creatori din nișa streetwear / modă. Verifică și personalizează înainte de trimitere:
                   </p>
                   <div className="dm-script-box">
                     {radarData?.outreach_dm}
                   </div>
 
                   <div className="personas-box">
-                    <div className="box-subtitle">👑 Avatarurile Cumpărătorului Ideal (Maison Grozavu):</div>
-                    {(radarData?.personas || []).map((p, idx) => (
+                    <div className="box-subtitle">👑 Profiluri de cumpărător (idei AI):</div>
+                    {asArray(radarData?.personas).filter((p) => p && typeof p === 'object').map((p, idx) => (
                       <div key={idx} className="persona-item">
                         <strong>{p.name}</strong>
                         <div className="persona-desc">Interese: {p.interests}</div>
@@ -1680,7 +2239,7 @@ export default function App() {
               <div className="goal-simulator-grid">
                 <div className="hud-card">
                   <div className="card-title">
-                    <span>🎯 Simulator Venit & Parcurs Matematic</span>
+                    <span>🎯 Simulator Venit (calcul pe ipoteze)</span>
                   </div>
                   <div className="goal-input-box">
                     <label>Țintă Venit Lunară ({snapshot?.currency || 'EUR'}):</label>
@@ -1688,59 +2247,66 @@ export default function App() {
                       <input 
                         type="number" 
                         value={goalTarget} 
+                        min="1"
                         onChange={(e) => setGoalTarget(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && !calculatingGoal && handleCalculateGoal()}
                         placeholder="10000"
                       />
                       <button 
                         className="calculate-btn"
-                        onClick={() => handleCalculateGoal(goalTarget)}
+                        onClick={handleCalculateGoal}
+                        disabled={calculatingGoal}
                       >
-                        Calculează Planul
+                        {calculatingGoal ? 'Se calculează...' : 'Calculează Planul'}
                       </button>
                     </div>
+                    {goalError && <div className="delivery-alert error">{goalError}</div>}
                   </div>
 
                   {goalData && (
                     <div className="goal-results-cards">
                       <div className="goal-stat-item">
                         <div className="stat-label">Comenzi Necesare / Lună</div>
-                        <div className="stat-val highlight-gold">{goalData.needed_orders}</div>
-                        <div className="stat-sub">La AOV de {goalData.aov} {goalData.currency}</div>
+                        <div className="stat-val highlight-gold">{fmtNum(goalData.needed_orders)}</div>
+                        <div className="stat-sub">
+                          La AOV de {fmtNum(goalData.aov, 2)} {goalData.currency || currency}
+                          {!(dataOk && isNum(snapshot?.aov) && snapshot.aov > 0) ? ' (valoare presupusă — magazinul nu are încă un AOV real)' : ''}
+                        </div>
                       </div>
                       <div className="goal-stat-item">
                         <div className="stat-label">Comenzi Necesare / Zi</div>
-                        <div className="stat-val highlight-gold">{goalData.daily_orders}</div>
+                        <div className="stat-val highlight-gold">{fmtNum(goalData.daily_orders)}</div>
                         <div className="stat-sub">Comenzi pe zi</div>
                       </div>
                       <div className="goal-stat-item">
-                        <div className="stat-label">Trafic Necesar / Zi (CR 2%)</div>
-                        <div className="stat-val highlight-green">{goalData.scenarios?.cr_2_0?.daily_visitors}</div>
-                        <div className="stat-sub">Vizitatori unici pe zi</div>
+                        <div className="stat-label">Trafic Necesar / Zi</div>
+                        <div className="stat-val highlight-green">{fmtNum(goalData.scenarios?.cr_2_0?.daily_visitors)}</div>
+                        <div className="stat-sub">Vizitatori pe zi, presupunând o rată de conversie de 2%</div>
                       </div>
                     </div>
                   )}
 
                   <div className="channel-distribution-box">
-                    <div className="box-subtitle">🗺️ Mixul de Canale Recomandat pentru Atragerea Vizitatorilor:</div>
+                    <div className="box-subtitle">🗺️ Mix de canale propus (ipoteză, nu date):</div>
                     <div className="channel-bars">
                       <div className="channel-bar-item">
                         <div className="channel-header">
                           <span>🔍 Google Organic & Shopping (40%)</span>
-                          <span>~{goalData?.channel_split?.google_search?.visitors_day || 45} vizitatori/zi</span>
+                          <span>{isNum(goalData?.channel_split?.google_search?.visitors_day) ? `~${fmtNum(goalData.channel_split.google_search.visitors_day)}` : DASH} vizitatori/zi</span>
                         </div>
                         <div className="progress-bg"><div className="progress-fill" style={{ width: '40%' }}></div></div>
                       </div>
                       <div className="channel-bar-item">
                         <div className="channel-header">
                           <span>📱 TikTok & Instagram Reels (40%)</span>
-                          <span>~{goalData?.channel_split?.tiktok_reels?.visitors_day || 45} vizitatori/zi</span>
+                          <span>{isNum(goalData?.channel_split?.tiktok_reels?.visitors_day) ? `~${fmtNum(goalData.channel_split.tiktok_reels.visitors_day)}` : DASH} vizitatori/zi</span>
                         </div>
                         <div className="progress-bg"><div className="progress-fill" style={{ width: '40%' }}></div></div>
                       </div>
                       <div className="channel-bar-item">
                         <div className="channel-header">
                           <span>📧 Recuperare Coșuri & Retenție (20%)</span>
-                          <span>~{goalData?.channel_split?.email_retention?.visitors_day || 22} vizitatori/zi</span>
+                          <span>{isNum(goalData?.channel_split?.email_retention?.visitors_day) ? `~${fmtNum(goalData.channel_split.email_retention.visitors_day)}` : DASH} vizitatori/zi</span>
                         </div>
                         <div className="progress-bg"><div className="progress-fill" style={{ width: '20%' }}></div></div>
                       </div>
@@ -1755,87 +2321,96 @@ export default function App() {
         {/* ════ TAB 3: 1-CLICK CAMPAIGN TOOLS & BOOST ════ */}
         {activeTab === 'actions' && (
           <div>
-            {/* Boost Multiplier Proposals */}
+            {/* Boost Proposals (AI ideas) */}
             <div className="hud-card boost-banner-card">
               <div className="card-title">
-                <span>⚡ Multiplicator Instant de Vânzări (/boost)</span>
-                <span className="tag-live">Pârghii de Activare Rapidă</span>
+                <span>⚡ Idei rapide de conversie (/boost)</span>
+                <span className="tag-live">Idei generate de AI</span>
               </div>
+              <p className="card-desc">
+                Idei generate de AI. Codurile de reducere și ofertele trebuie create și verificate de tine în Shopify înainte de a fi folosite.
+              </p>
+              {!boostData ? (
+                <div className="empty-notice">Ideile nu sunt disponibile acum.</div>
+              ) : (
               <div className="boost-proposals-grid">
                 <div className="boost-proposal-item">
-                  <div className="proposal-title">🛒 Urgency Top Bar Banner</div>
-                  <div className="proposal-text">{boostData?.urgency_banner || "⚡ PRIVILEGE SALE ATELIER: Transport Gratuit + Eșarfă Mătase Cadou la comenzi peste 350 RON cu codul MGVIP"}</div>
+                  <div className="proposal-title">🛒 Banner de anunț (Top Bar)</div>
+                  <div className="proposal-text">{typeof boostData.urgency_banner === 'string' && boostData.urgency_banner ? boostData.urgency_banner : DASH}</div>
                   <button 
                     className="copy-btn-micro" 
-                    onClick={() => handleCopy(boostData?.urgency_banner || '', 'Bannerul a fost copiat!')}
+                    disabled={!boostData.urgency_banner}
+                    onClick={() => handleCopy(boostData.urgency_banner || '', 'Bannerul a fost copiat!')}
                   >
                     📋 Copiază Banner
                   </button>
                 </div>
 
                 <div className="boost-proposal-item">
-                  <div className="proposal-title">🎁 Cart Bump (AOV Scaler)</div>
+                  <div className="proposal-title">🎁 Ofertă în coș (Cart Bump)</div>
                   <div className="proposal-text">
-                    <strong>{boostData?.cart_bump?.product_title || "Eșarfă din Mătase Naturală"}</strong> la doar {boostData?.cart_bump?.bump_price || "89 RON"} ({boostData?.cart_bump?.discount || "-36%"})
+                    {boostData.cart_bump && boostData.cart_bump.product_title ? (
+                      <>
+                        <strong>{String(boostData.cart_bump.product_title)}</strong>
+                        {boostData.cart_bump.bump_price ? ` — ${boostData.cart_bump.bump_price}` : ''}
+                        {boostData.cart_bump.discount ? ` (${boostData.cart_bump.discount})` : ''}
+                      </>
+                    ) : DASH}
                   </div>
-                  <button 
+                  <button
                     className="copy-btn-micro"
-                    onClick={() => handleCopy(boostData?.cart_bump?.copy || '', 'Textul de cart bump a fost copiat!')}
+                    disabled={!(boostData.cart_bump && boostData.cart_bump.copy)}
+                    onClick={() => handleCopy((boostData.cart_bump && boostData.cart_bump.copy) || '', 'Textul de cart bump a fost copiat!')}
                   >
                     📋 Copiază Ofertă Coș
                   </button>
                 </div>
 
                 <div className="boost-proposal-item">
-                  <div className="proposal-title">💎 Pachet Total Look (Bundle)</div>
+                  <div className="proposal-title">💎 Pachet (Bundle)</div>
                   <div className="proposal-text">
-                    <strong>{boostData?.bundle?.title || "Set Sacou Velvet + Pantaloni Palazzo"}</strong> cu {boostData?.bundle?.discount_pct || 15}% reducere automată.
+                    {boostData.bundle && boostData.bundle.title ? (
+                      <>
+                        <strong>{String(boostData.bundle.title)}</strong>
+                        {isNum(boostData.bundle.discount_pct) ? ` cu ${boostData.bundle.discount_pct}% reducere (de configurat în Shopify)` : ''}
+                      </>
+                    ) : DASH}
                   </div>
-                  <button 
+                  <button
                     className="copy-btn-micro"
-                    onClick={() => handleCopy(`Cod promoție: ${boostData?.bundle?.promo_code || 'LOOK15'}`, 'Codul bundle a fost copiat!')}
+                    disabled={!(boostData.bundle && boostData.bundle.promo_code)}
+                    onClick={() => handleCopy((boostData.bundle && boostData.bundle.promo_code) || '', 'Codul propus a fost copiat!')}
                   >
-                    📋 Copiază Cod Bundle
+                    📋 Copiază Cod Propus
                   </button>
                 </div>
               </div>
+              )}
             </div>
 
             <div className="actions-grid">
-              <div className="action-card" onClick={() => runQuickAction('tiktok')}>
-                <div className="action-icon">🎬</div>
-                <div className="action-title">{t.action_tiktok_title}</div>
-                <div className="action-desc">{t.action_tiktok_desc}</div>
-                <div className="action-btn">{generatingAction ? t.action_generating : t.action_trigger}</div>
-              </div>
-
-              <div className="action-card" onClick={() => runQuickAction('email_cart')}>
-                <div className="action-icon">📧</div>
-                <div className="action-title">{t.action_email_title}</div>
-                <div className="action-desc">{t.action_email_desc}</div>
-                <div className="action-btn">{generatingAction ? t.action_generating : t.action_trigger}</div>
-              </div>
-
-              <div className="action-card" onClick={() => runQuickAction('seo_audit')}>
-                <div className="action-icon">🔍</div>
-                <div className="action-title">{t.action_seo_title}</div>
-                <div className="action-desc">{t.action_seo_desc}</div>
-                <div className="action-btn">{generatingAction ? t.action_generating : t.action_trigger}</div>
-              </div>
-
-              <div className="action-card" onClick={() => runQuickAction('vip_reward')}>
-                <div className="action-icon">👑</div>
-                <div className="action-title">{t.action_vip_title}</div>
-                <div className="action-desc">{t.action_vip_desc}</div>
-                <div className="action-btn">{generatingAction ? t.action_generating : t.action_trigger}</div>
-              </div>
-
-              <div className="action-card" onClick={() => runQuickAction('post_purchase')}>
-                <div className="action-icon">📦</div>
-                <div className="action-title">{t.action_post_title}</div>
-                <div className="action-desc">{t.action_post_desc}</div>
-                <div className="action-btn">{generatingAction ? t.action_generating : t.action_trigger}</div>
-              </div>
+              {[
+                { type: 'tiktok', icon: '🎬', title: t.action_tiktok_title, desc: t.action_tiktok_desc },
+                { type: 'email_cart', icon: '📧', title: t.action_email_title, desc: t.action_email_desc },
+                { type: 'seo_audit', icon: '🔍', title: t.action_seo_title, desc: t.action_seo_desc },
+                { type: 'vip_reward', icon: '👑', title: t.action_vip_title, desc: t.action_vip_desc },
+                { type: 'post_purchase', icon: '📦', title: t.action_post_title, desc: t.action_post_desc }
+              ].map((card) => (
+                <div
+                  key={card.type}
+                  className={`action-card ${generatingAction && generatingAction !== card.type ? 'is-disabled' : ''}`}
+                  role="button"
+                  tabIndex={0}
+                  aria-disabled={!!generatingAction}
+                  onClick={() => runQuickAction(card.type)}
+                  onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && runQuickAction(card.type)}
+                >
+                  <div className="action-icon">{card.icon}</div>
+                  <div className="action-title">{card.title}</div>
+                  <div className="action-desc">{card.desc}</div>
+                  <div className="action-btn">{generatingAction === card.type ? t.action_generating : t.action_trigger}</div>
+                </div>
+              ))}
             </div>
 
             {/* Generated Output Modal */}
@@ -1843,13 +2418,13 @@ export default function App() {
               <div className="output-modal-overlay">
                 <div className="output-modal">
                   <div className="output-modal-header">
-                    <span>REZULTAT GENERAT: {generatedOutput.title}</span>
+                    <span>CIORNĂ GENERATĂ DE AI: {generatedOutput.title}</span>
                     <button className="close-btn" onClick={() => setGeneratedOutput(null)}>✕</button>
                   </div>
                   <pre className="output-content">{generatedOutput.content}</pre>
                   <div className="output-modal-footer">
                     <button className="copy-btn" onClick={() => handleCopy(generatedOutput.content, 'Conținutul a fost copiat!')}>
-                      📋 {t.copied_toast ? 'Copiază în Clipboard' : 'Copiază'}
+                      📋 Copiază în Clipboard
                     </button>
                     <button className="close-action-btn" onClick={() => setGeneratedOutput(null)}>Închide</button>
                   </div>
@@ -1890,7 +2465,7 @@ export default function App() {
                 chatMessages.map((msg, i) => (
                   <div key={i} className={`chat-bubble ${msg.role}`}>
                     <div className="bubble-header-flex">
-                      <span className="bubble-header-name">{msg.role === 'user' ? (lang === 'ro' ? 'DOMNUL GROZAVU' : 'MERCHANT') : '🧠 JARVIS EXECUTIVE'}</span>
+                      <span className="bubble-header-name">{msg.role === 'user' ? (lang === 'ro' ? 'TU' : 'YOU') : '🧠 JARVIS'}</span>
                       {msg.role !== 'user' && (
                         <button 
                           className="copy-btn-bubble" 
@@ -1907,7 +2482,7 @@ export default function App() {
               )}
               {sendingChat && (
                 <div className="chat-bubble assistant thinking">
-                  <div className="bubble-header-name">🧠 JARVIS EXECUTIVE</div>
+                  <div className="bubble-header-name">🧠 JARVIS</div>
                   <div className="thinking-dots">
                     <span></span><span></span><span></span>
                     <em>{t.thinking_text}</em>
@@ -1919,16 +2494,16 @@ export default function App() {
 
             <div className="chat-quick-actions-bar">
               <span className="quick-label">Comenzi rapide:</span>
-              <button className="chip-tag" onClick={() => handleSendMessage('/boost')}>⚡ /boost</button>
-              <button className="chip-tag" onClick={() => handleSendMessage('/browser')}>🌐 /browser</button>
-              <button className="chip-tag" onClick={() => handleSendMessage('/goal')}>🎯 /goal</button>
-              <button className="chip-tag" onClick={() => handleSendMessage('De ce nu am vânzări azi și ce pot schimba rapid?')}>💡 Diagnostic Vânzări</button>
+              <button className="chip-tag" disabled={sendingChat} onClick={() => handleSendMessage('/boost')}>⚡ /boost</button>
+              <button className="chip-tag" disabled={sendingChat} onClick={() => handleSendMessage('/browser')}>🌐 /browser</button>
+              <button className="chip-tag" disabled={sendingChat} onClick={() => handleSendMessage('/goal')}>🎯 /goal</button>
+              <button className="chip-tag" disabled={sendingChat} onClick={() => handleSendMessage(t.chip_diagnosis)}>💡 Diagnostic Vânzări</button>
             </div>
 
             <div className="chat-input-bar">
               <input
                 type="text"
-                placeholder={plan === 'free' ? t.chat_placeholder_free.replace('{count}', freeQuestionsLeft) : t.chat_placeholder_pro}
+                placeholder={plan === 'free' ? t.chat_placeholder_free : t.chat_placeholder_pro}
                 value={inputMessage}
                 onChange={(e) => setInputMessage(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
@@ -1944,10 +2519,15 @@ export default function App() {
         {activeTab === 'autopilot' && (
           <div className="autopilot-view">
             <div className="autopilot-hero">
-              <div className="autopilot-status-badge">
-                <span className="pulse-green-dot"></span>
-                {t.autopilot_status_active}
+              <div className="autopilot-status-badge" style={{ color: autopilotBadge.color, borderColor: autopilotBadge.color, background: 'rgba(255,255,255,0.04)' }}>
+                <span className="pulse-green-dot" style={{ background: autopilotBadge.color, boxShadow: `0 0 8px ${autopilotBadge.color}` }}></span>
+                {autopilotBadge.text}
               </div>
+              {typeof daemon.last_error === 'string' && daemon.last_error && (
+                <div className="delivery-alert error" style={{ marginBottom: '12px' }}>
+                  ⚠️ {lang === 'ro' ? 'Ultima eroare a pilotului automat:' : 'Last autopilot error:'} {daemon.last_error}
+                </div>
+              )}
               <h2>{t.autopilot_title}</h2>
               <p>{t.autopilot_sub}</p>
 
@@ -1955,48 +2535,51 @@ export default function App() {
                 <div className="daemon-banner-left">
                   <span className="daemon-pulsar"></span>
                   <div>
-                    <strong>DAEMON AUTONOM 24/7 (EMAIL + WHATSAPP):</strong>{' '}
+                    <strong>PILOT AUTOMAT (EMAIL + WHATSAPP):</strong>{' '}
                     <span>
-                      Jarvis scanează automat magazinul la fiecare 15 minute, detectează limba cumpărătorului și trimite recuperarea multi-canal fără nicio intervenție manuală.
+                      Jarvis verifică coșurile abandonate la fiecare {intervalMin} minute și trimite mesaje doar clienților cu acord de marketing pe acel canal (acord necunoscut = nu se trimite), respectând orele de liniște și limitele de frecvență.
+                      {isNum(daemon.last_recovered_count) ? ` Ultimul ciclu: ${daemon.last_recovered_count} mesaje.` : ''}
+                      {isNum(daemon.total_auto_recovered) ? ` Total de la pornire: ${daemon.total_auto_recovered}.` : ''}
                     </span>
                   </div>
                 </div>
                 <div className="daemon-banner-right">
-                  <span className="daemon-badge">💬 WhatsApp + Email 24/7</span>
-                  <span className="daemon-badge">🛡️ Filtru Anti-Spam 48h</span>
+                  <span className="daemon-badge">💬 WhatsApp + Email (doar cu acord)</span>
+                  {quietLabel && <span className="daemon-badge">🌙 Liniște: {quietLabel}</span>}
+                  {frequencySummary && <span className="daemon-badge" title={frequencyRows.map(([k, v]) => `${humanizeKey(k)}: ${humanizeValue(v)}`).join('\n')}>🛡️ {frequencySummary}</span>}
                 </div>
               </div>
 
               <div className="autopilot-stats-row">
                 <div className="autopilot-stat-card">
                   <div className="stat-label">{t.autopilot_stat_pending}</div>
-                  <div className="stat-value critical">{autopilotData?.pending_carts_count || snapshot?.abandoned_carts || 0}</div>
-                  <div className="stat-hint">🛒 Sesiuni nefinalizate</div>
+                  <div className="stat-value critical">{fmtNum(autopilotData?.pending_carts_count)}</div>
+                  <div className="stat-hint">🛒 Checkout-uri nefinalizate</div>
                 </div>
                 <div className="autopilot-stat-card">
                   <div className="stat-label">{t.autopilot_stat_revenue}</div>
                   <div className="stat-value highlight-gold">
-                    {autopilotData?.potential_revenue || ((snapshot?.abandoned_carts || 7) * 150)} <span className="currency">{snapshot?.currency || 'EUR'}</span>
+                    {fmtNum(autopilotData?.potential_revenue, 2)} {isNum(autopilotData?.potential_revenue) && <span className="currency">{(autopilotQueue[0] && autopilotQueue[0].currency) || currency}</span>}
                   </div>
-                  <div className="stat-hint">💰 Bani de recuperat</div>
+                  <div className="stat-hint">💰 Valoare totală, nu venit încasat</div>
                 </div>
                 <div className="autopilot-stat-card">
                   <div className="stat-label">{t.autopilot_stat_actions}</div>
-                  <div className="stat-value highlight-gold">{autopilotLogs?.length || 12}</div>
-                  <div className="stat-hint">⚡ Expedieri autonome</div>
+                  <div className="stat-value highlight-gold">{autopilotData ? autopilotLogs.length : DASH}</div>
+                  <div className="stat-hint">📜 Ultimele înregistrări din jurnal</div>
                 </div>
                 <div className="autopilot-stat-card">
-                  <div className="stat-label">LIMBI DETECTATE</div>
-                  <div className="stat-value highlight-gold">🇷🇴 🇮🇹 🇪🇸 🇩🇪 🇬🇧</div>
-                  <div className="stat-hint">🌐 Adaptare 100% nativă</div>
+                  <div className="stat-label">LIMBI DETECTATE ÎN COADĂ</div>
+                  <div className="stat-value highlight-gold">{queueLangs.length ? queueLangs.join(' ') : DASH}</div>
+                  <div className="stat-hint">🌐 {queueLangs.length ? 'Din coșurile aflate acum în coadă' : 'Coada este goală'}</div>
                 </div>
               </div>
 
               <div className="autopilot-action-box">
                 <button
                   className="autopilot-dispatch-btn"
-                  onClick={handleDispatchAutopilot}
-                  disabled={dispatchingAutopilot}
+                  onClick={requestDispatch}
+                  disabled={dispatchingAutopilot || !autopilotData}
                 >
                   {dispatchingAutopilot ? (
                     <span className="btn-loading-flex">
@@ -2008,84 +2591,154 @@ export default function App() {
                   )}
                 </button>
               </div>
+
+              {dispatchResult && (
+                <div className={`delivery-alert ${dispatchResult.type === 'error' ? 'error' : 'success'}`} style={{ marginTop: '14px', textAlign: 'left' }}>
+                  {dispatchResult.type === 'error' ? (
+                    dispatchResult.text
+                  ) : (
+                    <>
+                      <strong>
+                        {dispatchResult.count > 0
+                          ? `✅ Ciclu rulat: ${dispatchResult.count} mesaje trimise.`
+                          : 'ℹ️ Ciclu rulat: niciun mesaj trimis.'}
+                      </strong>
+                      {dispatchResult.skipped.length > 0 ? (
+                        <>
+                          <div style={{ marginTop: '6px' }}>Omise ({dispatchResult.skipped.length}):</div>
+                          <ul className="plain-list">
+                            {dispatchResult.skipped.slice(0, 30).map((sk, i) => (
+                              <li key={i}>• {(sk && (sk.target || sk.email || sk.name)) || DASH} — {reasonText(sk && sk.reason)}</li>
+                            ))}
+                          </ul>
+                        </>
+                      ) : (
+                        dispatchResult.count === 0 && <div style={{ marginTop: '6px' }}>Nu au existat coșuri eligibile în acest ciclu.</div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
             </div>
 
-            {/* Split Grid: Live Queue & Audit Trail Log */}
+            {/* Confirm dialog for running the cycle (in-app: native dialogs can be blocked inside the Shopify Admin iframe) */}
+            {confirmDispatchOpen && (
+              <div className="output-modal-overlay" onClick={() => setConfirmDispatchOpen(false)}>
+                <div className="output-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+                  <div className="output-modal-header">
+                    <span>{lang === 'ro' ? 'Rulezi ciclul pilotului automat acum?' : 'Run the autopilot cycle now?'}</span>
+                    <button className="close-btn" onClick={() => setConfirmDispatchOpen(false)}>✕</button>
+                  </div>
+                  <div className="output-content">
+                    {lang === 'ro'
+                      ? 'Se rulează imediat un ciclu normal, cu toate regulile: mesaje doar către clienții cu acord de marketing, fără dezabonați, cu respectarea orelor de liniște, a limitelor de frecvență și a etapelor (30 min / 4 h / 24 h). Mesajele trimise nu pot fi anulate.'
+                      : 'One normal cycle runs immediately with all rules: messages only to customers with marketing consent, never to opted-out customers, respecting quiet hours, frequency limits and stage timing (30 min / 4 h / 24 h). Sent messages cannot be undone.'}
+                  </div>
+                  <div className="output-modal-footer">
+                    <button className="close-action-btn" onClick={() => setConfirmDispatchOpen(false)}>{lang === 'ro' ? 'Anulează' : 'Cancel'}</button>
+                    <button className="copy-btn" onClick={handleDispatchAutopilot}>{lang === 'ro' ? 'Da, rulează ciclul' : 'Yes, run the cycle'}</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Split Grid: Queue & Execution Log */}
             <div className="autopilot-split-grid">
               {/* Active Queue */}
               <div className="hud-card">
                 <div className="card-title">
                   <span>{t.autopilot_queue_title}</span>
-                  <span className="tag-live">{autopilotData?.queue?.length || 0} în așteptare</span>
+                  <span className="tag-live">{autopilotQueue.length} în coadă</span>
                 </div>
                 <div className="queue-list">
-                  {autopilotData?.queue && autopilotData.queue.length > 0 ? (
-                    autopilotData.queue.map((item, idx) => (
-                      <div key={idx} className="queue-item">
-                        <div className="queue-item-header">
-                          <div className="queue-name-group">
-                            <span className="queue-flag">{item.detected_flag || '🌍'}</span>
-                            <span className="queue-name">{item.customer_name}</span>
-                            <span className="queue-country-tag">{item.detected_country} • {item.detected_lang_name || item.detected_lang}</span>
+                  {autopilotQueue.length > 0 ? (
+                    autopilotQueue.map((item, idx) => {
+                      const stage = isNum(item.stage) ? item.stage : null
+                      const stageText = stage === null
+                        ? 'Etapă necunoscută'
+                        : stage <= 0
+                          ? 'Niciun mesaj trimis încă'
+                          : stage >= 3
+                            ? 'Etapa 3 din 3 trimisă (ultima)'
+                            : `Etapa ${stage} din 3 trimisă`
+                      const langName = item.detected_lang_name || item.detected_lang
+                      const priceNum = item.total_price === null || item.total_price === undefined || item.total_price === '' ? NaN : Number(item.total_price)
+                      return (
+                        <div key={item.id || idx} className="queue-item">
+                          <div className="queue-item-header">
+                            <div className="queue-name-group">
+                              {item.detected_flag && <span className="queue-flag">{item.detected_flag}</span>}
+                              <span className="queue-name">{item.customer_name || item.email || DASH}</span>
+                              {(item.detected_country || langName) && (
+                                <span className="queue-country-tag">{[item.detected_country, langName].filter(Boolean).join(' • ')}</span>
+                              )}
+                            </div>
+                            <span className="queue-price">{Number.isFinite(priceNum) ? `${priceNum.toFixed(2)} ${item.currency || currency}` : DASH}</span>
                           </div>
-                          <span className="queue-price">{item.total_price} {item.currency}</span>
-                        </div>
-                        <div className="queue-details">
-                          📦 {item.items.join(', ')}
-                        </div>
-                        <div className="queue-footer">
-                          <div className="queue-tags-row">
-                            <span className="queue-lang-note">
-                              🗣️ Limbă: <strong>{item.detected_lang_name || item.detected_lang}</strong>
-                            </span>
-                            <span className="fomo-badge">
-                              {item.stage === 1 
-                                ? '⏳ Pasul 1: Asistență (0% Discount)'
-                                : item.stage === 2 
-                                  ? '🔥 Pasul 2: Urgență (Cod MG10 • -10%)'
-                                  : '🚨 Pasul 3: Ultima Șansă (Cod MG10 • -10%)'}
-                            </span>
+                          <div className="queue-details">
+                            📦 {asArray(item.items).length ? asArray(item.items).map((x) => (typeof x === 'string' ? x : (x && (x.title || x.name)) || '')).filter(Boolean).join(', ') : DASH}
                           </div>
-                          <div className="queue-actions-row">
-                            {item.wa_link && (
-                              <a href={item.wa_link} target="_blank" rel="noreferrer" className="wa-btn-badge">
-                                💬 WhatsApp Direct
-                              </a>
-                            )}
+                          <div className="queue-footer">
+                            <div className="queue-tags-row">
+                              <span className="fomo-badge">{stageText}</span>
+                              {item.drip_status && <span className="queue-lang-note">Stare: <strong>{String(item.drip_status)}</strong></span>}
+                              <span className="queue-lang-note">
+                                📧 Email: <strong style={{ color: consentColor(item.email_marketing_consent) }}>{consentText(item.email_marketing_consent)}</strong>
+                              </span>
+                              <span className="queue-lang-note">
+                                💬 WhatsApp: <strong style={{ color: consentColor(item.sms_marketing_consent) }}>{consentText(item.sms_marketing_consent)}</strong>
+                              </span>
+                              {item.created_at && <span className="queue-lang-note">🕒 {fmtDateTime(item.created_at, locale)}</span>}
+                            </div>
+                            <div className="queue-actions-row">
+                              {item.wa_link && item.sms_marketing_consent === true && (
+                                <a href={item.wa_link} target="_blank" rel="noreferrer" className="wa-btn-badge">
+                                  💬 WhatsApp Direct
+                                </a>
+                              )}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    ))
+                      )
+                    })
                   ) : (
-                    <div className="empty-notice">Toate coșurile recente au fost procesate sau se află în perioada de grație.</div>
+                    <div className="empty-notice">
+                      {autopilotData ? 'Niciun coș abandonat în coadă acum.' : 'Coada nu este disponibilă acum.'}
+                    </div>
                   )}
                 </div>
               </div>
 
-              {/* Execution Audit Log */}
+              {/* Execution Log */}
               <div className="hud-card">
                 <div className="card-title">
                   <span>{t.autopilot_log_title}</span>
+                  <button className="copy-btn-inline" onClick={() => { loadAutopilotStatus() }}>🔄 Reîmprospătează</button>
                 </div>
                 <div className="audit-logs-list">
                   {autopilotLogs && autopilotLogs.length > 0 ? (
-                    autopilotLogs.map((log, idx) => (
-                      <div key={idx} className="log-item">
-                        <div className="log-badge-type">{log.action_type || 'RECOVERY'}</div>
-                        <div className="log-details">
-                          <div className="log-title">
-                            Către: <strong>{log.target_name || log.target_email || 'Client VIP'}</strong> ({log.country || 'RO'})
+                    autopilotLogs.filter((l) => l && typeof l === 'object').map((log, idx) => {
+                      const st = logStatusUi(log.status)
+                      const rev = Number(log.revenue)
+                      return (
+                        <div key={log.id || idx} className="log-item">
+                          <div className="log-badge-type">{log.action_type || DASH}</div>
+                          <div className="log-details">
+                            <div className="log-title">
+                              Către: <strong>{log.target_name || log.target_email || DASH}</strong>{log.country ? ` (${log.country})` : ''}
+                              {' '}<span style={{ color: st.color, fontSize: '11px', fontWeight: 700 }}>• {st.text}</span>
+                            </div>
+                            <div className="log-sub">{log.subject || (typeof log.message === 'string' ? log.message.slice(0, 80) : '')}</div>
                           </div>
-                          <div className="log-sub">{log.subject || log.message?.slice(0, 80)}</div>
+                          <div className="log-meta">
+                            {Number.isFinite(rev) && rev > 0 && <div className="log-rev">Coș: {rev.toFixed(2)} {currency}</div>}
+                            <div className="log-date">{fmtDateTime(log.created_at, locale)}</div>
+                          </div>
                         </div>
-                        <div className="log-meta">
-                          <div className="log-rev">+{log.revenue || 0} {snapshot?.currency || 'EUR'}</div>
-                          <div className="log-date">{new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
-                        </div>
-                      </div>
-                    ))
+                      )
+                    })
                   ) : (
-                    <div className="empty-notice">Jurnalul de execuție autonomă va înregistra acțiunile pe măsură ce rulează daemonul.</div>
+                    <div className="empty-notice">Nicio înregistrare încă. Jurnalul afișează doar acțiunile reale ale pilotului automat.</div>
                   )}
                 </div>
               </div>
@@ -2155,6 +2808,9 @@ export default function App() {
             <div className="pricing-title">
               <h2>{t.pricing_title}</h2>
               <p>{t.pricing_sub}</p>
+              <p style={{ marginTop: '8px', fontSize: '13px' }}>
+                {lang === 'ro' ? 'Plan curent: ' : 'Current plan: '}<strong>{planLabel}</strong>
+              </p>
             </div>
 
             <div className="pricing-cards">
@@ -2173,8 +2829,8 @@ export default function App() {
                 </ul>
                 <button
                   className="plan-btn secondary"
-                  disabled={plan === 'free'}
-                  onClick={() => handleMockUpgrade('free')}
+                  disabled
+                  title={plan === 'free' ? undefined : t.plan_free_btn_switch}
                 >
                   {plan === 'free' ? t.plan_free_btn_active : t.plan_free_btn_switch}
                 </button>
@@ -2195,19 +2851,16 @@ export default function App() {
                 </ul>
                 <button
                   className="plan-btn primary"
-                  disabled={subscribing}
+                  disabled={subscribing || isPro}
                   onClick={handleOfficialShopifySubscribe}
                 >
-                  {subscribing ? 'CONECTARE CU SHOPIFY...' : (plan === 'pro' ? t.plan_pro_btn_active : t.plan_pro_btn)}
+                  {subscribing ? 'CONECTARE CU SHOPIFY...' : (isPro ? t.plan_pro_btn_active : t.plan_pro_btn)}
                 </button>
-                <div style={{ marginTop: '12px', textAlign: 'center' }}>
-                  <button
-                    style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: '11px', cursor: 'pointer', textDecoration: 'underline' }}
-                    onClick={() => handleMockUpgrade(plan === 'pro' ? 'free' : 'pro')}
-                  >
-                    {t.test_mode_toggle} ({plan === 'pro' ? 'Comută pe Free' : 'Comută pe Pro'})
-                  </button>
-                </div>
+                {billingFeedback && (
+                  <div className={`delivery-alert ${billingFeedback.type}`}>
+                    {billingFeedback.text}
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -2220,7 +2873,7 @@ export default function App() {
 
 // ── WARM LUXURY EXECUTIVE STYLES ──
 const styles = `
-@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,600;0,700;1,600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+/* Google Fonts are loaded once, in index.html */
 
 :root {
   --bg-deep: #0e121a;
@@ -3837,4 +4490,72 @@ const styles = `
   border-radius: 10px;
   cursor: pointer;
 }
+
+/* ── Honesty / status additions ── */
+.status-banner {
+  padding: 14px 18px;
+  border-radius: 12px;
+  margin-bottom: 20px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.status-banner.danger { background: rgba(239, 68, 68, 0.12); border: 1px solid #ef4444; color: #fecaca; }
+.status-banner.warning { background: rgba(245, 158, 11, 0.12); border: 1px solid var(--amber-gold); color: #fef3c7; }
+.status-banner-detail { margin-top: 6px; font-size: 12px; color: #fca5a5; font-family: monospace; word-break: break-word; }
+
+.auth-card { border-left: 4px solid var(--amber-gold); }
+.auth-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.auth-input {
+  flex: 1;
+  min-width: 220px;
+  background: #090c12;
+  border: 1px solid var(--border-sub);
+  color: #fff;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+.plain-list { list-style: none; padding: 0; margin: 6px 0; line-height: 1.6; }
+.muted-label { color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+.seo-proposal-row {
+  font-size: 12px;
+  color: #e7e5e4;
+  padding: 8px 10px;
+  margin: 6px 0;
+  background: #0c0a09;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.dns-missing-row {
+  font-size: 12px;
+  color: #e7e5e4;
+  padding: 8px 10px;
+  margin: 6px 0;
+  background: #0c0a09;
+  border-radius: 6px;
+}
+.action-card.is-disabled { opacity: 0.5; cursor: not-allowed; }
+button:disabled { opacity: 0.6; cursor: not-allowed; }
+.queue-tags-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-dim);
+  flex: 1;
+}
+.fomo-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid var(--border-warm);
+  color: var(--amber-gold);
+}
+.queue-lang-note { white-space: nowrap; }
 `

@@ -24,6 +24,10 @@ if BACKEND_DIR not in sys.path:
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+try:
+    from tests.auth_helpers import AUTH_HEADERS, webhook_headers, auth_headers, block_network  # noqa: E402
+except ImportError:  # running with tests/ as top-level dir
+    from auth_helpers import AUTH_HEADERS, webhook_headers, auth_headers, block_network  # noqa: E402
 import database as db
 from main import app, FRONTEND_DIST
 from starlette.testclient import TestClient
@@ -66,7 +70,7 @@ class TestProductionHealthDegradedWithoutKeys(unittest.TestCase):
             "notify_discord": False,
             "notify_merchant_on_cart": True
         })
-        self.client = TestClient(app)
+        self.client = TestClient(app, headers=AUTH_HEADERS)
 
     def test_health_check_zero_keys(self):
         """GET /health must return 200 OK with app name and active db engine."""
@@ -95,16 +99,17 @@ class TestProductionHealthDegradedWithoutKeys(unittest.TestCase):
         self.assertEqual(res_ro.status_code, 200)
         data_ro = res_ro.json()
         self.assertIn("briefing", data_ro)
-        self.assertIsInstance(data_ro["briefing"], str)
-        self.assertTrue(len(data_ro["briefing"]) > 50)
+        self.assertIsInstance(data_ro["briefing"], dict)
+        # Placeholder token = Shopify not connected: snapshot must say so, with no invented numbers
+        self.assertFalse(data_ro["snapshot"]["connected"])
+        self.assertEqual(data_ro["snapshot"]["revenue_30d"], 0)
 
         # English briefing
         res_en = self.client.get(f"/api/briefing?shop={self.shop}&lang=en")
         self.assertEqual(res_en.status_code, 200)
         data_en = res_en.json()
         self.assertIn("briefing", data_en)
-        self.assertIsInstance(data_en["briefing"], str)
-        self.assertTrue(len(data_en["briefing"]) > 50)
+        self.assertIsInstance(data_en["briefing"], dict)
 
         # Default query params
         res_def = self.client.get("/api/briefing")
@@ -116,8 +121,9 @@ class TestProductionHealthDegradedWithoutKeys(unittest.TestCase):
         res = self.client.get(f"/api/status?shop={self.shop}")
         self.assertEqual(res.status_code, 200)
         data = res.json()
-        self.assertTrue(data.get("installed"))
-        self.assertEqual(data.get("plan"), "pro")
+        # A placeholder token is NOT a real installation
+        self.assertFalse(data.get("installed"))
+        self.assertNotIn("plan", data)
 
     def test_snapshot_endpoint_degraded(self):
         """GET /api/snapshot provides store metrics with resilient fallback snapshot."""
@@ -136,7 +142,9 @@ class TestProductionHealthDegradedWithoutKeys(unittest.TestCase):
         res = self.client.get(f"/api/autopilot/status?shop={self.shop}")
         self.assertEqual(res.status_code, 200)
         data = res.json()
-        self.assertTrue(data.get("active"))
+        # The daemon is disabled in tests: status must say so instead of a hard-coded True
+        self.assertFalse(data.get("active"))
+        self.assertFalse(data["daemon"]["is_running"])
         self.assertIn("daemon", data)
         self.assertIsInstance(data.get("queue"), list)
         self.assertIsInstance(data.get("logs"), list)
@@ -153,17 +161,10 @@ class TestProductionHealthDegradedWithoutKeys(unittest.TestCase):
         self.assertEqual(res_def.status_code, 200)
         self.assertIsInstance(res_def.json(), list)
 
-    def test_tts_endpoint_degraded(self):
-        """GET /api/tts returns authentic audio/mpeg stream without crashing."""
+    def test_tts_endpoint_removed(self):
+        """/api/tts was an unused open proxy to Google Translate TTS (the UI uses the browser's speechSynthesis)."""
         res = self.client.get("/api/tts?text=salut&lang=ro")
-        self.assertEqual(res.status_code, 200)
-        self.assertIn("audio/mpeg", res.headers.get("content-type", ""))
-
-        # Degraded fallback when external TTS connection drops
-        with patch("httpx.AsyncClient.get", side_effect=httpx.ConnectTimeout("TTS timeout")):
-            res_fallback = self.client.get("/api/tts?text=offline_test&lang=ro")
-            self.assertEqual(res_fallback.status_code, 200)
-            self.assertIn("audio/mpeg", res_fallback.headers.get("content-type", ""))
+        self.assertEqual(res.status_code, 404)
 
     def test_settings_endpoints_degraded(self):
         """GET /api/settings/* endpoints return masked credential structures without raising."""
@@ -234,7 +235,8 @@ class TestProductionHealthDegradedWithoutKeys(unittest.TestCase):
         self.assertEqual(res_goal.status_code, 200)
         data_goal = res_goal.json()
         self.assertEqual(data_goal.get("target_amount"), 15000.0)
-        self.assertGreater(data_goal.get("needed_orders", 0), 0)
+        # Not connected -> no real AOV -> the order count is not invented
+        self.assertIsNone(data_goal.get("needed_orders"))
 
     def test_chat_freeform_degraded(self):
         """POST /api/chat with a general merchant question falls back to local autonomous brain."""
@@ -259,7 +261,8 @@ class TestProductionHealthDegradedWithoutKeys(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         data = res.json()
         self.assertIn("reply", data)
-        self.assertIn("Multiplicator Instant de Vânzări", data["reply"])
+        self.assertIn("/boost", data["reply"])
+        self.assertIn("nu sunt aplicate automat", data["reply"])  # ideas, not actions
 
     def test_chat_slash_command_browser(self):
         """POST /api/chat with /browser returns Google organic demand trends."""
@@ -271,7 +274,7 @@ class TestProductionHealthDegradedWithoutKeys(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         data = res.json()
         self.assertIn("reply", data)
-        self.assertIn("Radar Autonom Clienți", data["reply"])
+        self.assertIn("Radar Clienți", data["reply"])
 
     def test_chat_slash_command_goal(self):
         """POST /api/chat with /goal returns mathematically grounded revenue roadmap."""
@@ -326,8 +329,10 @@ class TestProductionHealthDegradedWithoutKeys(unittest.TestCase):
         })
         self.assertEqual(res.status_code, 200)
         data = res.json()
-        self.assertTrue(data.get("ok"))
+        # Not connected to Shopify: honest failure, nothing sent
+        self.assertFalse(data.get("ok"))
         self.assertEqual(data.get("dispatched_count"), 0)
+        self.assertIn("Shopify", data.get("error", ""))
 
     def test_post_delivery_sync_and_process_degraded(self):
         """POST /api/post-delivery/sync and /process complete safely without 500s."""
@@ -348,14 +353,17 @@ class TestProductionHealthDegradedWithoutKeys(unittest.TestCase):
 
     def test_plan_upgrade_endpoint(self):
         """POST /api/plan/upgrade updates the shop plan without external dependencies."""
+        # "pro" can only come from a Shopify-confirmed subscription
+        res_pro = self.client.post("/api/plan/upgrade", json={"shop": self.shop, "plan": "pro"})
+        self.assertEqual(res_pro.status_code, 400)
         res = self.client.post("/api/plan/upgrade", json={
             "shop": self.shop,
-            "plan": "pro"
+            "plan": "trial"
         })
         self.assertEqual(res.status_code, 200)
         data = res.json()
         self.assertTrue(data.get("ok"))
-        self.assertEqual(data.get("plan"), "pro")
+        self.assertEqual(data.get("plan"), "trial")
 
     def test_billing_create_dummy_token_returns_graceful_200(self):
         """POST /api/billing/create returns 200 with demo_mode and ok=False instead of HTTP 500."""
@@ -366,8 +374,7 @@ class TestProductionHealthDegradedWithoutKeys(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         data = res.json()
         self.assertFalse(data.get("ok"))
-        self.assertTrue(data.get("demo_mode"))
-        self.assertEqual(data.get("error"), "Shopify API token is not configured or invalid")
+        self.assertIn("Shopify", data.get("error", ""))
 
     def test_billing_create_invalid_token_catches_401_returns_graceful_200(self):
         """POST /api/billing/create catches httpx.HTTPStatusError 401 and returns HTTP 200 with demo_mode."""
@@ -375,22 +382,32 @@ class TestProductionHealthDegradedWithoutKeys(unittest.TestCase):
         db.upsert_shop(temp_shop, "custom_unauthorized_token_xyz", "Temp Store")
 
         # When ShopifyClient makes an unauthorized call, it raises HTTPStatusError(401)
-        res = self.client.post("/api/billing/create", json={
-            "shop": temp_shop,
-            "test": True
-        })
+        req = httpx.Request("POST", f"https://{temp_shop}/admin/api/graphql.json")
+        err = httpx.HTTPStatusError("401", request=req, response=httpx.Response(401, request=req))
+        with patch("main.ShopifyClient.create_app_subscription", new=AsyncMock(side_effect=err)):
+            res = self.client.post("/api/billing/create", json={
+                "shop": temp_shop,
+                "test": True
+            })
         self.assertEqual(res.status_code, 200)
         data = res.json()
         self.assertFalse(data.get("ok"))
-        self.assertTrue(data.get("demo_mode"))
-        self.assertEqual(data.get("error"), "Shopify API token is not configured or invalid")
+        self.assertIn("Shopify", data.get("error", ""))
 
     def test_billing_callback_endpoint(self):
         """GET /api/billing/callback marks shop as pro plan and renders HTML confirmation."""
+        # Without a Shopify-confirmed ACTIVE subscription the plan must NOT change
         res = self.client.get(f"/api/billing/callback?shop={self.shop}&charge_id=12345")
         self.assertEqual(res.status_code, 200)
         self.assertIn("text/html", res.headers.get("content-type", ""))
-        self.assertIn("Abonament Jarvis Pro activat", res.text)
+        self.assertIn("nu a putut fi confirmat", res.text)
+
+        db.upsert_shop("billing-ok.myshopify.com", "shpat_0123456789abcdef0123", "Billing OK")
+        with patch("main.ShopifyClient.get_active_subscriptions", create=True,
+                   new=AsyncMock(return_value=[{"id": "gid://x", "status": "ACTIVE"}])):
+            res_ok = self.client.get("/api/billing/callback?shop=billing-ok.myshopify.com&charge_id=1")
+        self.assertIn("Abonament Jarvis Pro activat", res_ok.text)
+        self.assertEqual(db.get_shop("billing-ok.myshopify.com").get("plan"), "pro")
 
     def test_privacy_page_endpoint(self):
         """GET /privacy serves full GDPR compliance documentation."""
@@ -419,8 +436,15 @@ class TestProductionHealthDegradedWithoutKeys(unittest.TestCase):
             "/webhooks/shop/redact"
         ]
         for wh in webhooks:
+            # Unsigned / forged deliveries are rejected
             res = self.client.post(wh, json={}, headers=headers)
-            self.assertEqual(res.status_code, 200, f"Webhook {wh} returned {res.status_code}")
+            self.assertEqual(res.status_code, 401, f"Unsigned webhook {wh} returned {res.status_code}")
+        for wh in webhooks:
+            if wh in ("/webhooks/app/uninstalled", "/webhooks/shop/redact"):
+                continue  # destructive for the shared test shop; covered in test_lead_security_and_truth
+            body = b"{}"
+            res = self.client.post(wh, content=body, headers=webhook_headers(body, self.shop))
+            self.assertEqual(res.status_code, 200, f"Signed webhook {wh} returned {res.status_code}")
             data = res.json()
             self.assertTrue(data.get("ok") or data.get("status") == "ok")
 
@@ -449,7 +473,7 @@ class TestProductionHealthWithConfiguredKeys(unittest.TestCase):
 
     def setUp(self):
         self.shop = "maisongrozavu.myshopify.com"
-        self.client = TestClient(app)
+        self.client = TestClient(app, headers=AUTH_HEADERS)
 
     def test_billing_create_with_configured_shopify(self):
         """POST /api/billing/create with an authorized Shopify token creates recurring subscription."""
@@ -613,6 +637,20 @@ class TestProductionHealthWithConfiguredKeys(unittest.TestCase):
                     mock_vip_sync.assert_called_once_with(shop, days_back=14)
                     mock_vip_proc.assert_called_once_with(shop, {})
 
+
+
+_NETWORK_GUARD = None
+
+
+def setUpModule():
+    """Hermetic: no real HTTP calls (Shopify, Google, Resend, Telegram...) from this module."""
+    global _NETWORK_GUARD
+    _NETWORK_GUARD = block_network()
+
+
+def tearDownModule():
+    if _NETWORK_GUARD:
+        _NETWORK_GUARD.stop()
 
 if __name__ == "__main__":
     unittest.main()

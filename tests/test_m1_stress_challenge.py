@@ -186,12 +186,12 @@ class TestEmailDispatcherStress(unittest.TestCase):
     def test_all_six_supported_languages(self):
         """Verify complete localization across EN, RO, IT, ES, DE, FR for both neutral and discount stages."""
         locales = {
-            "en": ("YOUR RESERVED SELECTION", "Complete Your Order →", "Complete Order with 10% Off →"),
-            "ro": ("PRODUSELE TALE REZERVATE", "Finalizează Comanda Acum →", "Finalizează Comanda cu 10% Reducere →"),
-            "it": ("I TUOI ARTICOLI RISERVATI", "Completa il Tuo Ordine →", "Completa l'Ordine con lo Sconto 10% →"),
-            "es": ("TUS ARTÍCULOS RESERVADOS", "Finalizar Mi Pedido →", "Finalizar Pedido con 10% de Descuento →"),
-            "de": ("DEINE RESERVIERTE AUSWAHL", "Bestellung jetzt abschließen →", "Bestellung mit 10% Rabatt abschließen →"),
-            "fr": ("VOTRE SÉLECTION RÉSERVÉE", "Finaliser ma Commande →", "Finaliser ma Commande avec 10% de Réduction →"),
+            "en": ("ITEMS IN YOUR CART", "Complete Your Order →", "Complete Order with 10% Off →"),
+            "ro": ("PRODUSELE DIN COȘUL TĂU", "Finalizează Comanda Acum →", "Finalizează Comanda cu 10% Reducere →"),
+            "it": ("GLI ARTICOLI NEL TUO CARRELLO", "Completa il Tuo Ordine →", "Completa l'Ordine con lo Sconto 10% →"),
+            "es": ("LOS ARTÍCULOS DE TU CARRITO", "Finalizar Mi Pedido →", "Finalizar Pedido con 10% de Descuento →"),
+            "de": ("ARTIKEL IN DEINEM WARENKORB", "Bestellung jetzt abschließen →", "Bestellung mit 10% Rabatt abschließen →"),
+            "fr": ("LES ARTICLES DE VOTRE PANIER", "Finaliser ma Commande →", "Finaliser ma Commande avec 10% de Réduction →"),
         }
         for lang, (hdr, neutral_cta, disc_cta) in locales.items():
             # Neutral stage (Stage 1)
@@ -208,15 +208,15 @@ class TestEmailDispatcherStress(unittest.TestCase):
     def test_language_normalization_and_unsupported_locales(self):
         """Verify normalization of regional tags and safe fallback on unsupported languages."""
         # Regional normalization
-        self.assertIn("PRODUSELE TALE REZERVATE", EmailDispatcher.build_html_email(shop_name="S", lang="RO_md"))
-        self.assertIn("DEINE RESERVIERTE AUSWAHL", EmailDispatcher.build_html_email(shop_name="S", lang="de-CH"))
-        self.assertIn("TUS ARTÍCULOS RESERVADOS", EmailDispatcher.build_html_email(shop_name="S", lang="es-AR"))
-        self.assertIn("VOTRE SÉLECTION RÉSERVÉE", EmailDispatcher.build_html_email(shop_name="S", lang="fr-BE"))
-        self.assertIn("I TUOI ARTICOLI RISERVATI", EmailDispatcher.build_html_email(shop_name="S", lang="it_IT"))
+        self.assertIn("PRODUSELE DIN COȘUL TĂU", EmailDispatcher.build_html_email(shop_name="S", lang="RO_md"))
+        self.assertIn("ARTIKEL IN DEINEM WARENKORB", EmailDispatcher.build_html_email(shop_name="S", lang="de-CH"))
+        self.assertIn("LOS ARTÍCULOS DE TU CARRITO", EmailDispatcher.build_html_email(shop_name="S", lang="es-AR"))
+        self.assertIn("LES ARTICLES DE VOTRE PANIER", EmailDispatcher.build_html_email(shop_name="S", lang="fr-BE"))
+        self.assertIn("GLI ARTICOLI NEL TUO CARRELLO", EmailDispatcher.build_html_email(shop_name="S", lang="it_IT"))
         # Fallback to English
-        self.assertIn("YOUR RESERVED SELECTION", EmailDispatcher.build_html_email(shop_name="S", lang="ja"))
-        self.assertIn("YOUR RESERVED SELECTION", EmailDispatcher.build_html_email(shop_name="S", lang="ar"))
-        self.assertIn("YOUR RESERVED SELECTION", EmailDispatcher.build_html_email(shop_name="S", lang="unsupported_xyz"))
+        self.assertIn("ITEMS IN YOUR CART", EmailDispatcher.build_html_email(shop_name="S", lang="ja"))
+        self.assertIn("ITEMS IN YOUR CART", EmailDispatcher.build_html_email(shop_name="S", lang="ar"))
+        self.assertIn("ITEMS IN YOUR CART", EmailDispatcher.build_html_email(shop_name="S", lang="unsupported_xyz"))
 
     def test_discount_code_permutations(self):
         """Verify discount permutations: None, empty, whitespace, MG10, MGVIP15, and non-numeric code."""

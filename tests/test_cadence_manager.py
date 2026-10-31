@@ -260,55 +260,108 @@ class TestCadenceReconciliation(unittest.TestCase):
 
 
 class TestWebhookEndpoint(unittest.IsolatedAsyncioTestCase):
-    @patch("main.cadence_mgr.mark_order_converted")
-    async def test_webhook_order_created_reconciles(self, mock_mark):
-        from main import webhook_order_created
+    """orders/create must be HMAC-verified and then reconcile the drip state."""
+
+    def _request(self, body: bytes, secret=None):
+        import base64, hashlib, hmac
+        secret = secret or os.environ.setdefault("SHOPIFY_API_SECRET", "test_api_secret_456")
+        sig = base64.b64encode(hmac.new(secret.encode(), body, hashlib.sha256).digest()).decode()
         request = MagicMock()
-        request.headers = {"x-shopify-shop-domain": "test-shop.myshopify.com"}
-        request.json = unittest.mock.AsyncMock(return_value={"id": 8888, "checkout_id": "c999"})
-        resp = await webhook_order_created(request)
+        request.headers = {"x-shopify-shop-domain": "test-shop.myshopify.com", "x-shopify-hmac-sha256": sig}
+        request.body = unittest.mock.AsyncMock(return_value=body)
+        return request
+
+    @patch("main.cadence_mgr.reconcile_order", return_value={"converted": 1, "attributed": False})
+    async def test_webhook_order_created_reconciles(self, mock_reconcile):
+        import json
+        from main import webhook_order_created
+        body = json.dumps({"id": 8888, "checkout_id": "c999"}).encode()
+        resp = await webhook_order_created(self._request(body))
         self.assertEqual(resp, {"status": "ok"})
-        mock_mark.assert_called_once_with("test-shop.myshopify.com", {"id": 8888, "checkout_id": "c999"})
+        mock_reconcile.assert_called_once_with("test-shop.myshopify.com", {"id": 8888, "checkout_id": "c999"})
+
+    @patch("main.cadence_mgr.reconcile_order")
+    async def test_webhook_with_forged_signature_is_rejected(self, mock_reconcile):
+        from fastapi import HTTPException
+        from main import webhook_order_created
+        with self.assertRaises(HTTPException) as ctx:
+            await webhook_order_created(self._request(b'{"id": 1}', secret="attacker-secret"))
+        self.assertEqual(ctx.exception.status_code, 401)
+        mock_reconcile.assert_not_called()
 
 
 class TestProcessCheckoutRecoveryStage1Enforcement(unittest.IsolatedAsyncioTestCase):
-    @patch("main.db")
-    @patch("main.ai")
-    @patch("main.email_dispatcher")
-    @patch("main.wa_dispatcher")
-    async def test_stage_1_unconditionally_suppresses_any_discount_copy(self, mock_wa, mock_email, mock_ai, mock_db):
+    def _checkout(self):
+        return {
+            "id": "c_stg1_test",
+            "created_at": (datetime.now(timezone.utc) - timedelta(minutes=40)).isoformat(),
+            "total_price": "120.00",
+            "customer_name": "Ana Pop",
+            "email": "ana@example.ro",
+            "items": ["Boxy Tee"],
+            "detected_lang": "ro",
+        }
+
+    def _patches(self, allowed=(True, "OK")):
         from unittest.mock import AsyncMock
-        from main import process_single_checkout_recovery
-        mock_db.upsert_checkout_drip_state.return_value = {"current_stage": 0, "status": "active"}
+        p = [patch("main.db"), patch("main.ai"), patch("main.email_dispatcher"), patch("main.wa_dispatcher"),
+             patch("main.mobile_notifier"), patch("main.can_dispatch_to_customer", return_value=allowed),
+             patch("main.log_customer_dispatch", return_value=True)]
+        started = [x.start() for x in p]
+        for x in p:
+            self.addCleanup(x.stop)
+        mock_db, mock_ai, mock_email, mock_wa, mock_mobile = started[:5]
+        mock_db.upsert_checkout_drip_state.return_value = {"current_stage": 0, "status": "active",
+                                                           "created_at": self._checkout()["created_at"]}
         mock_db.get_shop_settings.return_value = {"merchant_notify_email": ""}
-        
-        # AI returns an unexpected discount pitch without standard '10%' or 'MG10'
+        mock_db.claim_drip_stage.return_value = True
+        # AI would pitch a discount — stage 1 must ignore it entirely
         mock_ai.generate_autonomous_recovery = AsyncMock(return_value={
             "subject": "Exclusive 25% Off Deal Just For You!",
             "body": "Use promo code SPECIAL25 to complete your checkout with 25% discount.",
             "whatsapp_message": "Save 25% today with code SPECIAL25!"
         })
         mock_email.send_email = AsyncMock(return_value={"success": True})
-        mock_wa.send_autonomous_whatsapp = AsyncMock(return_value={"success": True})
+        mock_mobile.notify_merchant = AsyncMock(return_value={})
+        return mock_db, mock_ai, mock_email, mock_wa
 
-        checkout = {
-            "id": "c_stg1_test",
-            "created_at": "2026-10-26T10:00:00Z",
-            "total_price": "120.00",
-            "customer_name": "Elena Popescu",
-            "email": "elena@example.ro",
-            "items": ["Rochie Elegantă"],
-            "detected_lang": "ro"
-        }
-        client_mock = MagicMock()
-        result = await process_single_checkout_recovery("test-shop.myshopify.com", client_mock, "Test Shop", checkout, force=True)
-        
+    async def test_stage_1_unconditionally_suppresses_any_discount_copy(self):
+        from main import process_single_checkout_recovery
+        mock_db, mock_ai, mock_email, _ = self._patches()
+        result = await process_single_checkout_recovery("test-shop.myshopify.com", MagicMock(), "Test Shop", self._checkout())
+
         self.assertEqual(result["stage"], 1)
         self.assertIsNone(result["discount_code"])
         self.assertNotIn("SPECIAL25", result["subject"])
         self.assertNotIn("25%", result["subject"])
         self.assertNotIn("SPECIAL25", result["message"])
         self.assertIn("ai nevoie de ajutor", result["subject"])
+        self.assertNotIn("rezervat", result["message"].lower())  # Shopify does not reserve stock
+        mock_ai.generate_autonomous_recovery.assert_not_called()
+        mock_db.claim_drip_stage.assert_called_once_with("c_stg1_test", 0, 1)
+
+    async def test_no_consent_means_nothing_is_sent_even_with_force(self):
+        from main import process_single_checkout_recovery
+        mock_db, _, mock_email, mock_wa = self._patches(allowed=(False, "no consent"))
+        skipped = []
+        result = await process_single_checkout_recovery("test-shop.myshopify.com", MagicMock(), "Test Shop",
+                                                        self._checkout(), force=True, skip_log=skipped)
+        self.assertIsNone(result)
+        mock_email.send_email.assert_not_called()
+        mock_db.claim_drip_stage.assert_not_called()
+        self.assertIn("no consent", skipped[0]["reason"])
+
+    async def test_failed_send_releases_the_claim(self):
+        from unittest.mock import AsyncMock
+        from main import process_single_checkout_recovery
+        mock_db, _, mock_email, _ = self._patches()
+        mock_email.send_email = AsyncMock(return_value={"success": False, "reason": "no provider"})
+        import main
+        main._FAILED_UNTIL.clear()
+        result = await process_single_checkout_recovery("test-shop.myshopify.com", MagicMock(), "Test Shop", self._checkout())
+        self.assertIsNone(result)
+        mock_db.release_drip_stage.assert_called_once_with("c_stg1_test", 1, 0)
+        main._FAILED_UNTIL.clear()
 
 
 if __name__ == "__main__":

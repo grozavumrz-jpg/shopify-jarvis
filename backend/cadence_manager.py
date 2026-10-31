@@ -15,8 +15,14 @@ class DripCadenceManager:
     Autonomous 3-Stage Drip Recovery Cadence:
       - Stage 1: >= 30m post-abandonment (NO discount, assistance tone)
       - Stage 2: >= 4h post-abandonment (MG10 10% discount, sweeten deal)
-      - Stage 3: >= 24h post-abandonment (MG10 urgency, last chance before cart release)
+      - Stage 3: >= 24h post-abandonment (MG10, final reminder — no invented scarcity:
+        Shopify does NOT reserve stock for abandoned checkouts)
       - Cutoff: > 72h post-abandonment or current_stage == 3 -> Exhausted
+
+    Concurrency: callers should move a checkout to a stage with
+    database.claim_drip_stage(checkout_id, expected_stage, new_stage) BEFORE sending
+    and database.release_drip_stage(...) if every channel failed.
+    Frequency/compliance: use sequence_key(checkout_id) with compliance_guard.
     """
 
     STAGE_1_MIN_SECONDS = 30 * 60       # 30 minutes (1,800s)
@@ -29,6 +35,11 @@ class DripCadenceManager:
     STAGE_3_MIN_INTERVAL_SECONDS = 18 * 3600        # 18 hours (64,800s) after stage 2
 
     DISCOUNT_CODE_MG10 = "MG10"
+
+    @staticmethod
+    def sequence_key(checkout_id: Any) -> str:
+        """Frequency-policy key for an abandoned-cart sequence (compliance_guard sequence_key)."""
+        return f"cart:{checkout_id}"
 
     @classmethod
     def parse_datetime(cls, dt_val: Any) -> Optional[datetime]:
@@ -182,7 +193,7 @@ class DripCadenceManager:
                 "discount_percent": 10,
                 "tone": "urgency",
                 "urgency": True,
-                "label": "Stage 3 — Final Cart Release Urgency (24h, MG10)"
+                "label": "Stage 3 — Final Reminder (24h, MG10)"
             }
         raise ValueError(f"Invalid cadence stage: {stage}")
 
@@ -190,20 +201,55 @@ class DripCadenceManager:
         """
         Reconciles completed order to cancel all remaining drip stages.
         Matches by checkout_id, checkout_token, or customer email.
+        Returns True if any drip state was closed. NOTE: that alone is not a "recovery";
+        use reconcile_order() to know whether Jarvis had actually sent a message.
         """
         cid = order_dict.get("checkout_id")
         token = order_dict.get("checkout_token")
         cust = order_dict.get("customer") or {}
-        email = order_dict.get("email") or cust.get("email") or ""
+        if not isinstance(cust, dict):
+            cust = {}
+        email = db.normalize_email(order_dict.get("email") or order_dict.get("contact_email") or cust.get("email")) or ""
         order_id = str(order_dict.get("id") or "")
-        revenue = float(order_dict.get("total_price") or 0.0)
+        try:
+            revenue = float(order_dict.get("total_price") or 0.0)
+        except (TypeError, ValueError):
+            revenue = 0.0
 
         rows = db.mark_drip_converted(
             shop=shop,
             checkout_id=str(cid) if cid else None,
-            email=email,
+            email=email or None,
             checkout_token=str(token) if token else None,
             order_id=order_id,
             revenue=revenue
         )
         return rows > 0
+
+    def reconcile_order(self, shop: str, order_dict: Dict) -> Dict[str, Any]:
+        """
+        Like mark_order_converted, but truthful about attribution:
+        {"converted": <rows closed>, "attributed": <True only if at least one closed checkout
+        had received a Jarvis message (current_stage > 0)>}. Only fire a "revenue recovered"
+        alert when attributed is True.
+        """
+        cid = order_dict.get("checkout_id")
+        token = order_dict.get("checkout_token")
+        cust = order_dict.get("customer") or {}
+        if not isinstance(cust, dict):
+            cust = {}
+        email = db.normalize_email(order_dict.get("email") or order_dict.get("contact_email") or cust.get("email")) or ""
+        try:
+            revenue = float(order_dict.get("total_price") or 0.0)
+        except (TypeError, ValueError):
+            revenue = 0.0
+        rows, attributed = db.mark_drip_converted(
+            shop=shop,
+            checkout_id=str(cid) if cid else None,
+            email=email or None,
+            checkout_token=str(token) if token else None,
+            order_id=str(order_dict.get("id") or ""),
+            revenue=revenue,
+            return_attribution=True,
+        )
+        return {"converted": int(rows or 0), "attributed": bool(attributed)}

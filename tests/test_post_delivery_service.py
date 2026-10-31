@@ -19,6 +19,7 @@ import asyncio
 import backend.post_delivery_service as pds
 from backend.post_delivery_service import PostDeliveryService
 from tests.helpers import make_sample_order, make_sample_shop_settings
+from tests.helpers import EMAIL_SENT_OK, WA_SENT_OK, allow_vip_compliance
 
 
 class TestPostDeliveryServiceFulfillmentSync(unittest.TestCase):
@@ -122,6 +123,7 @@ class TestPostDeliveryServiceSchedulingAndDueEvaluation(unittest.TestCase):
     """Due queue evaluation and time travel boundaries."""
 
     def setUp(self):
+        allow_vip_compliance(self)
         self.service = PostDeliveryService()
 
     def test_due_evaluation_4d23h_not_due(self):
@@ -151,8 +153,8 @@ class TestPostDeliveryServiceSchedulingAndDueEvaluation(unittest.TestCase):
         }
 
         with patch.object(pds.db, "get_due_post_delivery_automations", return_value=[record]):
-            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock) as mock_mail:
-                with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock) as mock_wa:
+            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock, return_value=dict(EMAIL_SENT_OK)) as mock_mail:
+                with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock, return_value=dict(WA_SENT_OK)) as mock_wa:
                     with patch.object(self.service.mobile_notifier, "notify_merchant", new_callable=AsyncMock) as mock_notify:
                         with patch.object(pds.db, "mark_post_delivery_sent", return_value=True):
                             with patch.object(pds.db, "save_autopilot_log", return_value=True):
@@ -196,6 +198,7 @@ class TestPostDeliveryServiceDispatchChannels(unittest.TestCase):
     """Dual-channel dispatch (Email, WhatsApp) and merchant alert notifications."""
 
     def setUp(self):
+        allow_vip_compliance(self)
         self.service = PostDeliveryService()
 
     def test_dispatch_email_only_when_phone_absent(self):
@@ -210,8 +213,8 @@ class TestPostDeliveryServiceDispatchChannels(unittest.TestCase):
             "items_summary": []
         }
         with patch.object(pds.db, "get_due_post_delivery_automations", return_value=[record]):
-            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock) as mock_mail:
-                with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock) as mock_wa:
+            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock, return_value=dict(EMAIL_SENT_OK)) as mock_mail:
+                with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock, return_value=dict(WA_SENT_OK)) as mock_wa:
                     with patch.object(pds.db, "mark_post_delivery_sent"):
                         with patch.object(pds.db, "save_autopilot_log"):
                             count = self.service.process_due_vip_automations("luxury.myshopify.com")
@@ -231,8 +234,8 @@ class TestPostDeliveryServiceDispatchChannels(unittest.TestCase):
             "items_summary": []
         }
         with patch.object(pds.db, "get_due_post_delivery_automations", return_value=[record]):
-            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock) as mock_mail:
-                with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock) as mock_wa:
+            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock, return_value=dict(EMAIL_SENT_OK)) as mock_mail:
+                with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock, return_value=dict(WA_SENT_OK)) as mock_wa:
                     with patch.object(pds.db, "mark_post_delivery_sent"):
                         with patch.object(pds.db, "save_autopilot_log"):
                             count = self.service.process_due_vip_automations("luxury.myshopify.com")
@@ -253,8 +256,8 @@ class TestPostDeliveryServiceDispatchChannels(unittest.TestCase):
             "items_summary": [{"title": "Smoking Luxury"}]
         }
         with patch.object(pds.db, "get_due_post_delivery_automations", return_value=[record]):
-            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock) as mock_mail:
-                with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock) as mock_wa:
+            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock, return_value=dict(EMAIL_SENT_OK)) as mock_mail:
+                with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock, return_value=dict(WA_SENT_OK)) as mock_wa:
                     with patch.object(self.service.mobile_notifier, "notify_merchant", new_callable=AsyncMock) as mock_notify:
                         with patch.object(pds.db, "mark_post_delivery_sent") as mock_mark:
                             with patch.object(pds.db, "save_autopilot_log"):
@@ -278,7 +281,7 @@ class TestPostDeliveryServiceDispatchChannels(unittest.TestCase):
         }
         with patch.object(pds.db, "get_due_post_delivery_automations", return_value=[record]):
             with patch.object(self.service.email_dispatcher, "send_email", side_effect=RuntimeError("SMTP Down")):
-                with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock) as mock_wa:
+                with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock, return_value=dict(WA_SENT_OK)) as mock_wa:
                     with patch.object(pds.db, "mark_post_delivery_sent"):
                         with patch.object(pds.db, "save_autopilot_log"):
                             count = self.service.process_due_vip_automations("luxury.myshopify.com")
@@ -297,7 +300,7 @@ class TestPostDeliveryServiceDispatchChannels(unittest.TestCase):
             "items_summary": []
         }
         with patch.object(pds.db, "get_due_post_delivery_automations", return_value=[record]):
-            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock):
+            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock, return_value=dict(EMAIL_SENT_OK)):
                 with patch.object(self.service.mobile_notifier, "notify_merchant", side_effect=RuntimeError("Telegram Down")):
                     with patch.object(pds.db, "mark_post_delivery_sent") as mock_mark:
                         with patch.object(pds.db, "save_autopilot_log"):
@@ -306,7 +309,7 @@ class TestPostDeliveryServiceDispatchChannels(unittest.TestCase):
                             mock_mark.assert_called_once()
 
     def test_build_vip_message_fallback_for_empty_customer_name(self):
-        """Fallback to 'Client' or default if customer name is empty."""
+        """Empty customer name -> generic greeting (never the placeholder 'Client')."""
         msg = PostDeliveryService.build_vip_message(
             customer_name="",
             purchased_item="Suit",
@@ -314,7 +317,8 @@ class TestPostDeliveryServiceDispatchChannels(unittest.TestCase):
             lang="en"
         )
         self.assertIn("MGVIP15", msg)
-        self.assertIn("Client", msg)
+        self.assertNotIn("Client", msg)
+        self.assertTrue(msg.startswith("Hi!"))
 
     def test_sync_db_failure_handled_gracefully(self):
         """If database raises operational error, sync_fulfilled_orders catches and returns 0."""

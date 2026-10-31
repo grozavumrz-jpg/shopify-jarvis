@@ -11,7 +11,7 @@ import os
 import sys
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, AsyncMock, MagicMock
 
 # Add project root and backend to sys.path
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -21,6 +21,10 @@ if PROJECT_ROOT not in sys.path:
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
+try:
+    from tests.auth_helpers import AUTH_HEADERS, webhook_headers, auth_headers  # noqa: E402
+except ImportError:  # running with tests/ as top-level dir
+    from auth_helpers import AUTH_HEADERS, webhook_headers, auth_headers  # noqa: E402
 import database as db
 from google_merchant_feed import (
     build_google_merchant_xml,
@@ -32,6 +36,7 @@ from compliance_guard import is_quiet_hours, can_dispatch_to_customer, log_custo
 from deliverability_checker import DeliverabilityChecker
 from starlette.testclient import TestClient
 from main import app
+import main as main_mod
 
 
 class TestGoogleMerchantFeed(unittest.TestCase):
@@ -39,8 +44,9 @@ class TestGoogleMerchantFeed(unittest.TestCase):
         self.shop_domain = "maisongrozavu.com"
         self.store_name = "Maison Grozavu"
 
-    def test_default_products_feed_generation(self):
-        """Test default feed generation contains all 5 luxury products and required tags."""
+    def test_no_products_means_no_fake_feed_items(self):
+        """Without real Shopify products the feed must be empty — never invented 'luxury' products."""
+        self.assertEqual(DEFAULT_LUXURY_PRODUCTS, [])
         xml_feed = build_google_merchant_xml(
             products=None,
             shop_domain=self.shop_domain,
@@ -49,14 +55,12 @@ class TestGoogleMerchantFeed(unittest.TestCase):
         )
         self.assertIn("<?xml", xml_feed)
         self.assertIn("<rss xmlns:g=\"http://base.google.com/ns/1.0\" version=\"2.0\"", xml_feed)
-        self.assertIn("<g:title>", xml_feed)
-        self.assertIn("<g:price>", xml_feed)
-        self.assertIn("Maison Grozavu", xml_feed)
-        
+        self.assertNotIn("<item>", xml_feed)
+        self.assertNotIn("Mătase", xml_feed)
+
         val = validate_google_merchant_feed(xml_feed)
-        self.assertTrue(val["valid"], f"Validation failed: {val['errors']}")
-        self.assertEqual(val["items_count"], 5)
-        self.assertEqual(len(val["errors"]), 0)
+        self.assertFalse(val["valid"])
+        self.assertEqual(val["items_count"], 0)
 
     def test_custom_products_feed_generation_and_escaping(self):
         """Test custom products with special XML characters (<, >, &, \") are safely escaped."""
@@ -67,7 +71,8 @@ class TestGoogleMerchantFeed(unittest.TestCase):
                 "body_html": "<p>Rochie splendidă de seară & bal 'Black Tie'.</p>",
                 "handle": "rochie-matase-dantela",
                 "images": [{"src": "https://maisongrozavu.com/img1.jpg"}],
-                "variants": [{"price": "390.00", "inventory_quantity": 4, "inventory_policy": "deny"}],
+                "status": "active",
+                "variants": [{"id": 1, "price": "390.00", "inventory_quantity": 4, "inventory_policy": "deny"}],
                 "product_type": "Rochii de Seară"
             }
         ]
@@ -149,120 +154,143 @@ class TestComplianceGuardAndConsent(unittest.TestCase):
 
     def test_quiet_hours_calculation(self):
         """
-        Verify quiet hours (21:00 to 09:00 Bucharest time).
-        Bucharest is UTC+2 (standard) / UTC+3 (DST). With UTC+2:
-        - UTC 19:00 -> Bucharest 21:00 -> Quiet hours TRUE
-        - UTC 23:00 -> Bucharest 01:00 -> Quiet hours TRUE
-        - UTC 06:00 -> Bucharest 08:00 -> Quiet hours TRUE
-        - UTC 08:00 -> Bucharest 10:00 -> Quiet hours FALSE
-        - UTC 15:00 -> Bucharest 17:00 -> Quiet hours FALSE
+        Quiet hours are 21:00-09:00 in Europe/Madrid (the store's timezone), DST-correct.
+        2026-10-28 is after the DST change (CET = UTC+1); 2026-07-15 is summer (CEST = UTC+2).
         """
-        dt_night_start = datetime(2026, 10, 28, 19, 0, 0, tzinfo=timezone.utc)
-        self.assertTrue(is_quiet_hours(dt_night_start))
-
-        dt_midnight = datetime(2026, 10, 28, 23, 0, 0, tzinfo=timezone.utc)
-        self.assertTrue(is_quiet_hours(dt_midnight))
-
-        dt_early_morning = datetime(2026, 10, 28, 6, 0, 0, tzinfo=timezone.utc)
-        self.assertTrue(is_quiet_hours(dt_early_morning))
-
-        dt_daytime = datetime(2026, 10, 28, 12, 0, 0, tzinfo=timezone.utc)
-        self.assertFalse(is_quiet_hours(dt_daytime))
+        self.assertFalse(is_quiet_hours(datetime(2026, 10, 28, 19, 0, tzinfo=timezone.utc)))  # 20:00 Madrid
+        self.assertTrue(is_quiet_hours(datetime(2026, 10, 28, 20, 0, tzinfo=timezone.utc)))   # 21:00 Madrid
+        self.assertTrue(is_quiet_hours(datetime(2026, 10, 28, 23, 0, tzinfo=timezone.utc)))   # 00:00 Madrid
+        self.assertTrue(is_quiet_hours(datetime(2026, 10, 28, 7, 30, tzinfo=timezone.utc)))   # 08:30 Madrid
+        self.assertFalse(is_quiet_hours(datetime(2026, 10, 28, 8, 0, tzinfo=timezone.utc)))   # 09:00 Madrid
+        self.assertFalse(is_quiet_hours(datetime(2026, 10, 28, 12, 0, tzinfo=timezone.utc)))  # 13:00 Madrid
+        self.assertTrue(is_quiet_hours(datetime(2026, 7, 15, 19, 0, tzinfo=timezone.utc)))    # 21:00 CEST
+        self.assertFalse(is_quiet_hours(datetime(2026, 7, 15, 7, 0, tzinfo=timezone.utc)))    # 09:00 CEST
 
     def test_consent_and_opt_out_flow(self):
-        """Test recording consent, opt-out, and checking permissions."""
+        """Unknown consent = NO consent; explicit consent allows; opt-out always wins."""
         test_email = f"test_compliance_{datetime.now().timestamp()}@example.com"
+        daytime = datetime(2026, 10, 28, 12, 0, 0, tzinfo=timezone.utc)
 
-        # Initially consent is assumed true by default if no opt-out is recorded
+        self.assertFalse(db.is_consent_given(self.shop_domain, email=test_email))
+        allowed, reason = can_dispatch_to_customer(self.shop_domain, email=test_email, now_dt=daytime)
+        self.assertFalse(allowed)
+
+        db.record_marketing_consent(self.shop_domain, email=test_email, accepts_marketing=True)
         self.assertTrue(db.is_consent_given(self.shop_domain, email=test_email))
 
-        # Explicitly opt-out
         db.record_opt_out(self.shop_domain, email=test_email)
         self.assertFalse(db.is_consent_given(self.shop_domain, email=test_email))
-
-        # Can dispatch should block opted-out customer
-        daytime = datetime(2026, 10, 28, 12, 0, 0, tzinfo=timezone.utc)
-        allowed, reason = can_dispatch_to_customer(
-            self.shop_domain, email=test_email, now_dt=daytime
-        )
+        allowed, reason = can_dispatch_to_customer(self.shop_domain, email=test_email, now_dt=daytime)
         self.assertFalse(allowed)
         self.assertIn("opted out", reason.lower())
 
+        # A later checkout saying "accepts marketing" must not undo an unsubscribe
+        db.record_marketing_consent(self.shop_domain, email=test_email, accepts_marketing=True, source="checkout")
+        self.assertFalse(db.is_consent_given(self.shop_domain, email=test_email))
+
     def test_frequency_capping_enforcement(self):
-        """Test that customer cannot receive more than 1 message per 72 hours."""
+        """A new marketing sequence is blocked if the customer got a message in the last 72 hours."""
         test_email = f"freq_test_{datetime.now().timestamp()}@example.com"
         daytime = datetime(2026, 10, 28, 12, 0, 0, tzinfo=timezone.utc)
+        db.record_marketing_consent(self.shop_domain, email=test_email, accepts_marketing=True)
 
-        # First dispatch check should pass
         allowed, reason = can_dispatch_to_customer(
-            self.shop_domain, email=test_email, now_dt=daytime
-        )
+            self.shop_domain, email=test_email, now_dt=daytime, sequence_key="cart:freq1")
         self.assertTrue(allowed, f"First dispatch blocked: {reason}")
+        log_customer_dispatch(self.shop_domain, recipient=test_email, channel="email",
+                              message_type="abandoned_cart_stage_1", sequence_key="cart:freq1", sent_at=daytime)
 
-        # Record a dispatch
-        log_customer_dispatch(self.shop_domain, recipient=test_email, channel="email", message_type="cart_reminder")
-
-        # Second dispatch within 72 hours should be blocked by frequency cap
+        # A DIFFERENT sequence within 72h is blocked
         allowed2, reason2 = can_dispatch_to_customer(
-            self.shop_domain, email=test_email, now_dt=daytime
-        )
+            self.shop_domain, email=test_email, now_dt=daytime, sequence_key="cart:freq2")
         self.assertFalse(allowed2)
-        self.assertIn("Frequency cap", reason2)
+        self.assertIn("72", reason2)
+
+        # The follow-up stage of the SAME cart sequence is allowed (stages 2-3)
+        allowed3, reason3 = can_dispatch_to_customer(
+            self.shop_domain, email=test_email, now_dt=daytime, sequence_key="cart:freq1")
+        self.assertTrue(allowed3, reason3)
 
 
 class TestDeliverabilityChecker(unittest.IsolatedAsyncioTestCase):
-    @patch.object(DeliverabilityChecker, "_query_txt_records")
-    async def test_audit_domain_with_perfect_records(self, mock_query):
-        """Test domain with SPF, DKIM, DMARC scores 100/100 and has 0 missing records."""
-        async def side_effect(name: str):
-            if name == "maisongrozavu.com":
-                return ["v=spf1 include:resend.com ~all"]
-            elif name == "_dmarc.maisongrozavu.com":
-                return ["v=DMARC1; p=reject; sp=reject; adkim=r; aspf=r"]
-            elif name == "resend._domainkey.maisongrozavu.com":
-                return ["k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQ..."]
-            return []
+    """Resend needs SPF+MX on send.<domain>, DKIM on resend._domainkey.<domain>, and DMARC."""
 
-        mock_query.side_effect = side_effect
-        checker = DeliverabilityChecker(domain="maisongrozavu.com")
-        res = await checker.audit_domain("maisongrozavu.com")
+    def _dns(self, overrides=None):
+        records = {
+            ("send.maisongrozavu.com", "TXT"): ["v=spf1 include:amazonses.com ~all"],
+            ("send.maisongrozavu.com", "MX"): ["10 feedback-smtp.eu-west-1.amazonses.com"],
+            ("resend._domainkey.maisongrozavu.com", "TXT"): ["p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDktEwN4K3kdMMS619dSeOticKcCFApbGKnG29mL7OasB5apPaY7UUFhjbhTgJLOg0pGJPWOfgIUr9ZG20eWF3iZ6Cv0MVJV5rleUZC5aeRPEKLk1geRgqieq+3gm+HYXE6tbdbE3xVIYqekhe3mHQLDwlNvc4i/0JfTRjFUgx8FQIDAQAB"],
+            ("_dmarc.maisongrozavu.com", "TXT"): ["v=DMARC1; p=quarantine; rua=mailto:info@maisongrozavu.com"],
+            ("maisongrozavu.com", "TXT"): ["v=spf1 include:_spf.hostedemail.com ~all"],
+        }
+        records.update(overrides or {})
 
-        self.assertEqual(res["score"], 100)
-        self.assertIn("Excelent", res["rating"])
-        self.assertEqual(len(res["missing_records"]), 0)
-        self.assertTrue(res["checks"]["spf"]["configured"])
-        self.assertTrue(res["checks"]["dkim"]["configured"])
-        self.assertTrue(res["checks"]["dmarc"]["configured"])
+        async def fake(name, rtype="TXT"):
+            return records.get((name, rtype), [])
+        return fake
 
-    @patch.object(DeliverabilityChecker, "_query_txt_records")
-    async def test_audit_domain_with_missing_spf(self, mock_query):
-        """Test domain missing SPF is flagged and receives a lower score with exact remediation instructions."""
-        async def side_effect(name: str):
-            if name == "maisongrozavu.com":
-                return []
-            elif name == "_dmarc.maisongrozavu.com":
-                return ["v=DMARC1; p=none"]
-            elif name == "resend._domainkey.maisongrozavu.com":
-                return ["k=rsa; p=12345"]
-            return []
+    async def test_audit_domain_with_complete_records(self):
+        with patch.object(DeliverabilityChecker, "_query_records", side_effect=self._dns()):
+            res = await DeliverabilityChecker(domain="maisongrozavu.com").audit_domain("maisongrozavu.com")
+        for key in ("spf", "mx", "dkim", "dmarc"):
+            self.assertEqual(res["checks"][key]["status"], "ok", key)
+        self.assertEqual(res["missing_records"], [])
+        self.assertNotIn("garantat", str(res).lower())
 
-        mock_query.side_effect = side_effect
-        checker = DeliverabilityChecker(domain="maisongrozavu.com")
-        res = await checker.audit_domain("maisongrozavu.com")
+    async def test_audit_domain_live_like_records_missing_send_subdomain(self):
+        """Today's real DNS: DKIM present, DMARC p=none, but nothing on send.maisongrozavu.com."""
+        with patch.object(DeliverabilityChecker, "_query_records", side_effect=self._dns({
+            ("send.maisongrozavu.com", "TXT"): [], ("send.maisongrozavu.com", "MX"): [],
+            ("_dmarc.maisongrozavu.com", "TXT"): ["v=DMARC1; p=none"]})):
+            res = await DeliverabilityChecker(domain="maisongrozavu.com").audit_domain("maisongrozavu.com")
+        self.assertEqual(res["checks"]["spf"]["status"], "missing")
+        self.assertEqual(res["checks"]["mx"]["status"], "missing")
+        self.assertEqual(res["checks"]["dkim"]["status"], "ok")
+        hosts = " ".join(str(r) for r in res["records_to_add"])
+        self.assertIn("send", hosts)
+        self.assertIn("amazonses.com", hosts)
 
-        self.assertEqual(res["score"], 65)  # 35 points deducted for missing SPF
-        self.assertFalse(res["checks"]["spf"]["configured"])
-        self.assertEqual(len(res["missing_records"]), 1)
-        self.assertIn("v=spf1", res["missing_records"][0]["recommended_value"])
+    async def test_dns_unreachable_is_unknown_not_missing(self):
+        from deliverability_checker import DNSLookupError
+
+        async def boom(name, rtype="TXT"):
+            raise DNSLookupError("resolvers unreachable")
+        with patch.object(DeliverabilityChecker, "_query_records", side_effect=boom):
+            res = await DeliverabilityChecker(domain="maisongrozavu.com").audit_domain("maisongrozavu.com")
+        self.assertEqual(res["checks"]["spf"]["status"], "unknown")
+        self.assertIsNone(res["score"])
 
 
 class TestE2EEndpoints(unittest.TestCase):
     def setUp(self):
-        self.client = TestClient(app)
+        self.client = TestClient(app, headers=AUTH_HEADERS)
+
+    def _real_products(self):
+        return [{"id": 7, "title": "Grozavu Boxy Tee", "handle": "grozavu-boxy-tee", "status": "active",
+                 "body_html": "<p>170 g/m² boxy tee.</p>", "options": [{"name": "Size", "position": 1}],
+                 "images": [{"src": "https://cdn.shopify.com/tee.jpg"}],
+                 "variants": [{"id": 70, "price": "45.00", "option1": "M"}, {"id": 71, "price": "45.00", "option1": "L"}]}]
+
+    def _patched(self):
+        fake = MagicMock()
+        fake.get_active_products = AsyncMock(return_value=self._real_products())
+        main_mod._FEED_CACHE.clear()
+        return (patch.object(main_mod, "get_shop_or_404", return_value={"shop": "maisongrozavu.myshopify.com",
+                                                                        "access_token": "shpat_0123456789abcdef"}),
+                patch.object(main_mod, "ShopifyClient", return_value=fake))
+
+    def test_google_merchant_feed_unavailable_without_shopify(self):
+        """Without a Shopify connection the feed answers 503 (Google retries) instead of fake products."""
+        main_mod._FEED_CACHE.clear()
+        with patch.object(main_mod, "get_shop_or_404", return_value={"shop": "maisongrozavu.myshopify.com", "access_token": ""}):
+            resp = self.client.get("/api/google/feed.xml")
+        self.assertEqual(resp.status_code, 503)
 
     def test_google_merchant_feed_xml_endpoint(self):
         """Test GET /api/google/feed.xml returns valid XML with application/xml header."""
-        resp = self.client.get("/api/google/feed.xml")
+        p1, p2 = self._patched()
+        with p1, p2:
+            resp = self.client.get("/api/google/feed.xml")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("application/xml", resp.headers.get("content-type", ""))
         self.assertIn("<rss xmlns:g=\"http://base.google.com/ns/1.0\"", resp.text)
@@ -270,7 +298,9 @@ class TestE2EEndpoints(unittest.TestCase):
 
     def test_google_merchant_validation_endpoint(self):
         """Test GET /api/google/feed-validation returns valid spec status."""
-        resp = self.client.get("/api/google/feed-validation")
+        p1, p2 = self._patched()
+        with p1, p2:
+            resp = self.client.get("/api/google/feed-validation")
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertTrue(data.get("valid"))
@@ -287,9 +317,9 @@ class TestE2EEndpoints(unittest.TestCase):
     def test_unsubscribe_endpoint_renders_html_and_opts_out(self):
         """Test GET /api/unsubscribe records opt-out and displays confirmation."""
         unsub_email = f"unsub_{datetime.now().timestamp()}@test.ro"
-        resp = self.client.get(f"/api/unsubscribe?email={unsub_email}&shop=maisongrozavu.myshopify.com")
+        resp = self.client.get(f"/api/unsubscribe?email={unsub_email}&shop=maisongrozavu.myshopify.com&lang=ro")
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("Maison Grozavu", resp.text)
+        self.assertIn("Grozavu", resp.text)
         self.assertIn("Te-ai dezabonat cu succes", resp.text)
 
         # Verify DB is updated

@@ -5,12 +5,42 @@ Supports:
 2. Twilio WhatsApp API (HTTP Basic Auth)
 3. Generic Custom Webhook Gateway
 4. Canonical 1-Click Fallback Link (https://wa.me/{clean_phone}?text={quote(message)})
+
+Compliance:
+- Marketing messages (default message_type="marketing") are only sent when SMS/WhatsApp
+  marketing consent is recorded for that normalized phone (database.is_consent_given with
+  channel="whatsapp"); email consent never authorizes WhatsApp. A localized opt-out line
+  ("Reply STOP to opt out") is appended. Use message_type="transactional" only for
+  non-marketing messages (e.g. a merchant test message to the merchant's own phone).
+- A wa.me link is NOT a send: such results are success=False, status="manual_link".
+- success=True only when a provider API accepted the message (status="sent").
 """
 
 import os
 import urllib.parse
 from typing import Dict, Optional, Any
 import httpx
+
+# Jarvis has no inbound WhatsApp webhook, so a "reply STOP" promise would be false.
+# The opt-out line links to the same unsubscribe endpoint used by emails (?phone=...).
+OPT_OUT_LINES: Dict[str, str] = {
+    "en": "To stop these messages: {url}",
+    "es": "Para no recibir más mensajes: {url}",
+    "ro": "Ca să nu mai primești mesaje: {url}",
+    "it": "Per non ricevere più messaggi: {url}",
+    "fr": "Pour ne plus recevoir de messages : {url}",
+    "de": "Keine Nachrichten mehr erhalten: {url}",
+}
+
+
+def build_phone_unsubscribe_url(shop: Optional[str], phone_digits: str) -> str:
+    base = (os.getenv("APP_URL") or os.getenv("RENDER_EXTERNAL_URL") or "https://shopify-jarvis.onrender.com").strip().rstrip("/")
+    params = [("phone", phone_digits or "")]
+    if shop:
+        params.append(("shop", str(shop).strip().lower()))
+    return f"{base}/api/unsubscribe?{urllib.parse.urlencode(params)}"
+
+_COUNTRY_LANG = (("34", "es"), ("40", "ro"), ("39", "it"), ("33", "fr"), ("49", "de"), ("43", "de"), ("41", "de"))
 
 try:
     import database as db
@@ -39,38 +69,49 @@ class WhatsAppDispatcher:
     def clean_phone_number(self, phone: Optional[str]) -> str:
         """
         Sanitize phone number to standard international format (without + or spaces).
-        - Strips all non-digit characters.
-        - Strips leading international double zero (e.g., 0039 -> 39).
-        - Automatically normalizes local prefixes for Italy (3xx -> 393xx),
-          Spain (6xx/7xx -> 346xx), Romania (07xx -> 407xx), Germany (01xx -> 491xx).
+        Same canonical form as database.normalize_phone (used as consent / opt-out key):
+        - Strips all non-digit characters and a leading international '00'.
+        - Normalizes national prefixes for Italy (3xx -> 393xx), Spain (6xx/7xx -> 346xx),
+          Romania (07xx -> 407xx), Germany (01xx -> 491xx).
         """
         if not phone or not isinstance(phone, str):
             return ""
-
-        # Extract only digits
+        if db is not None and hasattr(db, "normalize_phone"):
+            return db.normalize_phone(phone) or ""
         cleaned = "".join(ch for ch in phone if ch.isdigit())
-
-        # Strip leading double-zero international dial prefix (0039... -> 39...)
         if cleaned.startswith("00"):
             cleaned = cleaned[2:]
-
-        # If Italian mobile without country code (starts with 3, 10 digits)
         if len(cleaned) == 10 and cleaned.startswith("3"):
             return "39" + cleaned
-
-        # If Spanish mobile without country code (starts with 6 or 7, 9 digits)
         if len(cleaned) == 9 and cleaned[0] in ("6", "7"):
             return "34" + cleaned
-
-        # If Romanian mobile (starts with 07, 10 digits)
         if len(cleaned) == 10 and cleaned.startswith("07"):
             return "40" + cleaned[1:]
-
-        # If German mobile (starts with 015, 016, 017, length 11 or 12)
         if cleaned.startswith("01") and len(cleaned) in (11, 12):
             return "49" + cleaned[1:]
-
         return cleaned
+
+    @staticmethod
+    def opt_out_line(lang: Optional[str] = None, phone_digits: str = "", shop: Optional[str] = None) -> str:
+        """Localized opt-out line with a working unsubscribe link (language from lang, else phone country code)."""
+        clean = (lang or "").strip().lower().replace("_", "-").split("-")[0]
+        if clean not in OPT_OUT_LINES:
+            clean = ""
+            for prefix, code in _COUNTRY_LANG:
+                if phone_digits.startswith(prefix):
+                    clean = code
+                    break
+        template = OPT_OUT_LINES.get(clean or "en", OPT_OUT_LINES["en"])
+        return template.format(url=build_phone_unsubscribe_url(shop, phone_digits))
+
+    @classmethod
+    def with_opt_out(cls, message: str, lang: Optional[str] = None, phone_digits: str = "",
+                     shop: Optional[str] = None) -> str:
+        line = cls.opt_out_line(lang, phone_digits, shop)
+        text = (message or "").rstrip()
+        if "/api/unsubscribe?" in text:
+            return text
+        return f"{text}\n\n{line}" if text else line
 
     def generate_wa_me_link(self, phone: str, message: str) -> str:
         """
@@ -95,14 +136,15 @@ class WhatsAppDispatcher:
 
         def resolve_val(keys: list, env_var: str, default: str = "") -> str:
             # 1. Check explicit settings passed in call
+            # (an empty stored value means "not set", so the env var can still apply)
             if settings:
                 for k in keys:
-                    if k in settings and settings[k] is not None:
+                    if k in settings and settings[k] is not None and str(settings[k]).strip():
                         return str(settings[k]).strip()
             # 2. Check DB settings for this store
             if db_settings:
                 for k in keys:
-                    if k in db_settings and db_settings[k] is not None:
+                    if k in db_settings and db_settings[k] is not None and str(db_settings[k]).strip():
                         return str(db_settings[k]).strip()
             # 3. Check environment variable fallback
             return os.getenv(env_var, default).strip()
@@ -202,29 +244,77 @@ class WhatsAppDispatcher:
         phone: str,
         message: str,
         settings: Optional[Dict] = None,
-        customer_name: Optional[str] = None
+        customer_name: Optional[str] = None,
+        shop_domain: Optional[str] = None,
+        message_type: str = "marketing",
+        lang: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Autonomously dispatch WhatsApp message with multi-tenant settings and waterfall routing:
-        1. auto: Meta Cloud API -> Twilio API -> Webhook -> wa.me link
-        2. meta: Meta Cloud API -> wa.me link fallback on failure
-        3. twilio: Twilio API -> wa.me link fallback on failure
-        4. webhook: Webhook -> wa.me link fallback on failure
+        Dispatch a WhatsApp message with multi-tenant settings and waterfall routing:
+        1. auto: Meta Cloud API -> Twilio API -> Webhook -> wa.me link (manual, NOT a send)
+        2. meta / twilio / webhook: that provider only, wa.me link kept for manual use on failure
+        Marketing (default) requires WhatsApp consent for the normalized phone in the shop
+        (shop_domain or settings["shop"]) and gets a localized STOP opt-out line.
+        Result always has success (True only when a provider API accepted it), status, reason.
         """
+        result = await self._send_message_inner(phone, message, settings, customer_name, shop_domain, message_type, lang)
+        result.setdefault("success", False)
+        result["ok"] = bool(result.get("success"))
+        result.setdefault("status", "sent" if result["success"] else "failed")
+        result.setdefault("reason", "sent" if result["success"] else (result.get("error") or result.get("notice") or "not_sent"))
+        return result
+
+    async def _send_message_inner(
+        self,
+        phone: str,
+        message: str,
+        settings: Optional[Dict],
+        customer_name: Optional[str],
+        shop_domain: Optional[str],
+        message_type: str,
+        lang: Optional[str],
+    ) -> Dict[str, Any]:
         # 1. Phone sanitization and length validation
         clean_phone = self.clean_phone_number(phone)
         if not clean_phone or len(clean_phone) < 8:
             return {
                 "ok": False,
                 "success": False,
+                "status": "invalid_phone",
                 "provider": "none",
                 "gateway": "none",
                 "error": "Număr de telefon invalid sau prea scurt",
+                "reason": "invalid_phone",
                 "wa_me_url": None,
                 "wa_link": None
             }
 
-        # 2. Canonical wa.me link generated upfront for fallback availability
+        # 2. Consent gate for marketing (email consent never authorizes WhatsApp)
+        is_marketing = (message_type or "marketing").strip().lower() != "transactional"
+        if is_marketing:
+            shop = shop_domain or ((settings or {}).get("shop") if isinstance(settings, dict) else None)
+            consent = False
+            if shop and db is not None:
+                try:
+                    consent = bool(db.is_consent_given(shop, phone=clean_phone, channel="whatsapp"))
+                except Exception as consent_err:
+                    print(f"[WhatsApp Consent Check Error]: {type(consent_err).__name__}")
+                    consent = False
+            if not consent:
+                return {
+                    "ok": False,
+                    "success": False,
+                    "status": "blocked_no_consent",
+                    "provider": "none",
+                    "gateway": "none",
+                    "reason": "no_whatsapp_marketing_consent" if shop else "no_shop_for_consent_check",
+                    "error": "WhatsApp marketing requires recorded WhatsApp/SMS consent for this phone",
+                    "wa_me_url": None,
+                    "wa_link": None,
+                }
+            message = self.with_opt_out(message, lang, clean_phone, shop)
+
+        # 3. Canonical wa.me link generated upfront for manual fallback (not a send)
         wa_fallback_link = self.generate_wa_me_link(phone, message)
 
         # 3. Resolve effective credentials for this store/call
@@ -343,15 +433,17 @@ class WhatsAppDispatcher:
                 except Exception as e:
                     last_error = f"Webhook exception: {str(e)}"
 
-            # Step 4: Final Fallback -> Canonical wa.me 1-click link
+            # Step 4: Final Fallback -> Canonical wa.me 1-click link (manual — nothing was sent)
             return {
                 "ok": False,
                 "success": False,
+                "status": "manual_link",
                 "provider": "wa_me",
                 "gateway": "wa_me_link",
                 "wa_me_url": wa_fallback_link,
                 "wa_link": wa_fallback_link,
-                "notice": "WhatsApp 1-click fallback link ready. Configure Meta Cloud API or Twilio credentials in settings for automated cloud dispatch.",
+                "reason": last_error or "no_whatsapp_provider_configured",
+                "notice": "Nimic nu a fost trimis automat: link wa.me pregătit pentru trimitere manuală. Configurează Meta Cloud API sau Twilio pentru expediere automată.",
                 "error": last_error
             }
         except Exception as outer_err:
@@ -370,14 +462,17 @@ class WhatsAppDispatcher:
         phone: str,
         customer_name: str,
         message: str,
-        settings: Optional[Dict] = None
+        settings: Optional[Dict] = None,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         """
-        Backward-compatible method signature delegating to send_message.
+        Backward-compatible method signature delegating to send_message
+        (accepts shop_domain / message_type / lang keyword arguments).
         """
         return await self.send_message(
             phone=phone,
             message=message,
             settings=settings,
-            customer_name=customer_name
+            customer_name=customer_name,
+            **kwargs
         )

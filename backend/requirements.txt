@@ -1,8 +1,7 @@
-fastapi
-uvicorn[standard]
-httpx
-psycopg2-binary
-google-generativeai
-python-jose[cryptography]
-python-dotenv
-pydantic
+# Pinned to the versions the test suite was run with (Python 3.11 = Render, 3.14 = local).
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+httpx==0.28.1
+psycopg2-binary==2.9.13
+pydantic==2.14.2
+tzdata==2026.6

@@ -29,6 +29,10 @@ if BACKEND_DIR not in sys.path:
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+try:
+    from tests.auth_helpers import AUTH_HEADERS, webhook_headers, auth_headers, block_network  # noqa: E402
+except ImportError:  # running with tests/ as top-level dir
+    from auth_helpers import AUTH_HEADERS, webhook_headers, auth_headers, block_network  # noqa: E402
 import database as db
 from main import app, autopilot_daemon_loop
 from starlette.testclient import TestClient
@@ -54,7 +58,7 @@ class TestAdversarialMalformedRequests(unittest.TestCase):
     def setUp(self):
         self.shop = "adversarial-shop.myshopify.com"
         db.upsert_shop(self.shop, "shpat_live_token", "Adversarial Shop")
-        self.client = TestClient(app)
+        self.client = TestClient(app, headers=AUTH_HEADERS)
 
     def test_post_endpoints_empty_body(self):
         """Verify all POST endpoints handle empty request bodies without HTTP 500."""
@@ -85,7 +89,10 @@ class TestAdversarialMalformedRequests(unittest.TestCase):
                 res.status_code, 500,
                 f"Endpoint {ep} crashed with HTTP 500 on empty body! Response: {res.text}"
             )
-            self.assertIn(res.status_code, [200, 400, 422])
+            if ep.startswith("/webhooks/"):
+                self.assertEqual(res.status_code, 401, ep)  # unsigned deliveries are rejected
+            else:
+                self.assertIn(res.status_code, [200, 400, 422])
 
     def test_post_endpoints_malformed_json_syntax(self):
         """Verify all POST endpoints reject invalid JSON syntax gracefully without HTTP 500."""
@@ -122,7 +129,10 @@ class TestAdversarialMalformedRequests(unittest.TestCase):
                     res.status_code, 500,
                     f"Endpoint {ep} crashed with HTTP 500 on malformed body {bad_body[:20]}! Response: {res.text}"
                 )
-                self.assertIn(res.status_code, [200, 400, 422])
+                if ep.startswith("/webhooks/"):
+                    self.assertEqual(res.status_code, 401, ep)
+                else:
+                    self.assertIn(res.status_code, [200, 400, 422])
 
     def test_post_endpoints_type_confusion_and_nulls(self):
         """Verify endpoints gracefully handle type mismatches (strings for booleans, ints for strings)."""
@@ -206,7 +216,7 @@ class TestAdversarialHeadersAndMiddleware(unittest.TestCase):
     def setUp(self):
         self.shop = "header-attack.myshopify.com"
         db.upsert_shop(self.shop, "shpat_live_token", "Header Attack Shop")
-        self.client = TestClient(app)
+        self.client = TestClient(app, headers=AUTH_HEADERS)
 
     def test_missing_and_corrupt_content_type(self):
         """Verify posting JSON with corrupt or missing Content-Type does not raise 500."""
@@ -285,7 +295,12 @@ class TestAdversarialHeadersAndMiddleware(unittest.TestCase):
                     res.status_code, 500,
                     f"Webhook {route} crashed on HMAC probe '{probe}' with HTTP 500! Response: {res.text}"
                 )
-                self.assertEqual(res.status_code, 200)
+                self.assertEqual(res.status_code, 401, f"{route} accepted a forged HMAC probe {probe!r}")
+            # A correctly signed delivery is accepted
+            if route not in ("/webhooks/app/uninstalled", "/webhooks/shop/redact"):
+                body = json.dumps(sample_payload).encode()
+                res = self.client.post(route, content=body, headers=webhook_headers(body, self.shop))
+                self.assertEqual(res.status_code, 200, route)
 
 
 class TestAdversarialMissingEnvironmentVariables(unittest.TestCase):
@@ -301,7 +316,7 @@ class TestAdversarialMissingEnvironmentVariables(unittest.TestCase):
     def setUp(self):
         self.shop = "zero-keys-chaos.myshopify.com"
         db.upsert_shop(self.shop, "", "Zero Keys Shop")
-        self.client = TestClient(app)
+        self.client = TestClient(app, headers=AUTH_HEADERS)
 
     def test_all_endpoints_with_cleared_env(self):
         """Wipe all operational environment variables and exercise all core endpoints."""
@@ -386,7 +401,7 @@ class TestAdversarialTimeoutsAndNetworkFailures(unittest.TestCase):
     def setUp(self):
         self.shop = "timeout-test.myshopify.com"
         db.upsert_shop(self.shop, "shpat_live_configured_token_123", "Timeout Shop")
-        self.client = TestClient(app)
+        self.client = TestClient(app, headers=AUTH_HEADERS)
 
     def test_shopify_graphql_timeout_on_billing_create(self):
         """Simulate httpx.TimeoutException on Shopify GraphQL subscription creation."""
@@ -488,7 +503,7 @@ class TestAdversarialConcurrencyAndDaemonRaces(unittest.TestCase):
     def setUp(self):
         self.shop = "concurrency-test.myshopify.com"
         db.upsert_shop(self.shop, "shpat_live_token", "Concurrency Shop")
-        self.client = TestClient(app)
+        self.client = TestClient(app, headers=AUTH_HEADERS)
 
     def test_concurrent_api_traffic_and_background_sync(self):
         """
@@ -643,6 +658,20 @@ class TestStaticMountEdgeCases(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+
+
+_NETWORK_GUARD = None
+
+
+def setUpModule():
+    """Hermetic: no real HTTP calls (Shopify, Google, Resend, Telegram...) from this module."""
+    global _NETWORK_GUARD
+    _NETWORK_GUARD = block_network()
+
+
+def tearDownModule():
+    if _NETWORK_GUARD:
+        _NETWORK_GUARD.stop()
 
 if __name__ == "__main__":
     unittest.main()

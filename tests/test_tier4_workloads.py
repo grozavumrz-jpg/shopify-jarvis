@@ -17,7 +17,8 @@ from tests.helpers import (
     HAS_POST_DELIVERY, PostDeliveryService,
     HAS_MOBILE_NOTIFIER, MobileNotifier,
     make_sample_line_item, make_sample_checkout,
-    make_sample_order, make_sample_shop_settings
+    make_sample_order, make_sample_shop_settings,
+    send_transport,
 )
 
 
@@ -211,7 +212,7 @@ class TestTier4RealWorldWorkloads(unittest.TestCase):
             }
             # Simulate network timeout
             with patch("httpx.AsyncClient.post", side_effect=Exception("Transient Network Failure")):
-                res = asyncio.run(dispatcher.send_message("+40721123456", "Recovery message", settings=settings))
+                res = asyncio.run(send_transport(dispatcher, "+40721123456", "Recovery message", settings=settings))
                 self.assertIsNotNone(res)
                 # Fallback wa.me link must still be available
                 self.assertIsNotNone(res.get("wa_me_url") or res.get("wa_link"))

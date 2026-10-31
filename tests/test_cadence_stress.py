@@ -735,18 +735,20 @@ class TestAdversarialDatabaseInvariants(unittest.TestCase):
             self.assertIn("stage_3_sent_at", executed_sql_3)
             self.assertIn("status = 'exhausted'", executed_sql_3)
 
-            # [EMPIRICAL ADVERSARIAL CHECK] Invalid stage 4 produces non-existent column
-            db.update_drip_stage("c_test", 4, now_dt)
-            executed_sql_4 = mock_cur.execute.call_args[0][0]
-            self.assertIn("stage_4_sent_at", executed_sql_4)
-            # In PostgreSQL schema, column stage_4_sent_at does NOT exist!
+            # W1 fix: invalid stage 4 (non-existent column stage_4_sent_at) is rejected
+            # before any SQL is built.
+            calls_before = mock_cur.execute.call_count
+            with self.assertRaises(ValueError):
+                db.update_drip_stage("c_test", 4, now_dt)
+            with self.assertRaises(ValueError):
+                db.update_drip_stage("c_test", "1; DROP TABLE x", now_dt)
+            self.assertEqual(mock_cur.execute.call_count, calls_before)
 
     def test_update_drip_stage_lacks_active_status_guard_adversarial(self):
         """
-        [EMPIRICAL ADVERSARIAL FINDING]
-        db.update_drip_stage has no 'AND status = active' filter in its WHERE clause.
-        If called with stage=3 on a checkout that was already converted,
-        it will overwrite status = 'exhausted', clobbering the 'converted' state.
+        W1 fix: db.update_drip_stage only touches ACTIVE checkouts ('AND status = 'active''),
+        so calling it with stage=3 on an already converted checkout can no longer
+        overwrite 'converted' with 'exhausted'.
         """
         with patch("database.get_conn") as mock_get_conn:
             mock_conn = MagicMock()
@@ -758,9 +760,7 @@ class TestAdversarialDatabaseInvariants(unittest.TestCase):
             db.update_drip_stage("c_converted_1", 3, now_dt)
             executed_sql = mock_cur.execute.call_args[0][0]
 
-            # Observe: SQL does NOT protect converted states
-            self.assertNotIn("status = 'active'", executed_sql)
-            self.assertNotIn("status NOT IN", executed_sql)
+            self.assertIn("AND status = 'active'", executed_sql)
 
     def test_upsert_preserves_converted_and_canceled_states(self):
         """
@@ -788,14 +788,14 @@ class TestAdversarialDatabaseInvariants(unittest.TestCase):
 
     def test_mark_order_converted_robustness_on_non_numeric_price(self):
         """
-        [EMPIRICAL ADVERSARIAL FINDING]
-        If Shopify order contains total_price with non-numeric value ('free' or '145,00'),
-        float(order_dict.get('total_price') or 0.0) raises ValueError without exception handling.
+        W1 fix: a non-numeric total_price ('free' / '145,00') no longer raises ValueError;
+        revenue falls back to 0.0 and reconciliation still runs.
         """
         cadence = DripCadenceManager()
         order_invalid = {"id": 100, "checkout_id": "c1", "total_price": "free"}
-        with self.assertRaises(ValueError):
-            cadence.mark_order_converted("shop.myshopify.com", order_invalid)
+        with patch("cadence_manager.db.mark_drip_converted", return_value=1) as mock_db:
+            self.assertTrue(cadence.mark_order_converted("shop.myshopify.com", order_invalid))
+            self.assertEqual(mock_db.call_args[1]["revenue"], 0.0)
 
 
 class TestTimezoneExtremesAndDatetimes(unittest.TestCase):

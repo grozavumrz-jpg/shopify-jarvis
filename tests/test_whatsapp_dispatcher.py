@@ -21,6 +21,7 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backend")))
 from whatsapp_dispatcher import WhatsAppDispatcher
+from tests.helpers import send_transport
 
 
 class TestWhatsAppDispatcherPhoneSanitization(unittest.TestCase):
@@ -99,7 +100,7 @@ class TestWhatsAppDispatcherProviderDispatch(unittest.TestCase):
     def test_send_message_invalid_phone_early_exit(self):
         """Invalid or too short phone numbers fail immediately without making network calls."""
         for invalid_phone in ["123", "abc", "", None, "+"]:
-            res = asyncio.run(self.dispatcher.send_message(invalid_phone, "Hello"))
+            res = asyncio.run(send_transport(self.dispatcher, invalid_phone, "Hello"))
             self.assertFalse(res.get("ok") or res.get("success"))
             self.assertIn("invalid", res.get("error", "").lower())
 
@@ -116,7 +117,7 @@ class TestWhatsAppDispatcherProviderDispatch(unittest.TestCase):
             mock_resp.json.return_value = {"messages": [{"id": "wamid.HBgM123456"}]}
             mock_post.return_value = mock_resp
 
-            res = asyncio.run(self.dispatcher.send_message("+40721123456", "Test message", settings=settings))
+            res = asyncio.run(send_transport(self.dispatcher, "+40721123456", "Test message", settings=settings))
 
             self.assertTrue(res.get("ok") or res.get("success"))
             self.assertEqual(res.get("provider"), "meta")
@@ -147,7 +148,7 @@ class TestWhatsAppDispatcherProviderDispatch(unittest.TestCase):
             mock_resp.json.return_value = {"error": {"message": "Re-engagement message failed", "code": 131047}}
             mock_post.return_value = mock_resp
 
-            res = asyncio.run(self.dispatcher.send_message("+40721123456", "Cart reminder", settings=settings))
+            res = asyncio.run(send_transport(self.dispatcher, "+40721123456", "Cart reminder", settings=settings))
 
             wa_link = res.get("wa_me_url") or res.get("wa_link")
             self.assertIsNotNone(wa_link)
@@ -167,7 +168,7 @@ class TestWhatsAppDispatcherProviderDispatch(unittest.TestCase):
             mock_resp.json.return_value = {"sid": "SM9988776655"}
             mock_post.return_value = mock_resp
 
-            res = asyncio.run(self.dispatcher.send_message("+393401234567", "Ciao Lorenzo", settings=settings))
+            res = asyncio.run(send_transport(self.dispatcher, "+393401234567", "Ciao Lorenzo", settings=settings))
 
             self.assertTrue(res.get("ok") or res.get("success"))
             self.assertEqual(res.get("provider"), "twilio")
@@ -194,7 +195,7 @@ class TestWhatsAppDispatcherProviderDispatch(unittest.TestCase):
             mock_resp.json.return_value = {"status": "queued"}
             mock_post.return_value = mock_resp
 
-            res = asyncio.run(self.dispatcher.send_message("+40721123456", "Webhook msg", settings=settings))
+            res = asyncio.run(send_transport(self.dispatcher, "+40721123456", "Webhook msg", settings=settings))
 
             self.assertTrue(res.get("ok") or res.get("success"))
             self.assertEqual(res.get("provider"), "webhook")
@@ -214,7 +215,7 @@ class TestWhatsAppDispatcherProviderDispatch(unittest.TestCase):
             mock_resp.json.return_value = {"messages": [{"id": "wamid_meta"}]}
             mock_post.return_value = mock_resp
 
-            res = asyncio.run(self.dispatcher.send_message("+40721123456", "Auto test", settings=settings))
+            res = asyncio.run(send_transport(self.dispatcher, "+40721123456", "Auto test", settings=settings))
 
             self.assertEqual(res.get("provider"), "meta")
 
@@ -234,7 +235,7 @@ class TestWhatsAppDispatcherProviderDispatch(unittest.TestCase):
             resp_twilio = MagicMock(status_code=201, json=lambda: {"sid": "SM_fallback"})
             mock_post.side_effect = [resp_meta, resp_twilio]
 
-            res = asyncio.run(self.dispatcher.send_message("+40721123456", "Auto test", settings=settings))
+            res = asyncio.run(send_transport(self.dispatcher, "+40721123456", "Auto test", settings=settings))
 
             self.assertEqual(res.get("provider"), "twilio")
             self.assertEqual(mock_post.call_count, 2)
@@ -247,7 +248,7 @@ class TestWhatsAppDispatcherProviderDispatch(unittest.TestCase):
             "twilio_account_sid": "",
             "whatsapp_webhook_url": ""
         }
-        res = asyncio.run(self.dispatcher.send_message("+40721123456", "Direct link test", settings=settings))
+        res = asyncio.run(send_transport(self.dispatcher, "+40721123456", "Direct link test", settings=settings))
 
         wa_link = res.get("wa_me_url") or res.get("wa_link")
         self.assertIsNotNone(wa_link)
@@ -264,8 +265,8 @@ class TestWhatsAppDispatcherProviderDispatch(unittest.TestCase):
                 MagicMock(status_code=200, json=lambda: {"messages": [{"id": "wamid_B"}]})
             ]
 
-            res_a = asyncio.run(self.dispatcher.send_message("+40721123456", "Msg A", settings=settings_a))
-            res_b = asyncio.run(self.dispatcher.send_message("+40721123456", "Msg B", settings=settings_b))
+            res_a = asyncio.run(send_transport(self.dispatcher, "+40721123456", "Msg A", settings=settings_a))
+            res_b = asyncio.run(send_transport(self.dispatcher, "+40721123456", "Msg B", settings=settings_b))
 
             self.assertEqual(res_a.get("provider"), "twilio")
             self.assertEqual(res_b.get("provider"), "meta")
@@ -274,7 +275,7 @@ class TestWhatsAppDispatcherProviderDispatch(unittest.TestCase):
         """httpx.TimeoutException is caught and structured response with wa.me fallback is returned."""
         settings = {"whatsapp_provider": "twilio", "twilio_account_sid": "AC_T", "twilio_auth_token": "TOK_T"}
         with patch("httpx.AsyncClient.post", side_effect=httpx.TimeoutException("Read timeout")):
-            res = asyncio.run(self.dispatcher.send_message("+40721123456", "Timeout test", settings=settings))
+            res = asyncio.run(send_transport(self.dispatcher, "+40721123456", "Timeout test", settings=settings))
 
             self.assertIsNotNone(res)
             self.assertFalse(res.get("ok", True))

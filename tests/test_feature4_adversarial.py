@@ -23,6 +23,7 @@ from backend.email_dispatcher import EmailDispatcher
 from backend.whatsapp_dispatcher import WhatsAppDispatcher
 from backend.mobile_notifier import MobileNotifier
 from tests.helpers import make_sample_order, make_sample_shop_settings
+from tests.helpers import EMAIL_SENT_OK, WA_SENT_OK, allow_vip_compliance
 
 
 class TestFeature4BoundaryPrecision(unittest.TestCase):
@@ -276,6 +277,7 @@ class TestFeature4CancellationAndRefundSuppression(unittest.TestCase):
     """Adversarial testing of cancellation, refund, and race condition suppression."""
 
     def setUp(self):
+        allow_vip_compliance(self)
         self.service = PostDeliveryService()
 
     def test_adv_sync_suppresses_cancelled_at(self):
@@ -363,6 +365,7 @@ class TestFeature4InputSanitizationAndExtremeValues(unittest.TestCase):
     """Adversarial testing of edge cases, Unicode, extreme prices, and missing contact info."""
 
     def setUp(self):
+        allow_vip_compliance(self)
         self.service = PostDeliveryService()
 
     def test_adv_unicode_and_emojis_in_customer_name(self):
@@ -385,7 +388,7 @@ class TestFeature4InputSanitizationAndExtremeValues(unittest.TestCase):
             self.assertIn("MGVIP15", msg)
 
     def test_adv_empty_and_none_customer_name_fallback(self):
-        """Empty or None customer names fallback safely to 'Client'."""
+        """Empty or None customer names fall back to a generic greeting (never 'Client')."""
         for empty_val in ["", None]:
             msg = PostDeliveryService.build_vip_message(
                 customer_name=empty_val,
@@ -393,13 +396,14 @@ class TestFeature4InputSanitizationAndExtremeValues(unittest.TestCase):
                 discount_code="MGVIP15",
                 lang="en"
             )
-            self.assertIn("Client", msg)
+            self.assertNotIn("Client", msg)
+            self.assertTrue(msg.startswith("Hi!"))
             self.assertIn("MGVIP15", msg)
 
     def test_adv_whitespace_customer_name_probe_unstripped(self):
         """
-        Probe vulnerability: Whitespace-only customer name '   ' is not stripped
-        in build_vip_message, resulting in unstripped whitespace 'Hi   !' instead of 'Client'.
+        Whitespace-only customer name '   ' is stripped (W1 fix): generic greeting 'Hi!',
+        no 'Hi    !' artefact and no placeholder 'Client'.
         """
         msg = PostDeliveryService.build_vip_message(
             customer_name="   ",
@@ -407,9 +411,9 @@ class TestFeature4InputSanitizationAndExtremeValues(unittest.TestCase):
             discount_code="MGVIP15",
             lang="en"
         )
-        # Empirically proves that 'Client' is NOT substituted because bool('   ') is True
         self.assertNotIn("Client", msg)
-        self.assertIn("Hi    !", msg)
+        self.assertNotIn("Hi    !", msg)
+        self.assertTrue(msg.startswith("Hi!"))
 
     def test_adv_html_injection_in_customer_name(self):
         """Customer name containing HTML/XSS script tags is safely handled."""
@@ -434,7 +438,7 @@ class TestFeature4InputSanitizationAndExtremeValues(unittest.TestCase):
         self.assertIn("&lt;script&gt;alert(&#x27;xss&#x27;)&lt;/script&gt;", html)
 
     def test_adv_empty_and_none_items_summary(self):
-        """Record with empty or None items_summary defaults safely to 'Selection'."""
+        """Record with empty items_summary uses the localized generic item word (it: 'articolo')."""
         record = {
             "order_id": "ord_empty_items",
             "order_number": "1099",
@@ -445,14 +449,14 @@ class TestFeature4InputSanitizationAndExtremeValues(unittest.TestCase):
             "items_summary": []
         }
         with patch.object(pds.db, "get_due_post_delivery_automations", return_value=[record]):
-            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock) as mock_mail:
+            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock, return_value=dict(EMAIL_SENT_OK)) as mock_mail:
                 with patch.object(pds.db, "mark_post_delivery_sent"):
                     with patch.object(pds.db, "save_autopilot_log"):
                         count = self.service.process_due_vip_automations("luxury.myshopify.com")
                         self.assertEqual(count, 1)
                         self.assertTrue(mock_mail.called)
                         body_text = mock_mail.call_args[1]["body_text"]
-                        self.assertIn("Selection", body_text)
+                        self.assertIn("il tuo articolo", body_text)
 
     def test_adv_corrupted_json_string_items_summary(self):
         """Record with corrupted JSON string items_summary doesn't crash and falls back safely."""
@@ -466,18 +470,18 @@ class TestFeature4InputSanitizationAndExtremeValues(unittest.TestCase):
             "items_summary": "{INVALID_JSON_STRING"
         }
         with patch.object(pds.db, "get_due_post_delivery_automations", return_value=[record]):
-            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock) as mock_mail:
+            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock, return_value=dict(EMAIL_SENT_OK)) as mock_mail:
                 with patch.object(pds.db, "mark_post_delivery_sent"):
                     with patch.object(pds.db, "save_autopilot_log"):
                         count = self.service.process_due_vip_automations("luxury.myshopify.com")
                         self.assertEqual(count, 1)
                         self.assertTrue(mock_mail.called)
-                        self.assertIn("Selection", mock_mail.call_args[1]["body_text"])
+                        self.assertIn("noul tău articol", mock_mail.call_args[1]["body_text"])
 
     def test_adv_string_items_summary_probe_attribute_error(self):
         """
-        Probe vulnerability: items_summary containing a list of strings (e.g. ['Silk Scarf'])
-        causes AttributeError: 'str' object has no attribute 'get' in process_due_vip_automations line 289.
+        items_summary containing a list of strings (e.g. ['Silk Scarf']) used to raise
+        AttributeError and abort the whole batch. W1 fix: strings are coerced to {"title": ...}.
         """
         record = {
             "order_id": "ord_str_items_probe",
@@ -489,11 +493,15 @@ class TestFeature4InputSanitizationAndExtremeValues(unittest.TestCase):
             "items_summary": ["Silk Scarf"]
         }
         with patch.object(pds.db, "get_due_post_delivery_automations", return_value=[record]):
-            with self.assertRaises(AttributeError):
-                self.service.process_due_vip_automations("luxury.myshopify.com")
+            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock, return_value=dict(EMAIL_SENT_OK)) as mock_mail:
+                with patch.object(pds.db, "mark_post_delivery_sent"):
+                    with patch.object(pds.db, "save_autopilot_log"):
+                        count = self.service.process_due_vip_automations("luxury.myshopify.com")
+                        self.assertEqual(count, 1)
+                        self.assertIn("Silk Scarf", mock_mail.call_args[1]["body_text"])
 
     def test_adv_missing_item_title_defaults_to_articol(self):
-        """Line items with missing/None title default safely to 'Articol'."""
+        """Line items with missing/None title are stored with an empty title (no invented name)."""
         order = make_sample_order(order_id="ord_no_title")
         order["line_items"] = [{"title": None, "name": None, "price": "150.00"}]
         with patch.object(pds, "ShopifyClient") as mock_client_cls:
@@ -506,7 +514,7 @@ class TestFeature4InputSanitizationAndExtremeValues(unittest.TestCase):
                     self.assertEqual(count, 1)
                     kwargs = mock_enqueue.call_args[1]
                     items = kwargs["items_summary"]
-                    self.assertEqual(items[0]["title"], "Articol")
+                    self.assertEqual(items[0]["title"], "")
 
     def test_adv_invalid_email_missing_at_symbol(self):
         """Email missing '@' symbol is skipped, phone is still dispatched."""
@@ -520,8 +528,8 @@ class TestFeature4InputSanitizationAndExtremeValues(unittest.TestCase):
             "items_summary": []
         }
         with patch.object(pds.db, "get_due_post_delivery_automations", return_value=[record]):
-            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock) as mock_mail:
-                with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock) as mock_wa:
+            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock, return_value=dict(EMAIL_SENT_OK)) as mock_mail:
+                with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock, return_value=dict(WA_SENT_OK)) as mock_wa:
                     with patch.object(pds.db, "mark_post_delivery_sent"):
                         with patch.object(pds.db, "save_autopilot_log"):
                             count = self.service.process_due_vip_automations("luxury.myshopify.com")
@@ -551,6 +559,7 @@ class TestFeature4StrictDiscountCodeMGVIP15(unittest.TestCase):
     """Adversarial verification that MGVIP15 discount code is strictly enforced everywhere."""
 
     def setUp(self):
+        allow_vip_compliance(self)
         self.service = PostDeliveryService()
 
     def test_adv_discount_code_constant_is_strictly_mgvip15(self):
@@ -594,7 +603,7 @@ class TestFeature4StrictDiscountCodeMGVIP15(unittest.TestCase):
         }
         with patch.object(pds.db, "get_due_post_delivery_automations", return_value=[record]):
             with patch.object(self.service.email_dispatcher, "build_html_email", wraps=self.service.email_dispatcher.build_html_email) as spy_build:
-                with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock) as mock_mail:
+                with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock, return_value=dict(EMAIL_SENT_OK)) as mock_mail:
                     with patch.object(pds.db, "mark_post_delivery_sent"):
                         with patch.object(pds.db, "save_autopilot_log"):
                             count = self.service.process_due_vip_automations("luxury.myshopify.com")
@@ -617,7 +626,7 @@ class TestFeature4StrictDiscountCodeMGVIP15(unittest.TestCase):
             "items_summary": [{"title": "Smoking Tuxedo"}]
         }
         with patch.object(pds.db, "get_due_post_delivery_automations", return_value=[record]):
-            with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock) as mock_wa:
+            with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock, return_value=dict(WA_SENT_OK)) as mock_wa:
                 with patch.object(pds.db, "mark_post_delivery_sent"):
                     with patch.object(pds.db, "save_autopilot_log"):
                         count = self.service.process_due_vip_automations("luxury.myshopify.com")
@@ -637,8 +646,8 @@ class TestFeature4StrictDiscountCodeMGVIP15(unittest.TestCase):
             "items_summary": [{"title": "Cashmere Sweater"}]
         }
         with patch.object(pds.db, "get_due_post_delivery_automations", return_value=[record]):
-            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock):
-                with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock):
+            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock, return_value=dict(EMAIL_SENT_OK)):
+                with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock, return_value=dict(WA_SENT_OK)):
                     with patch.object(self.service.mobile_notifier, "notify_merchant", new_callable=AsyncMock) as mock_notify:
                         with patch.object(pds.db, "mark_post_delivery_sent"):
                             with patch.object(pds.db, "save_autopilot_log"):
@@ -660,7 +669,7 @@ class TestFeature4StrictDiscountCodeMGVIP15(unittest.TestCase):
             "items_summary": []
         }
         with patch.object(pds.db, "get_due_post_delivery_automations", return_value=[record]):
-            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock):
+            with patch.object(self.service.email_dispatcher, "send_email", new_callable=AsyncMock, return_value=dict(EMAIL_SENT_OK)):
                 with patch.object(pds.db, "mark_post_delivery_sent"):
                     with patch.object(pds.db, "save_autopilot_log") as mock_log:
                         count = self.service.process_due_vip_automations("luxury.myshopify.com")

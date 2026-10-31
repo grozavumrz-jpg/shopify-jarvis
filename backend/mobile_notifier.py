@@ -273,7 +273,8 @@ class MobileNotifier:
                     sanitized_fields.append(f)
             sanitized_embed["fields"] = sanitized_fields
 
-        payload = {"embeds": [sanitized_embed], "parse_mode": "HTML"}
+        # Discord webhooks use Markdown in embeds; there is no parse_mode field.
+        payload = {"embeds": [sanitized_embed]}
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:

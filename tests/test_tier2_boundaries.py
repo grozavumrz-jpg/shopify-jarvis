@@ -19,7 +19,8 @@ from tests.helpers import (
     HAS_POST_DELIVERY, PostDeliveryService,
     HAS_MOBILE_NOTIFIER, MobileNotifier,
     make_sample_line_item, make_sample_checkout,
-    make_sample_order, make_sample_shop_settings
+    make_sample_order, make_sample_shop_settings,
+    send_transport,
 )
 
 
@@ -193,7 +194,7 @@ class TestTier2Feature3WhatsAppBoundaries(unittest.TestCase):
                 self.assertFalse(res.get("success"), f"Should fail for phone: {invalid_p}")
         else:
             for invalid_p in ["123", "abc", "", None, "+"]:
-                res = asyncio.run(self.dispatcher.send_message(invalid_p, "Test message"))
+                res = asyncio.run(send_transport(self.dispatcher, invalid_p, "Test message"))
                 self.assertFalse(res.get("ok") or res.get("success"), f"Should fail for phone: {invalid_p}")
 
     def test_f3_b02_international_prefix_variations(self):
@@ -228,7 +229,7 @@ class TestTier2Feature3WhatsAppBoundaries(unittest.TestCase):
             mock_resp.json.return_value = {"error": {"message": "Re-engagement message failed", "code": 131047}}
             mock_post.return_value = mock_resp
 
-            res = asyncio.run(self.dispatcher.send_message("+40721123456", "Hello", settings=settings))
+            res = asyncio.run(send_transport(self.dispatcher, "+40721123456", "Hello", settings=settings))
             wa_url = res.get("wa_me_url") or res.get("wa_link")
             self.assertIsNotNone(wa_url, "Must fallback to wa.me link on 24h window rejection")
 
@@ -242,7 +243,7 @@ class TestTier2Feature3WhatsAppBoundaries(unittest.TestCase):
             "twilio_auth_token": "TOK_timeout"
         }
         with patch("httpx.AsyncClient.post", side_effect=httpx.TimeoutException("Connection timed out")):
-            res = asyncio.run(self.dispatcher.send_message("+40721123456", "Hello", settings=settings))
+            res = asyncio.run(send_transport(self.dispatcher, "+40721123456", "Hello", settings=settings))
             self.assertIsNotNone(res)
             # Must not crash and should offer wa.me fallback
             wa_url = res.get("wa_me_url") or res.get("wa_link")

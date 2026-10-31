@@ -6,3 +6,4 @@ __pycache__/
 .env
 .agents/
 *.db
+_backup_before_claude_*/

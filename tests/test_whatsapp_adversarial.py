@@ -31,6 +31,7 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backend")))
 from whatsapp_dispatcher import WhatsAppDispatcher
+from tests.helpers import send_transport
 
 
 class TestAdversarialPhoneNormalization(unittest.TestCase):
@@ -84,7 +85,7 @@ class TestAdversarialPhoneNormalization(unittest.TestCase):
 
         # send_message must reject all of these (< 8 digits)
         for invalid in ["12345", "non-digit strings", None, "   ", "+", ""]:
-            res = asyncio.run(self.dispatcher.send_message(invalid, "Adversarial test"))
+            res = asyncio.run(send_transport(self.dispatcher, invalid, "Adversarial test"))
             self.assertFalse(res.get("ok"))
             self.assertFalse(res.get("success"))
             self.assertEqual(res.get("provider"), "none")
@@ -172,8 +173,8 @@ class TestAdversarialMultiTenantIsolation(unittest.TestCase):
             resp_meta = MagicMock(status_code=200, json=lambda: {"messages": [{"id": "WAMID_STORE_B_SUCCESS"}]})
             mock_post.side_effect = [resp_twilio, resp_meta]
 
-            res_a = asyncio.run(self.dispatcher.send_message("+393401234567", "Message for Store A", settings=settings_store_a))
-            res_b = asyncio.run(self.dispatcher.send_message("+40721123456", "Message for Store B", settings=settings_store_b))
+            res_a = asyncio.run(send_transport(self.dispatcher, "+393401234567", "Message for Store A", settings=settings_store_a))
+            res_b = asyncio.run(send_transport(self.dispatcher, "+40721123456", "Message for Store B", settings=settings_store_b))
 
             # Verify Store A result
             self.assertTrue(res_a.get("ok"))
@@ -213,7 +214,7 @@ class TestAdversarialMultiTenantIsolation(unittest.TestCase):
             "twilio_account_sid": ""
         }
         with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
-            res_c = asyncio.run(self.dispatcher.send_message("+40721123456", "Message for Store C", settings=settings_store_c))
+            res_c = asyncio.run(send_transport(self.dispatcher, "+40721123456", "Message for Store C", settings=settings_store_c))
 
             # Must not have made any HTTP requests
             mock_post.assert_not_called()
@@ -245,7 +246,7 @@ class TestAdversarialWaterfallFailover(unittest.TestCase):
             resp_twilio_201 = MagicMock(status_code=201, json=lambda: {"sid": "SM_TWILIO_BACKUP"})
             mock_post.side_effect = [resp_meta_401, resp_twilio_201]
 
-            res = asyncio.run(self.dispatcher.send_message("+40721123456", "Cart reminder", settings=self.auto_settings))
+            res = asyncio.run(send_transport(self.dispatcher, "+40721123456", "Cart reminder", settings=self.auto_settings))
 
             self.assertTrue(res.get("ok"))
             self.assertEqual(res.get("provider"), "twilio")
@@ -259,7 +260,7 @@ class TestAdversarialWaterfallFailover(unittest.TestCase):
             resp_twilio_201 = MagicMock(status_code=201, json=lambda: {"sid": "SM_TWILIO_RECOVER"})
             mock_post.side_effect = [resp_meta_500, resp_twilio_201]
 
-            res = asyncio.run(self.dispatcher.send_message("+40721123456", "Cart reminder", settings=self.auto_settings))
+            res = asyncio.run(send_transport(self.dispatcher, "+40721123456", "Cart reminder", settings=self.auto_settings))
 
             self.assertTrue(res.get("ok"))
             self.assertEqual(res.get("provider"), "twilio")
@@ -271,7 +272,7 @@ class TestAdversarialWaterfallFailover(unittest.TestCase):
             resp_twilio_201 = MagicMock(status_code=201, json=lambda: {"sid": "SM_TWILIO_TIMEOUT_RESCUE"})
             mock_post.side_effect = [httpx.TimeoutException("Meta request timed out"), resp_twilio_201]
 
-            res = asyncio.run(self.dispatcher.send_message("+40721123456", "Cart reminder", settings=self.auto_settings))
+            res = asyncio.run(send_transport(self.dispatcher, "+40721123456", "Cart reminder", settings=self.auto_settings))
 
             self.assertTrue(res.get("ok"))
             self.assertEqual(res.get("provider"), "twilio")
@@ -283,7 +284,7 @@ class TestAdversarialWaterfallFailover(unittest.TestCase):
             resp_twilio_201 = MagicMock(status_code=201, json=lambda: {"sid": "SM_TWILIO_NET_RESCUE"})
             mock_post.side_effect = [httpx.ConnectError("Connection refused by Meta proxy"), resp_twilio_201]
 
-            res = asyncio.run(self.dispatcher.send_message("+40721123456", "Cart reminder", settings=self.auto_settings))
+            res = asyncio.run(send_transport(self.dispatcher, "+40721123456", "Cart reminder", settings=self.auto_settings))
 
             self.assertTrue(res.get("ok"))
             self.assertEqual(res.get("provider"), "twilio")
@@ -303,7 +304,7 @@ class TestAdversarialWaterfallFailover(unittest.TestCase):
             resp_webhook_500 = MagicMock(status_code=500, text="Webhook 500")
             mock_post.side_effect = [resp_meta_500, resp_twilio_500, resp_webhook_500]
 
-            res = asyncio.run(self.dispatcher.send_message("+40721123456", "Emergency reminder", settings=full_settings))
+            res = asyncio.run(send_transport(self.dispatcher, "+40721123456", "Emergency reminder", settings=full_settings))
 
             self.assertFalse(res.get("ok"))
             self.assertEqual(res.get("provider"), "wa_me")
@@ -324,7 +325,7 @@ class TestAdversarialWaterfallFailover(unittest.TestCase):
             mock_resp = MagicMock(status_code=401, text="Unauthorized token")
             mock_post.return_value = mock_resp
 
-            res = asyncio.run(self.dispatcher.send_message("+40721123456", "Explicit meta test", settings=settings))
+            res = asyncio.run(send_transport(self.dispatcher, "+40721123456", "Explicit meta test", settings=settings))
 
             self.assertFalse(res.get("ok"))
             self.assertEqual(res.get("provider"), "meta")

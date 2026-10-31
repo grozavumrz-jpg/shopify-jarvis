@@ -33,7 +33,9 @@ from tests.helpers import (
     make_sample_line_item,
     make_sample_checkout,
     make_sample_order,
-    make_sample_shop_settings
+    make_sample_shop_settings,
+    send_transport,
+    EMAIL_SENT_OK, WA_SENT_OK, allow_vip_compliance,
 )
 
 
@@ -198,7 +200,7 @@ class TestTier5EmailShowcaseAdversarial(unittest.TestCase):
             discount_code=None
         )
         self.assertNotIn("CADENCE DISCOUNT CARD", html_s1)
-        self.assertNotIn("RESERVED DISCOUNT CODE", html_s1)
+        self.assertNotIn("YOUR DISCOUNT CODE", html_s1)
 
         # Stage 2: MG10
         html_s2 = EmailDispatcher.build_html_email(
@@ -270,12 +272,12 @@ class TestTier5EmailShowcaseAdversarial(unittest.TestCase):
         en, ro, it, es, de, fr.
         """
         lang_checks = {
-            "en": "YOUR RESERVED SELECTION",
-            "ro": "PRODUSELE TALE REZERVATE",
-            "it": "I TUOI ARTICOLI RISERVATI",
-            "es": "TUS ARTÍCULOS RESERVADOS",
-            "de": "DEINE RESERVIERTE AUSWAHL",
-            "fr": "VOTRE SÉLECTION RÉSERVÉE",
+            "en": "ITEMS IN YOUR CART",
+            "ro": "PRODUSELE DIN COȘUL TĂU",
+            "it": "GLI ARTICOLI NEL TUO CARRELLO",
+            "es": "LOS ARTÍCULOS DE TU CARRITO",
+            "de": "ARTIKEL IN DEINEM WARENKORB",
+            "fr": "LES ARTICLES DE VOTRE PANIER",
         }
 
         for lang, expected_header in lang_checks.items():
@@ -469,7 +471,7 @@ class TestTier5WhatsAppAdversarial(unittest.TestCase):
             self.assertEqual(cleaned, expected_clean, f"Failed cleaning {raw_phone}")
 
         # Too short validation in send_message
-        res = asyncio.run(self.dispatcher.send_message("12345", "Hello"))
+        res = asyncio.run(send_transport(self.dispatcher, "12345", "Hello"))
         self.assertFalse(res["ok"])
         self.assertIn("prea scurt", res["error"])
 
@@ -507,7 +509,7 @@ class TestTier5WhatsAppAdversarial(unittest.TestCase):
         mock_resp.text = '{"error":{"message":"(#131047) Message failed to send...","code":131047}}'
 
         with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
-            res = asyncio.run(self.dispatcher.send_message("+393401234567", "Hello", settings=settings))
+            res = asyncio.run(send_transport(self.dispatcher, "+393401234567", "Hello", settings=settings))
             self.assertFalse(res["ok"])
             self.assertIn("131047", res["error"])
             self.assertIsNotNone(res["wa_me_url"])
@@ -544,7 +546,7 @@ class TestTier5WhatsAppAdversarial(unittest.TestCase):
             raise ValueError(f"Unexpected url {url}")
 
         with patch("httpx.AsyncClient.post", side_effect=mock_post):
-            res = asyncio.run(self.dispatcher.send_message("+393401234567", "Test msg", settings=settings))
+            res = asyncio.run(send_transport(self.dispatcher, "+393401234567", "Test msg", settings=settings))
             self.assertTrue(res["ok"])
             self.assertEqual(res["provider"], "twilio")
             self.assertEqual(res["sid"], "SM_mock_twilio_sid_999")
@@ -569,7 +571,7 @@ class TestTier5WhatsAppAdversarial(unittest.TestCase):
         err_resp.text = "Internal Server Error"
 
         with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=err_resp):
-            res = asyncio.run(self.dispatcher.send_message("+34612345678", "Hola Carlos", settings=settings))
+            res = asyncio.run(send_transport(self.dispatcher, "+34612345678", "Hola Carlos", settings=settings))
             self.assertFalse(res["ok"])
             self.assertEqual(res["provider"], "wa_me")
             self.assertEqual(res["gateway"], "wa_me_link")
@@ -701,6 +703,7 @@ class TestTier5PostDeliveryVIPAdversarial(unittest.TestCase):
     """
 
     def setUp(self):
+        allow_vip_compliance(self)
         self.service = PostDeliveryService()
 
     def test_adv_vip_scheduling_and_delay_boundary(self):
@@ -823,7 +826,7 @@ class TestTier5PostDeliveryVIPAdversarial(unittest.TestCase):
 
         with patch("backend.post_delivery_service.db.get_due_post_delivery_automations", return_value=[record]):
             with patch.object(self.service.email_dispatcher, "send_email", side_effect=Exception("SMTP Down")) as mock_email:
-                with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock) as mock_wa:
+                with patch.object(self.service.wa_dispatcher, "send_message", new_callable=AsyncMock, return_value=dict(WA_SENT_OK)) as mock_wa:
                     with patch("backend.post_delivery_service.db.mark_post_delivery_sent") as mock_mark:
                         with patch("backend.post_delivery_service.db.save_autopilot_log") as mock_log:
                             count = self.service.process_due_vip_automations("shop.myshopify.com")

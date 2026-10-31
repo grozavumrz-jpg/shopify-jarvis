@@ -217,3 +217,41 @@ def make_sample_shop_settings() -> Dict[str, Any]:
         "notify_discord": True,
         "notify_merchant_on_cart": True
     }
+
+
+# ── WhatsApp transport helper ──────────────────────────────────────────────────
+
+def send_transport(dispatcher, *args, **kwargs):
+    """
+    Provider-routing tests (Meta / Twilio / webhook / wa.me waterfall) exercise the
+    transport only, so they send as message_type="transactional": no marketing consent
+    gate and no STOP opt-out line is appended. Marketing behaviour (consent required for
+    the normalized phone, localized opt-out line) is covered in tests/test_w1_compliance.py.
+    """
+    kwargs.setdefault("message_type", "transactional")
+    return dispatcher.send_message(*args, **kwargs)
+
+
+# ── Post-delivery orchestration helpers ────────────────────────────────────────
+
+EMAIL_SENT_OK = {"success": True, "reason": "sent", "provider": "resend"}
+WA_SENT_OK = {"success": True, "ok": True, "status": "sent", "reason": "sent", "provider": "meta"}
+
+
+def allow_vip_compliance(testcase):
+    """
+    For orchestration tests of PostDeliveryService (channel fan-out, error isolation, ...):
+    patch compliance_guard.can_dispatch_to_customer -> (True, "OK") and log_customer_dispatch
+    in whichever module object(s) the service was imported from. The real consent / opt-out /
+    quiet-hours / frequency behaviour is covered in tests/test_w1_compliance.py.
+    """
+    import sys as _sys
+    from unittest.mock import patch as _patch
+    for name in ("post_delivery_service", "backend.post_delivery_service"):
+        mod = _sys.modules.get(name)
+        if mod is None:
+            continue
+        for attr, value in (("can_dispatch_to_customer", (True, "OK")), ("log_customer_dispatch", True)):
+            p = _patch.object(mod, attr, return_value=value)
+            p.start()
+            testcase.addCleanup(p.stop)

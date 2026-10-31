@@ -33,7 +33,7 @@ class TestEmailDispatcher(unittest.TestCase):
         )
         # Assert coupon card is NOT rendered
         self.assertNotIn("CADENCE DISCOUNT CARD", html)
-        self.assertNotIn("RESERVED DISCOUNT CODE", html)
+        self.assertNotIn("YOUR DISCOUNT CODE", html)
         self.assertNotIn("border: 2px dashed", html)
         # Assert neutral CTA is rendered
         self.assertIn("Complete Your Order →", html)
@@ -51,7 +51,7 @@ class TestEmailDispatcher(unittest.TestCase):
             lang="ro"
         )
         self.assertNotIn("CADENCE DISCOUNT CARD", html)
-        self.assertNotIn("COD DE REDUCERE REZERVAT", html)
+        self.assertNotIn("CODUL TĂU DE REDUCERE", html)
         self.assertIn("Finalizează Comanda Acum →", html)
         self.assertNotIn("discount=", html)
 
@@ -68,7 +68,7 @@ class TestEmailDispatcher(unittest.TestCase):
         # Coupon box present with code
         self.assertIn("CADENCE DISCOUNT CARD", html)
         self.assertIn("MG10", html)
-        self.assertIn("CODICE SCONTO RISERVATO", html)
+        self.assertIn("IL TUO CODICE SCONTO", html)
         # Localized Italian CTA with discount
         self.assertTrue("Completa l&#39;Ordine con lo Sconto 10% →" in html or "Completa l'Ordine con lo Sconto 10% →" in html)
         # URL has discount auto-applied
@@ -136,12 +136,12 @@ class TestEmailDispatcher(unittest.TestCase):
     def test_multilanguage_dictionary_all_six_locales(self):
         """Verify correct strings for all 6 supported languages: EN, RO, IT, ES, DE, FR."""
         locales = {
-            "en": ("YOUR RESERVED SELECTION", "Complete Your Order →"),
-            "ro": ("PRODUSELE TALE REZERVATE", "Finalizează Comanda Acum →"),
-            "it": ("I TUOI ARTICOLI RISERVATI", "Completa il Tuo Ordine →"),
-            "es": ("TUS ARTÍCULOS RESERVADOS", "Finalizar Mi Pedido →"),
-            "de": ("DEINE RESERVIERTE AUSWAHL", "Bestellung jetzt abschließen →"),
-            "fr": ("VOTRE SÉLECTION RÉSERVÉE", "Finaliser ma Commande →"),
+            "en": ("ITEMS IN YOUR CART", "Complete Your Order →"),
+            "ro": ("PRODUSELE DIN COȘUL TĂU", "Finalizează Comanda Acum →"),
+            "it": ("GLI ARTICOLI NEL TUO CARRELLO", "Completa il Tuo Ordine →"),
+            "es": ("LOS ARTÍCULOS DE TU CARRITO", "Finalizar Mi Pedido →"),
+            "de": ("ARTIKEL IN DEINEM WARENKORB", "Bestellung jetzt abschließen →"),
+            "fr": ("LES ARTICLES DE VOTRE PANIER", "Finaliser ma Commande →"),
         }
         for lang, (expected_header, expected_cta) in locales.items():
             html = EmailDispatcher.build_html_email(
@@ -158,13 +158,13 @@ class TestEmailDispatcher(unittest.TestCase):
     def test_language_normalization_and_fallback(self):
         """Verify locale normalization (e.g. 'ro-RO', 'IT_it') and fallback on unknown locale."""
         html_ro = EmailDispatcher.build_html_email(shop_name="Shop", lang="ro-RO")
-        self.assertIn("PRODUSELE TALE REZERVATE", html_ro)
+        self.assertIn("PRODUSELE DIN COȘUL TĂU", html_ro)
 
         html_it = EmailDispatcher.build_html_email(shop_name="Shop", lang="IT_it")
-        self.assertIn("I TUOI ARTICOLI RISERVATI", html_it)
+        self.assertIn("GLI ARTICOLI NEL TUO CARRELLO", html_it)
 
         html_fallback = EmailDispatcher.build_html_email(shop_name="Shop", lang="unknown_lang")
-        self.assertIn("YOUR RESERVED SELECTION", html_fallback)
+        self.assertIn("ITEMS IN YOUR CART", html_fallback)
 
     def test_backward_compatibility_legacy_parameters(self):
         """Verify calling build_html_email with legacy kwargs still works perfectly."""

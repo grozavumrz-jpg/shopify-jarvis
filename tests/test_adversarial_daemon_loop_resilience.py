@@ -32,6 +32,10 @@ if BACKEND_DIR not in sys.path:
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+try:
+    from tests.auth_helpers import AUTH_HEADERS, webhook_headers, auth_headers  # noqa: E402
+except ImportError:  # running with tests/ as top-level dir
+    from auth_helpers import AUTH_HEADERS, webhook_headers, auth_headers  # noqa: E402
 import database as db
 from main import app, autopilot_daemon_loop, AUTOPILOT_STATUS
 from shopify_api import ShopifyClient
@@ -268,7 +272,7 @@ class TestAdversarialDaemonLoopExecution(unittest.IsolatedAsyncioTestCase):
                 raise Exception("OperationalError: server closed the connection unexpectedly")
             else:
                 db_recovered = True
-                return [{"shop": self.shop, "access_token": "shpat_live_token", "shop_name": "Test Shop"}]
+                return [{"shop": self.shop, "access_token": "shpat_0123456789abcdef0123456789abcd", "shop_name": "Test Shop"}]  # placeholder tokens are (correctly) skipped
 
         with patch("builtins.print"):
             with patch("asyncio.sleep", side_effect=fake_sleep):
@@ -351,7 +355,7 @@ class TestAdversarialBillingDegradation(unittest.TestCase):
     def setUp(self):
         self.shop = "billing-adversarial.myshopify.com"
         db.upsert_shop(self.shop, "shpat_valid_looking_token_12345678", "Billing Test Shop")
-        self.client = TestClient(app)
+        self.client = TestClient(app, headers=AUTH_HEADERS)
 
     def test_billing_create_matrix_of_unconfigured_and_dummy_tokens(self):
         """
@@ -374,7 +378,7 @@ class TestAdversarialBillingDegradation(unittest.TestCase):
             data = res.json()
             self.assertFalse(data.get("ok"), f"Token '{tok}' did not return ok=False")
             self.assertTrue(data.get("demo_mode"), f"Token '{tok}' did not set demo_mode=True")
-            self.assertIn("not configured", data.get("error", "").lower())
+            self.assertIn("shopify", data.get("error", "").lower())
 
     def test_billing_create_shopify_network_and_timeout_errors(self):
         """

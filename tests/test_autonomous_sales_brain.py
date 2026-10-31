@@ -12,6 +12,7 @@ Validates:
 """
 
 import unittest
+import httpx
 from unittest.mock import patch, AsyncMock
 import asyncio
 import os
@@ -26,168 +27,140 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from ai_advisor import AIAdvisor
+try:
+    from tests.auth_helpers import AUTH_HEADERS, webhook_headers, auth_headers  # noqa: E402
+except ImportError:  # running with tests/ as top-level dir
+    from auth_helpers import AUTH_HEADERS, webhook_headers, auth_headers  # noqa: E402
 import database as db
 from main import app
 from starlette.testclient import TestClient
 
 
+FAKE_MARKERS = ("Elena", "Rochie", "19,450", "19450", "6 ore", "rezervat", "mătase", "Mătase", "atelier",
+                "București", "unisex", "Quiet Luxury", "Silk")
+
+
 class TestAutonomousSalesBrain(unittest.IsolatedAsyncioTestCase):
+    """Chat/briefing helpers must be useful AND honest: real numbers only, no invented claims."""
 
     def setUp(self):
+        os.environ.pop("GEMINI_API_KEY", None)  # offline replies, no network
         self.ai = AIAdvisor()
-        self.snap = {
-            "shop_name": "Maison Grozavu",
-            "orders_today": 0,
-            "orders_30d": 128,
-            "revenue_today": 0,
-            "revenue_30d": 19450.00,
-            "currency": "EUR",
-            "abandoned_carts": 7,
-            "aov": 150.0,
-            "low_stock_items": [
-                {"product": "Rochie Seară Noir Silk", "qty": 2}
-            ],
-            "vip_customers": [
-                {"name": "Elena Popescu", "total_spent": 1420.00, "orders_count": 4}
-            ]
+        self.connected = {
+            "connected": True, "data_source": "shopify", "shop_name": "Grozavu",
+            "orders_today": 0, "orders_30d": 0, "revenue_today": 0, "revenue_30d": 0,
+            "currency": "EUR", "abandoned_carts": 2, "aov": 0, "low_stock_items": [], "vip_customers": [],
+            "active_products_count": 59, "avg_product_price": 62.5,
         }
+        self.disconnected = {"connected": False, "data_source": "none", "currency": "EUR"}
 
-    async def test_zero_sales_immediate_diagnosis(self):
-        """Validates that 'De ce nu am vânzări azi și ce pot schimba rapid?' delivers an in-depth 4-pillar diagnosis."""
+    def assertHonest(self, reply):
+        self.assertTrue(reply and len(reply) > 40)
+        for marker in FAKE_MARKERS:
+            self.assertNotIn(marker, reply, f"invented/false content {marker!r} in reply")
+
+    async def test_zero_sales_diagnosis_uses_real_numbers_only(self):
         query = "De ce nu am vânzări azi și ce pot schimba rapid?"
-        reply = await self.ai.chat("maisongrozavu.myshopify.com", self.snap, [], query, lang="ro")
+        reply = await self.ai.chat("Grozavu", self.connected, [], query, lang="ro")
         self.assertIn("Diagnostic Imediat Vânzări", reply)
-        self.assertIn("Trafic", reply)
-        self.assertIn("Coșurile Abandonate", reply)
-        self.assertIn("Plan de Acțiune în 3 Pași", reply)
-        self.assertIn("MG10", reply)
+        self.assertIn("Date reale Shopify", reply)
+        self.assertIn("2 coșuri", reply)
+        self.assertHonest(reply)
 
-    async def test_boost_slash_command(self):
-        """Validates /boost returns instant conversion and traffic multiplier proposals."""
-        reply = await self.ai.chat("maisongrozavu.myshopify.com", self.snap, [], "/boost", lang="ro")
-        self.assertIn("Multiplicator Instant de Vânzări", reply)
-        self.assertIn("Urgency", reply)
-        self.assertIn("Cart Bump", reply)
-        self.assertIn("MG10", reply)
+        reply_d = await self.ai.chat("Grozavu", self.disconnected, [], query, lang="ro")
+        self.assertIn("Shopify nu este conectat", reply_d)
+        self.assertHonest(reply_d)
 
-    async def test_browser_slash_command(self):
-        """Validates /browser returns customer radar, Google search demand and outreach scripts."""
-        reply = await self.ai.chat("maisongrozavu.myshopify.com", self.snap, [], "/browser", lang="ro")
-        self.assertIn("Radar Autonom Clienți", reply)
-        self.assertIn("Google High-Intent Search", reply)
-        self.assertIn("TikTok", reply)
-        self.assertIn("Outreach", reply)
+    async def test_snapshot_without_connected_flag_is_not_trusted(self):
+        legacy_fake = {"orders_30d": 128, "revenue_30d": 19450.0, "abandoned_carts": 7, "aov": 150.0}
+        reply = await self.ai.chat("Grozavu", legacy_fake, [], "De ce nu am vânzări azi?", lang="ro")
+        self.assertNotIn("128", reply)
+        self.assertNotIn("7 coșuri", reply)
+        self.assertHonest(reply)
 
-    async def test_goal_slash_command(self):
-        """Validates /goal calculates mathematical revenue requirements."""
-        reply = await self.ai.chat("maisongrozavu.myshopify.com", self.snap, [], "/goal", lang="ro")
-        self.assertIn("Simulator & Obiectiv de Profit", reply)
+    async def test_slash_commands_are_labelled_ideas(self):
+        for cmd in ("/boost", "/browser", "/browser hanorac negru"):
+            with patch("httpx.AsyncClient.get", side_effect=httpx.ConnectError("offline")):
+                reply = await self.ai.chat("Grozavu", self.connected, [], cmd, lang="ro")
+            self.assertHonest(reply)
+        with patch("httpx.AsyncClient.get", side_effect=httpx.ConnectError("offline")):
+            reply = await self.ai.chat("Grozavu", self.connected, [], "/browser hanorac negru", lang="ro")
+        self.assertIn("hanorac negru", reply)
+        self.assertIn("nu afișez sugestii inventate", reply)
+
+    async def test_goal_needs_a_real_or_stated_aov(self):
+        reply = await self.ai.chat("Grozavu", self.connected, [], "/goal 25000", lang="ro")
+        self.assertIn("25,000", reply)
         self.assertIn("Ecuația Profitului", reply)
-        self.assertIn("vizitatori", reply)
+        self.assertIn("nu un AOV real", reply)  # avg product price is labelled as such
+        reply_d = await self.ai.chat("Grozavu", self.disconnected, [], "/goal 25000", lang="ro")
+        self.assertIn("aov", reply_d.lower())
+        self.assertNotIn("Comenzi necesare", reply_d)
 
-    def test_seo_strategy_structure(self):
-        """Validates Google SEO keywords and valid Schema.org JSON-LD generation."""
-        seo = self.ai.generate_seo_strategy("Maison Grozavu", "maisongrozavu.com")
-        self.assertIn("keywords", seo)
+    def test_seo_strategy_never_invents_metrics_or_ratings(self):
+        seo = self.ai.generate_seo_strategy("Grozavu", "maisongrozavu.com")
         self.assertGreaterEqual(len(seo["keywords"]), 5)
-        self.assertIn("json_ld", seo)
-        json_ld = seo["json_ld"]
-        self.assertEqual(json_ld["@context"], "https://schema.org/")
-        self.assertEqual(json_ld["@type"], "Product")
-        self.assertEqual(json_ld["brand"]["name"], "Maison Grozavu")
-        self.assertIn("merchant_feed_tips", seo)
+        for kw in seo["keywords"]:
+            self.assertIsNone(kw.get("volume"))
+            self.assertIsNone(kw.get("cpc"))
+        self.assertIsNone(seo["json_ld"])  # no real product passed -> no sample markup
+        product = {"id": 1, "title": "Grozavu Boxy Tee", "handle": "boxy-tee", "status": "active",
+                   "images": [{"src": "https://cdn.shopify.com/t.jpg"}], "variants": [{"id": 2, "price": "45.00"}]}
+        seo2 = self.ai.generate_seo_strategy("Grozavu", "maisongrozavu.com", products=[product])
+        self.assertEqual(seo2["json_ld"]["@type"], "Product")
+        self.assertNotIn("aggregateRating", seo2["json_ld"])
+        self.assertIn("merchant_feed_tips", seo2)
 
     def test_lead_radar_structure(self):
-        """Validates customer hunter viral hooks and influencer outreach DM."""
-        radar = self.ai.generate_lead_radar("Maison Grozavu")
-        self.assertIn("hooks", radar)
+        radar = self.ai.generate_lead_radar("Grozavu")
         self.assertGreaterEqual(len(radar["hooks"]), 3)
-        self.assertIn("outreach_dm", radar)
-        self.assertIn("Maison Grozavu", radar["outreach_dm"])
-        self.assertIn("personas", radar)
+        self.assertIn("Grozavu", radar["outreach_dm"])
         self.assertGreaterEqual(len(radar["personas"]), 2)
+        self.assertEqual(radar["kind"], "ideas")
 
     def test_revenue_goal_math(self):
-        """Validates math-based calculations for traffic and orders."""
         goal = self.ai.calculate_revenue_goal(target_amount=15000.0, currency="EUR", current_aov=150.0, days=30)
         self.assertEqual(goal["needed_orders"], 100)
         self.assertAlmostEqual(goal["daily_orders"], 3.3, places=1)
         self.assertEqual(goal["scenarios"]["cr_2_0"]["total_visitors"], 5000)
-        self.assertIn("google_search", goal["channel_split"])
-        self.assertIn("tiktok_reels", goal["channel_split"])
+        no_aov = self.ai.calculate_revenue_goal(target_amount=15000.0, currency="EUR", current_aov=None, days=30)
+        self.assertIsNone(no_aov["needed_orders"])
 
-    async def test_dynamic_goal_parsing(self):
-        """Validates that /goal 25000 dynamically calculates for 25,000."""
-        reply = await self.ai.chat("maisongrozavu.myshopify.com", self.snap, [], "/goal 25000", lang="ro")
-        self.assertIn("25,000", reply)
-        self.assertIn("Ecuația Profitului", reply)
-
-    async def test_dynamic_browser_search(self):
-        """Validates that /browser sacou catifea searches for the specified query."""
-        reply = await self.ai.chat("maisongrozavu.myshopify.com", self.snap, [], "/browser sacou catifea", lang="ro")
-        self.assertIn("sacou catifea", reply)
-        self.assertIn("Live Search Demand", reply)
-
-    async def test_1click_tiktok_generation(self):
-        """Validates 1-Click viral TikTok generation generates full 30s script without protocol error."""
-        prompt = "Scrie-mi un script complet de TikTok/Reels de 30 secunde pentru cel mai vândut produs din magazinul Maison Grozavu"
-        reply = await self.ai.chat("maisongrozavu.myshopify.com", self.snap, [], prompt, lang="ro")
-        self.assertIn("Script Viral TikTok", reply)
-        self.assertIn("CÂRLIG VIZUAL", reply)
-        self.assertIn("MG10", reply)
-
-    async def test_1click_cart_recovery_generation(self):
-        """Validates 1-Click abandoned cart email recovery generation."""
-        prompt = "Scrie un email irezistibil de recuperare a coșurilor abandonate pentru clienții Maison Grozavu."
-        reply = await self.ai.chat("maisongrozavu.myshopify.com", self.snap, [], prompt, lang="ro")
-        self.assertIn("Email & WhatsApp de Recuperare", reply)
-        self.assertIn("MG10", reply)
-        self.assertIn("6 ore", reply)
-
-    async def test_1click_cro_audit_generation(self):
-        """Validates 1-Click CRO conversion audit generation."""
-        prompt = "Fă un audit rapid de conversie pentru produsele mele Maison Grozavu."
-        reply = await self.ai.chat("maisongrozavu.myshopify.com", self.snap, [], prompt, lang="ro")
-        self.assertIn("Audit Rapid de Conversie", reply)
-        self.assertIn("Trust Badges", reply)
-
-    async def test_1click_vip_reward_generation(self):
-        """Validates 1-Click VIP loyalty email generation."""
-        prompt = "Scrie un email VIP exclusiv de fidelizare și mulțumire pentru Maison Grozavu."
-        reply = await self.ai.chat("maisongrozavu.myshopify.com", self.snap, [], prompt, lang="ro")
-        self.assertIn("Email Exclusiv de Fidelizare", reply)
-        self.assertIn("MGVIP15", reply)
-
-    async def test_1click_post_purchase_generation(self):
-        """Validates 1-Click post-delivery sequence generation."""
-        prompt = "Scrie o secvență automată de email post-cumpărare (trimisă la 3 zile după livrare)."
-        reply = await self.ai.chat("maisongrozavu.myshopify.com", self.snap, [], prompt, lang="ro")
-        self.assertIn("Secvență Automată Post-Livrare", reply)
-        self.assertIn("Recenzie", reply)
-
-    async def test_ad_copy_generation(self):
-        """Validates ad copy generation for Meta/Facebook."""
-        reply = await self.ai.chat("maisongrozavu.myshopify.com", self.snap, [], "Scrie-mi o reclama pentru facebook ads", lang="ro")
-        self.assertIn("Scripturi Reclame Meta Ads", reply)
-        self.assertIn("Quiet Luxury", reply)
+    async def test_one_click_templates_are_honest(self):
+        prompts = [
+            "Scrie-mi un script complet de TikTok/Reels de 30 secunde pentru cel mai vândut produs",
+            "Scrie un email irezistibil de recuperare a coșurilor abandonate.",
+            "Fă un audit rapid de conversie pentru produsele mele.",
+            "Scrie un email VIP exclusiv de fidelizare și mulțumire.",
+            "Scrie o secvență automată de email post-cumpărare (trimisă la 3 zile după livrare).",
+            "Scrie-mi o reclama pentru facebook ads",
+        ]
+        for p in prompts:
+            for snap in (self.connected, self.disconnected):
+                reply = await self.ai.chat("Grozavu", snap, [], p, lang="ro")
+                self.assertHonest(reply)
+        post = await self.ai.chat("Grozavu", self.connected, [], prompts[4], lang="ro")
+        self.assertIn("separată de reducere", post)  # review request is not tied to the discount
 
 
 class TestGrowthEndpointsAPI(unittest.TestCase):
 
     def setUp(self):
-        self.client = TestClient(app)
+        os.environ.pop("GEMINI_API_KEY", None)
+        self.client = TestClient(app, headers=AUTH_HEADERS)
 
-    def test_chat_endpoint_resilient_without_auth_failure(self):
-        """Validates /api/chat never returns 401 or 500, even for fresh unauthenticated stores."""
+    def test_chat_endpoint_resilient_without_gemini(self):
         res = self.client.post("/api/chat", json={
             "shop": "maisongrozavu.myshopify.com",
             "message": "De ce nu am vânzări azi și ce pot schimba rapid?",
             "lang": "ro"
         })
         self.assertEqual(res.status_code, 200)
-        data = res.json()
-        self.assertIn("reply", data)
-        self.assertIn("Diagnostic Imediat Vânzări", data["reply"])
+        self.assertIn("Diagnostic Imediat Vânzări", res.json()["reply"])
+
+    def test_chat_requires_auth(self):
+        res = TestClient(app).post("/api/chat", json={"message": "hi"})
+        self.assertEqual(res.status_code, 401)
 
     def test_growth_seo_endpoint(self):
         res = self.client.get("/api/growth/seo?shop=maisongrozavu.myshopify.com")
@@ -195,6 +168,7 @@ class TestGrowthEndpointsAPI(unittest.TestCase):
         data = res.json()
         self.assertIn("keywords", data)
         self.assertIn("json_ld", data)
+        self.assertEqual(data["kind"], "ideas")
 
     def test_growth_radar_endpoint(self):
         res = self.client.get("/api/growth/radar?shop=maisongrozavu.myshopify.com")
@@ -211,29 +185,36 @@ class TestGrowthEndpointsAPI(unittest.TestCase):
         self.assertIn("cart_bump", data)
 
     def test_growth_goal_endpoint(self):
-        res = self.client.post("/api/growth/goal", json={
-            "shop": "maisongrozavu.myshopify.com",
-            "target_amount": 10000.0,
-            "currency": "EUR"
-        })
+        res = self.client.post("/api/growth/goal", json={"shop": "maisongrozavu.myshopify.com",
+                                                         "target_amount": 10000.0, "currency": "EUR"})
         self.assertEqual(res.status_code, 200)
         data = res.json()
         self.assertEqual(data["target_amount"], 10000.0)
-        self.assertGreater(data["needed_orders"], 0)
+        self.assertIsNone(data["needed_orders"])  # no real AOV -> no invented order count
 
-    def test_google_suggest_endpoint(self):
-        res = self.client.get("/api/growth/google-suggest?q=rochii+matase")
+        res2 = self.client.post("/api/growth/goal", json={"shop": "maisongrozavu.myshopify.com",
+                                                          "target_amount": 10000.0, "currency": "EUR", "aov": 80})
+        data2 = res2.json()
+        self.assertEqual(data2["needed_orders"], 125)
+        self.assertEqual(data2["aov_source"], "owner_assumption")
+
+        bad = self.client.post("/api/growth/goal", json={"target_amount": -5})
+        self.assertEqual(bad.status_code, 400)
+
+    def test_google_suggest_endpoint_is_honest_when_offline(self):
+        with patch("httpx.AsyncClient.get", side_effect=httpx.ConnectError("offline")):
+            res = self.client.get("/api/growth/google-suggest?q=heavyweight+hoodie")
         self.assertEqual(res.status_code, 200)
         data = res.json()
-        self.assertEqual(data["query"], "rochii matase")
-        self.assertIn("results", data)
-        self.assertGreater(len(data["results"]), 0)
+        self.assertEqual(data["query"], "heavyweight hoodie")
+        self.assertEqual(data["results"], [])
+        self.assertEqual(data["source"], "unavailable")
 
     def test_autopilot_status_offline_resilience(self):
         res = self.client.get("/api/autopilot/status?shop=maisongrozavu.myshopify.com")
         self.assertEqual(res.status_code, 200)
         data = res.json()
-        self.assertTrue(data["active"])
+        self.assertIn("active", data)  # real daemon state (disabled in tests)
         self.assertIn("queue", data)
 
     def test_briefing_default_shop_without_query_params(self):
@@ -241,12 +222,12 @@ class TestGrowthEndpointsAPI(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         data = res.json()
         self.assertIn("briefing", data)
+        self.assertIsNone(data["briefing"].get("health_score"))
 
     def test_snapshot_default_shop_without_query_params(self):
         res = self.client.get("/api/snapshot")
         self.assertEqual(res.status_code, 200)
-        data = res.json()
-        self.assertIn("orders_today", data)
+        self.assertIn("orders_today", res.json())
 
 
 if __name__ == "__main__":
