@@ -157,6 +157,23 @@ class TestMainReviewFixes(unittest.TestCase):
             self.assertEqual(r.status_code, 200, path)
 
 
+class TestAutopilotInterval(unittest.TestCase):
+    """Neon free = 100 CU-h/month and 5-minute idle suspend: a 5-minute loop would never let it sleep."""
+
+    def test_interval_defaults_and_override(self):
+        with patch.dict(os.environ, {"JARVIS_AUTOPILOT_MINUTES": ""}):
+            with patch.object(main.db, "DATABASE_URL",
+                              "postgresql://u:p@ep-x-pooler.c-4.us-west-2.aws.neon.tech/neondb?sslmode=require"):
+                self.assertEqual(main.autopilot_interval_minutes(), 15)
+            with patch.object(main.db, "DATABASE_URL", "postgresql://u:p@db.example.com/x"):
+                self.assertEqual(main.autopilot_interval_minutes(), 5)
+            with patch.object(main.db, "DATABASE_URL", ""):
+                self.assertEqual(main.autopilot_interval_minutes(), 5)
+        for raw, expected in (("10", 10), ("0", 1), ("500", 60), ("abc", 5)):
+            with patch.dict(os.environ, {"JARVIS_AUTOPILOT_MINUTES": raw}), patch.object(main.db, "DATABASE_URL", ""):
+                self.assertEqual(main.autopilot_interval_minutes(), expected, raw)
+
+
 class TestEphemeralDatabaseGuard(unittest.TestCase):
     """On Render without DATABASE_URL, unsubscribes would be wiped on restart -> no marketing."""
 

@@ -6,7 +6,9 @@ Asistent pentru magazinul Shopify: urmărește coșurile abandonate (doar clien�
 
 ---
 
-## Ce rulează automat (la fiecare 5 minute, cât timp serverul e pornit)
+## Ce rulează automat (cât timp serverul e pornit)
+Intervalul e de 5 minute, sau de 15 minute pe Neon. Planul gratuit Neon are 100 de ore de calcul pe lună, iar baza adoarme doar după 5 minute fără activitate. La 15 minute baza poate dormi între cicluri, cu un consum de aproximativ 70 de ore pe lună. Intervalul se poate schimba din `JARVIS_AUTOPILOT_MINUTES`.
+
 1. Verifică comenzile noi și oprește mesajele pentru coșurile care au devenit comenzi.
 2. Coșuri abandonate, maximum 3 mesaje per coș: la 30 de minute (fără reducere), la 4 ore și la 24 de ore (cu codul MG10). Se trimit **doar** dacă:
    - clientul are acord de marketing în Shopify (pentru email; separat pentru WhatsApp);

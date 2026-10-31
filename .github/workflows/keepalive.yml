@@ -1,4 +1,4 @@
-# Keeps the free Render instance awake so the autopilot (every 5 min) keeps running.
+# Keeps the free Render instance awake so the autopilot (every 5-15 min) keeps running.
 # Render free sleeps after 15 minutes without inbound traffic. GitHub may delay
 # scheduled runs, so an external monitor (UptimeRobot, every 5 min) is still recommended.
 name: keepalive

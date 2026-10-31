@@ -598,7 +598,25 @@ AUTOPILOT_STATUS: Dict[str, Any] = {
     "interval_minutes": 5,
     "last_error": None,
 }
-AUTOPILOT_INTERVAL_SECONDS = 300
+
+
+def autopilot_interval_minutes() -> int:
+    """
+    JARVIS_AUTOPILOT_MINUTES (1–60) if set. Otherwise 15 on Neon, 5 elsewhere: Neon's free plan has
+    100 CU-hours/month and only suspends after 5 idle minutes, so a 5-minute loop would keep the
+    database awake 24/7 (~186 CU-h) and get it suspended mid-month. 15 minutes lets it sleep in between.
+    """
+    raw = os.getenv("JARVIS_AUTOPILOT_MINUTES", "").strip()
+    if raw:
+        try:
+            return max(1, min(60, int(raw)))
+        except ValueError:
+            pass
+    return 15 if "neon.tech" in (getattr(db, "DATABASE_URL", "") or "") else 5
+
+
+AUTOPILOT_INTERVAL_SECONDS = autopilot_interval_minutes() * 60
+AUTOPILOT_STATUS["interval_minutes"] = AUTOPILOT_INTERVAL_SECONDS // 60
 RETRY_AFTER_FAILURE_SECONDS = 1800
 _FAILED_UNTIL: Dict[str, float] = {}
 _cycle_lock: Optional[asyncio.Lock] = None
@@ -920,7 +938,7 @@ async def run_autopilot_cycle(only_shop: Optional[str] = None, skip_log: Optiona
 
 async def autopilot_daemon_loop():
     await asyncio.sleep(15)
-    print("[AUTOPILOT] Starting autonomous follow-up engine (every 5 minutes)...")
+    print(f"[AUTOPILOT] Starting autonomous follow-up engine (every {AUTOPILOT_INTERVAL_SECONDS // 60} minutes)...")
     while True:
         try:
             await run_autopilot_cycle()
