@@ -9,6 +9,10 @@ import base64
 import hashlib
 import hmac
 import os
+try:
+    from tests import _test_env  # noqa: F401  (isolated SQLite file per test run)
+except ImportError:  # pragma: no cover
+    import _test_env  # noqa: F401
 
 TEST_ADMIN_KEY = os.environ.setdefault("JARVIS_ADMIN_KEY", "test-admin-key-0123456789")
 TEST_API_KEY = os.environ.setdefault("SHOPIFY_API_KEY", "test_api_key_123")

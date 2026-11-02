@@ -1,5 +1,6 @@
 import os
 import re
+import ssl
 import html
 import asyncio
 import logging
@@ -10,6 +11,11 @@ from email.mime.text import MIMEText
 from email.utils import parseaddr, formataddr, formatdate, make_msgid
 import httpx
 from typing import Dict, Any, List, Optional, Union, Tuple
+
+try:
+    import net_guard
+except ImportError:  # pragma: no cover - package-style import
+    from backend import net_guard
 
 logger = logging.getLogger("jarvis.email")
 
@@ -244,7 +250,7 @@ class EmailDispatcher:
                 # Suppress variant if empty or 'Default Title'
                 show_variant = bool(raw_variant and raw_variant.strip() and raw_variant.strip().lower() != "default title")
                 
-                qty = item.get("quantity") or 1
+                qty = html.escape(str(item.get("quantity") or 1))
                 price_val = item.get("price")
                 try:
                     raw_price = f"{float(price_val):.2f} {currency}" if price_val is not None else ""
@@ -654,11 +660,16 @@ class EmailDispatcher:
 
     @staticmethod
     def _smtp_send_blocking(cfg: Dict[str, Any], from_addr: str, to_addr: str, message: str) -> None:
+        # Never send SMTP credentials to a private / loopback host, and verify the server certificate
+        # (smtplib's default TLS context does NOT check certificates or hostnames).
+        if not net_guard.host_resolves_public(cfg["host"], int(cfg["port"])):
+            raise ValueError("SMTP host refuzat: trebuie să fie un server public (nu localhost / rețea privată)")
+        tls_context = ssl.create_default_context()
         if int(cfg["port"]) == 465:
-            server = smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=15)
+            server = smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=15, context=tls_context)
         else:
             server = smtplib.SMTP(cfg["host"], cfg["port"], timeout=15)
-            server.starttls()
+            server.starttls(context=tls_context)
         try:
             server.login(cfg["user"], cfg["password"])
             # Envelope + header From = the configured sender (not the SMTP login).

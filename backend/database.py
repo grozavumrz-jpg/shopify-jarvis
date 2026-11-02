@@ -346,6 +346,7 @@ SHOP_TABLES: List[Tuple[str, str]] = [
     ("marketing_consents", "shop_domain"),
     ("message_frequency_logs", "shop_domain"),
     ("suppression_list", "shop_domain"),
+    ("app_state", "shop"),
     ("shops", "shop"),
 ]
 
@@ -436,6 +437,7 @@ def init_db():
                 ALTER TABLE shop_settings ADD COLUMN IF NOT EXISTS notify_telegram BOOLEAN DEFAULT FALSE;
                 ALTER TABLE shop_settings ADD COLUMN IF NOT EXISTS discord_webhook_url TEXT;
                 ALTER TABLE shop_settings ADD COLUMN IF NOT EXISTS notify_discord BOOLEAN DEFAULT FALSE;
+                ALTER TABLE shop_settings ADD COLUMN IF NOT EXISTS merchant_notify_phone VARCHAR(64);
 
                 CREATE TABLE IF NOT EXISTS checkout_drip_states (
                     id SERIAL PRIMARY KEY,
@@ -489,6 +491,8 @@ def init_db():
 
                 CREATE INDEX IF NOT EXISTS idx_post_delivery_order
                 ON post_delivery_automations(shop_domain, order_id);
+
+                ALTER TABLE post_delivery_automations ADD COLUMN IF NOT EXISTS lang VARCHAR(8);
 
                 CREATE TABLE IF NOT EXISTS seo_automation_logs (
                     id SERIAL PRIMARY KEY,
@@ -549,6 +553,14 @@ def init_db():
 
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_suppression_shop_hash
                 ON suppression_list(shop_domain, identifier_hash);
+
+                CREATE TABLE IF NOT EXISTS app_state (
+                    shop TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    value TEXT,
+                    updated_at TIMESTAMP DEFAULT NOW(),
+                    PRIMARY KEY (shop, key)
+                );
             """)
 
             if not _is_sqlite_conn(conn):
@@ -616,22 +628,51 @@ def store_nonce(shop: str, nonce: str):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO nonces(shop, nonce) VALUES(%s, %s) ON CONFLICT(shop) DO UPDATE SET nonce=%s",
-                (shop, nonce, nonce)
+                "INSERT INTO nonces(shop, nonce, created_at) VALUES(%s, %s, %s) "
+                "ON CONFLICT(shop) DO UPDATE SET nonce=%s, created_at=%s",
+                (shop, nonce, _utc_naive(), nonce, _utc_naive())
             )
         conn.commit()
 
 
-def verify_and_delete_nonce(shop: str, nonce: str) -> bool:
+NONCE_TTL_MINUTES = 30
+
+
+def store_nonce_fresh(shop: str, nonce: str) -> None:
+    """store_nonce + drop OAuth nonces older than NONCE_TTL_MINUTES (keeps the table small)."""
+    store_nonce(shop, nonce)
+    cutoff = _utc_naive(datetime.now(timezone.utc) - timedelta(minutes=NONCE_TTL_MINUTES))
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT nonce FROM nonces WHERE shop=%s", (shop,))
+            cur.execute("DELETE FROM nonces WHERE created_at < %s AND shop <> %s", (cutoff, shop))
+        conn.commit()
+
+
+def verify_and_delete_nonce(shop: str, nonce: str) -> bool:
+    """Constant-time compare; a nonce older than NONCE_TTL_MINUTES is rejected (and deleted)."""
+    import hmac as _hmac
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT nonce, created_at FROM nonces WHERE shop=%s", (shop,))
             row = cur.fetchone()
-            if row and row["nonce"] == nonce:
+            if not row:
+                return False
+            created = row.get("created_at") if isinstance(row, dict) else None
+            fresh = True
+            if created is not None:
+                if isinstance(created, str):
+                    try:
+                        created = datetime.fromisoformat(created.replace("Z", "").split(".")[0])
+                    except ValueError:
+                        created = None
+                if isinstance(created, datetime):
+                    created_utc = created.replace(tzinfo=None) if created.tzinfo is None else _utc_naive(created)
+                    fresh = (_utc_naive() - created_utc) <= timedelta(minutes=NONCE_TTL_MINUTES)
+            ok = fresh and _hmac.compare_digest(str(row["nonce"]).encode("utf-8"), str(nonce or "").encode("utf-8"))
+            if ok or not fresh:
                 cur.execute("DELETE FROM nonces WHERE shop=%s", (shop,))
                 conn.commit()
-                return True
-    return False
+            return ok
 
 
 # ── Shops ─────────────────────────────────────────────────────────────────────
@@ -863,6 +904,7 @@ def get_shop_settings(shop: str) -> Dict:
                 "notify_telegram": False,
                 "discord_webhook_url": "",
                 "notify_discord": False,
+                "merchant_notify_phone": os.getenv("MERCHANT_NOTIFY_PHONE", ""),
                 "updated_at": ""
             }
 
@@ -880,6 +922,7 @@ def save_shop_settings(shop: str, s: Dict):
                     whatsapp_webhook_url,
                     telegram_bot_token, telegram_chat_id, notify_telegram,
                     discord_webhook_url, notify_discord,
+                    merchant_notify_phone,
                     updated_at
                 ) VALUES (
                     %s, %s, %s, %s, %s,
@@ -890,6 +933,7 @@ def save_shop_settings(shop: str, s: Dict):
                     %s,
                     %s, %s, %s,
                     %s, %s,
+                    %s,
                     NOW()
                 )
                 ON CONFLICT(shop) DO UPDATE SET
@@ -915,6 +959,7 @@ def save_shop_settings(shop: str, s: Dict):
                     notify_telegram=EXCLUDED.notify_telegram,
                     discord_webhook_url=EXCLUDED.discord_webhook_url,
                     notify_discord=EXCLUDED.notify_discord,
+                    merchant_notify_phone=EXCLUDED.merchant_notify_phone,
                     updated_at=NOW()
             """, (
                 shop,
@@ -939,7 +984,8 @@ def save_shop_settings(shop: str, s: Dict):
                 s.get("telegram_chat_id", ""),
                 bool(s.get("notify_telegram", False)),
                 s.get("discord_webhook_url", ""),
-                bool(s.get("notify_discord", False))
+                bool(s.get("notify_discord", False)),
+                s.get("merchant_notify_phone") or "",
             ))
         conn.commit()
 
@@ -1238,7 +1284,8 @@ def enqueue_post_delivery_automation(
     items_summary: Any = None,
     discount_code: str = "MGVIP15",
     order_data: Optional[Dict[str, Any]] = None,
-    shop_domain: Optional[str] = None
+    shop_domain: Optional[str] = None,
+    lang: Optional[str] = None,
 ) -> bool:
     """
     Enqueues a fulfilled order into post_delivery_automations for the VIP thank-you.
@@ -1288,11 +1335,11 @@ def enqueue_post_delivery_automation(
                 INSERT INTO post_delivery_automations (
                     shop_domain, order_id, order_number, customer_email,
                     customer_phone, customer_name, fulfilled_at, scheduled_for,
-                    items_summary, status, discount_code, created_at
+                    items_summary, status, discount_code, lang, created_at
                 ) VALUES (
                     %s, %s, %s, %s,
                     %s, %s, %s, %s,
-                    %s::jsonb, 'pending', %s, NOW()
+                    %s::jsonb, 'pending', %s, %s, NOW()
                 )
                 ON CONFLICT (order_id) DO NOTHING
             """, (
@@ -1301,7 +1348,8 @@ def enqueue_post_delivery_automation(
                 clean_phone or None,
                 (customer_name or "").strip(),
                 fulfilled_at, scheduled_for, items_json,
-                discount_code or "MGVIP15"
+                discount_code or "MGVIP15",
+                (lang or None),
             ))
             inserted = cur.rowcount > 0
         conn.commit()
@@ -1347,20 +1395,14 @@ def mark_post_delivery_sent(
     if sent.tzinfo is None:
         sent = sent.replace(tzinfo=timezone.utc)
 
+    # Match the Shopify order id only: a short numeric order id must never hit another row's serial id.
     with get_conn() as conn:
         with conn.cursor() as cur:
-            if isinstance(order_id, int) or str(order_id).isdigit():
-                cur.execute("""
-                    UPDATE post_delivery_automations
-                    SET status = 'sent', sent_at = %s
-                    WHERE (id = %s OR order_id = %s) AND status = 'pending'
-                """, (sent, int(order_id), str(order_id)))
-            else:
-                cur.execute("""
-                    UPDATE post_delivery_automations
-                    SET status = 'sent', sent_at = %s
-                    WHERE order_id = %s AND status = 'pending'
-                """, (sent, str(order_id)))
+            cur.execute("""
+                UPDATE post_delivery_automations
+                SET status = 'sent', sent_at = %s
+                WHERE order_id = %s AND status = 'pending'
+            """, (sent, str(order_id)))
             updated = cur.rowcount > 0
         conn.commit()
     return updated
@@ -1373,6 +1415,21 @@ def mark_post_delivery_automation_sent(
 ) -> bool:
     """Alias for mark_post_delivery_sent."""
     return mark_post_delivery_sent(order_id=automation_id, sent_at=sent_at)
+
+
+def reschedule_post_delivery(order_id: Union[int, str], scheduled_for: datetime) -> bool:
+    """Move a still-pending thank-you to a new time (e.g. once the carrier reports delivery)."""
+    when = scheduled_for if scheduled_for.tzinfo else scheduled_for.replace(tzinfo=timezone.utc)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE post_delivery_automations
+                SET scheduled_for = %s
+                WHERE order_id = %s AND status = 'pending'
+            """, (when, str(order_id)))
+            updated = cur.rowcount > 0
+        conn.commit()
+    return updated
 
 
 def mark_post_delivery_status(order_id: Union[int, str], status: str) -> bool:
@@ -1670,6 +1727,38 @@ def record_opt_out(
     return True
 
 
+def lift_opt_out(shop_domain: str, email: Optional[str] = None, phone: Optional[str] = None) -> bool:
+    """
+    Undo an opt-out at the customer's explicit request (merchant action). Removes the suppression
+    entry and the opt-out mark; consent goes back to UNKNOWN (never "granted"): the next consent
+    Shopify reports for that customer decides again. Returns True if anything changed.
+    """
+    e = normalize_email(email)
+    p = normalize_phone(phone)
+    if not e and not p:
+        return False
+    changed = False
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            for kind, col, ident in (("email", "email", e), ("sms", "phone", p)):
+                if not ident:
+                    continue
+                cur.execute(
+                    "DELETE FROM suppression_list WHERE shop_domain = %s AND identifier_hash = %s",
+                    (shop_domain, identity_hash(ident)),
+                )
+                changed = _rowcount(cur) > 0 or changed
+                cur.execute(f"""
+                    UPDATE marketing_consents
+                    SET opt_out_at = NULL, accepts_marketing = NULL, source = 'opt_out_lifted', updated_at = NOW()
+                    WHERE shop_domain = %s AND {col} = %s AND (channel = %s OR channel IS NULL)
+                      AND opt_out_at IS NOT NULL
+                """, (shop_domain, ident, kind))
+                changed = _rowcount(cur) > 0 or changed
+        conn.commit()
+    return changed
+
+
 def get_consent_status(
     shop_domain: str,
     email: Optional[str] = None,
@@ -1941,6 +2030,76 @@ def get_consent_stats(shop_domain: str) -> Dict[str, int]:
                 }
     return {"total_recorded": 0, "active_subscribers": 0, "unsubscribed": 0,
             "email_subscribers": 0, "sms_subscribers": 0, "suppressed": 0}
+
+
+# ── App state (heartbeat, alerts, weekly report bookkeeping) ─────────────────
+
+def get_state(shop: str, key: str) -> Optional[str]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT value FROM app_state WHERE shop = %s AND key = %s", (shop, key))
+            row = cur.fetchone()
+            return (row.get("value") if isinstance(row, dict) else row[0]) if row else None
+
+
+def set_state(shop: str, key: str, value: Optional[str]) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO app_state(shop, key, value, updated_at) VALUES(%s, %s, %s, NOW())
+                ON CONFLICT(shop, key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+            """, (shop, key, value))
+        conn.commit()
+
+
+def weekly_report_data(shop: str, since: datetime, until: Optional[datetime] = None) -> Dict[str, Any]:
+    """Real numbers for the merchant's weekly report (nothing estimated)."""
+    start = _utc_naive(since)
+    end = _utc_naive(until)
+    out: Dict[str, Any] = {}
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(*) AS cnt FROM autopilot_logs
+                WHERE shop = %s AND created_at >= %s AND created_at < %s
+                  AND status LIKE 'stage_%%_sent%%'
+            """, (shop, start, end))
+            out["cart_messages_sent"] = _count(cur.fetchone())
+            cur.execute("""
+                SELECT COUNT(*) AS cnt FROM autopilot_logs
+                WHERE shop = %s AND created_at >= %s AND created_at < %s AND status LIKE 'stage_%%_failed'
+            """, (shop, start, end))
+            out["cart_messages_failed"] = _count(cur.fetchone())
+            since_aware = since if since.tzinfo else since.replace(tzinfo=timezone.utc)
+            until_aware = until or datetime.now(timezone.utc)
+            if until_aware.tzinfo is None:
+                until_aware = until_aware.replace(tzinfo=timezone.utc)
+            cur.execute("""
+                SELECT COUNT(*) AS cnt, COALESCE(SUM(revenue_recovered), 0) AS rev FROM checkout_drip_states
+                WHERE shop_domain = %s AND status = 'converted' AND current_stage > 0
+                  AND converted_at >= %s AND converted_at < %s
+            """, (shop, since_aware, until_aware))
+            row = cur.fetchone() or {}
+            row = dict(row) if row else {}
+            out["recovered_orders"] = int(row.get("cnt") or 0)
+            out["recovered_revenue"] = round(float(row.get("rev") or 0.0), 2)
+            cur.execute("""
+                SELECT COUNT(*) AS cnt FROM autopilot_logs
+                WHERE shop = %s AND created_at >= %s AND created_at < %s AND status LIKE 'vip_sent_%%'
+            """, (shop, start, end))
+            out["vip_thank_yous_sent"] = _count(cur.fetchone())
+            cur.execute("""
+                SELECT COUNT(*) AS cnt FROM marketing_consents
+                WHERE shop_domain = %s AND opt_out_at >= %s AND opt_out_at < %s
+            """, (shop, start, end))
+            out["opt_outs"] = _count(cur.fetchone())
+            cur.execute("""
+                SELECT COUNT(*) AS cnt FROM marketing_consents
+                WHERE shop_domain = %s AND opt_out_at >= %s AND opt_out_at < %s
+                  AND source IN ('resend_bounce', 'resend_complaint')
+            """, (shop, start, end))
+            out["bounces_and_complaints"] = _count(cur.fetchone())
+    return out
 
 
 # ── GDPR: export / redact customer, purge shop ───────────────────────────────

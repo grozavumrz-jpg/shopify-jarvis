@@ -195,7 +195,8 @@ class TestShopifyHttpCore(NoNetworkMixin, unittest.IsolatedAsyncioTestCase):
         p, _ = mock_http(h)
         with p, patch.dict(os.environ, {"SHOPIFY_API_VERSION": "2026-07"}):
             subs = await ShopifyClient(SHOP, "t").get_active_subscriptions()
-        self.assertEqual(subs, [{"id": "gid://shopify/AppSubscription/1", "name": "Jarvis Autonomous Pro", "status": "ACTIVE"}])
+        self.assertEqual(subs, [{"id": "gid://shopify/AppSubscription/1", "name": "Jarvis Autonomous Pro", "status": "ACTIVE",
+                                 "test": None}])
 
     async def test_active_subscriptions_errors_raise(self):
         p, _ = mock_http(lambda req: httpx.Response(200, json={"errors": [{"message": "Access denied"}]}))

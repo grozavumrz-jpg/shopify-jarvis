@@ -319,6 +319,10 @@ class TestE2EEndpoints(unittest.TestCase):
         unsub_email = f"unsub_{datetime.now().timestamp()}@test.ro"
         resp = self.client.get(f"/api/unsubscribe?email={unsub_email}&shop=maisongrozavu.myshopify.com&lang=ro")
         self.assertEqual(resp.status_code, 200)
+        self.assertIn("Te dezabonezi?", resp.text)  # GET = confirmation page only
+        resp = self.client.post("/api/unsubscribe", data={"email": unsub_email, "shop": "maisongrozavu.myshopify.com",
+                                                          "lang": "ro", "confirm": "1"})
+        self.assertEqual(resp.status_code, 200)
         self.assertIn("Grozavu", resp.text)
         self.assertIn("Te-ai dezabonat cu succes", resp.text)
 

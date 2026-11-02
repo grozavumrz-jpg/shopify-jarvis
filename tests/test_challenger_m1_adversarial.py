@@ -384,7 +384,11 @@ class TestAdversarialMissingEnvironmentVariables(unittest.TestCase):
                     res.status_code, 500,
                     f"POST {ep} crashed with HTTP 500 under cleared env: {res.text}"
                 )
-                self.assertIn(res.status_code, [200, 400])
+                if ep in ("/api/email/test", "/api/whatsapp/test"):
+                    # no merchant contact configured -> test sends are refused, never sent to strangers
+                    self.assertEqual(res.status_code, 403, ep)
+                else:
+                    self.assertIn(res.status_code, [200, 400])
 
 
 class TestAdversarialTimeoutsAndNetworkFailures(unittest.TestCase):
@@ -462,10 +466,11 @@ class TestAdversarialTimeoutsAndNetworkFailures(unittest.TestCase):
                 "wa_link": "https://wa.me/40722111222?text=Test",
                 "error": "All providers timed out"
             }
-            res = self.client.post("/api/whatsapp/test", json={
-                "shop": self.shop,
-                "to_phone": "+40722111222"
-            })
+            with patch.dict(os.environ, {"MERCHANT_NOTIFY_PHONE": "+40722111222"}):
+                res = self.client.post("/api/whatsapp/test", json={
+                    "shop": self.shop,
+                    "to_phone": "+40722111222"
+                })
             self.assertEqual(res.status_code, 200)
             data = res.json()
             self.assertFalse(data.get("ok"))

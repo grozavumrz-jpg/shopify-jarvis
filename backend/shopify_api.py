@@ -162,7 +162,27 @@ def _attach_consent(obj: Dict[str, Any]) -> Dict[str, Any]:
 
 # ── Customer language heuristics ──────────────────────────────────────────────
 
-def detect_customer_language_and_country(c_name: str, email: str, phone: str, country_code: str, country_name: str) -> dict:
+LOCALE_LANG_NAMES = {
+    "it": "Italiană (Italiano)", "es": "Spaniolă (Español)", "de": "Germană (Deutsch)", "fr": "Franceză (Français)",
+    "ro": "Română", "en": "Engleză (English)", "nl": "Olandeză (Nederlands)", "pt": "Portugheză (Português)",
+}
+
+
+def detect_customer_language_and_country(c_name: str, email: str, phone: str, country_code: str, country_name: str,
+                                         locale: Optional[str] = None) -> dict:
+    """
+    Language + country for a shopper. The language the shopper actually used in the Shopify checkout
+    (`customer_locale`, e.g. "fr-CH") wins; otherwise country, phone prefix, email TLD, then names.
+    """
+    result = dict(_detect_language_by_signals(c_name, email, phone, country_code, country_name))
+    loc_lang = (locale or "").strip().lower().replace("_", "-").split("-")[0]
+    if loc_lang in LOCALE_LANG_NAMES:
+        result["lang"] = loc_lang
+        result["lang_name"] = LOCALE_LANG_NAMES[loc_lang]
+    return result
+
+
+def _detect_language_by_signals(c_name: str, email: str, phone: str, country_code: str, country_name: str) -> dict:
     cc = (country_code or "").upper().strip()
 
     COUNTRY_MAP = {
@@ -239,7 +259,7 @@ ORDER_FIELDS = (
     "id,name,order_number,created_at,updated_at,processed_at,total_price,subtotal_price,currency,"
     "financial_status,fulfillment_status,line_items,customer,checkout_id,checkout_token,cart_token,"
     "email,phone,billing_address,shipping_address,fulfillments,cancelled_at,cancel_reason,"
-    "buyer_accepts_marketing,discount_codes,test,source_name"
+    "buyer_accepts_marketing,discount_codes,test,source_name,customer_locale"
 )
 
 
@@ -543,7 +563,8 @@ class ShopifyClient:
             raw_phone = c.get("phone") or bill.get("phone") or ship.get("phone") or ""
             phone = str(raw_phone).strip() if raw_phone is not None else ""
 
-            geo = detect_customer_language_and_country(c_name, email, phone, country_code, country_name)
+            geo = detect_customer_language_and_country(c_name, email, phone, country_code, country_name,
+                                                       locale=c.get("customer_locale"))
 
             raw_url = (c.get("abandoned_checkout_url") or "").strip()
 
@@ -815,7 +836,7 @@ class ShopifyClient:
         query = """
         query JarvisActiveSubscriptions {
           currentAppInstallation {
-            activeSubscriptions { id name status }
+            activeSubscriptions { id name status test }
           }
         }
         """
@@ -829,7 +850,7 @@ class ShopifyClient:
         inst = ((res.get("data") or {}).get("currentAppInstallation") or {})
         subs = inst.get("activeSubscriptions") or []
         return [
-            {"id": s.get("id"), "name": s.get("name"), "status": s.get("status")}
+            {"id": s.get("id"), "name": s.get("name"), "status": s.get("status"), "test": s.get("test")}
             for s in subs if isinstance(s, dict)
         ]
 

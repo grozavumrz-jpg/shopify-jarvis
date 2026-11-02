@@ -133,11 +133,29 @@ class TestMainReviewFixes(unittest.TestCase):
 
     def test_whatsapp_test_ignores_custom_text(self):
         with patch.object(main.wa_dispatcher, "send_message", new_callable=AsyncMock,
-                          return_value={"success": True}) as send:
+                          return_value={"success": True}) as send, \
+                patch.dict(os.environ, {"MERCHANT_NOTIFY_PHONE": "+34 600 000 000"}):
             self.client.post("/api/whatsapp/test", json={"shop": SHOP, "to_phone": "+34600000000",
                                                          "message": "Buy crypto now http://scam.example"})
         self.assertNotIn("scam", send.call_args.kwargs["message"])
         self.assertEqual(send.call_args.kwargs["message_type"], "transactional")
+
+    def test_whatsapp_test_only_reaches_the_merchant_phone(self):
+        with patch.object(main.wa_dispatcher, "send_message", new_callable=AsyncMock,
+                          return_value={"success": True}) as send, \
+                patch.dict(os.environ, {"MERCHANT_NOTIFY_PHONE": "+34600000000"}):
+            r = self.client.post("/api/whatsapp/test", json={"shop": SHOP, "to_phone": "+34611222333"})
+        self.assertEqual(r.status_code, 403)
+        send.assert_not_called()
+
+    def test_whatsapp_test_refuses_an_opted_out_number(self):
+        db.record_opt_out(SHOP, phone="+34600999888")
+        with patch.object(main.wa_dispatcher, "send_message", new_callable=AsyncMock,
+                          return_value={"success": True}) as send, \
+                patch.dict(os.environ, {"MERCHANT_NOTIFY_PHONE": "+34600999888"}):
+            r = self.client.post("/api/whatsapp/test", json={"shop": SHOP, "to_phone": "+34600999888"})
+        self.assertEqual(r.status_code, 403)
+        send.assert_not_called()
 
     def test_gdpr_redact_uses_signed_shop_domain(self):
         body = json.dumps({"shop_domain": SHOP, "customer": {"email": "a@b.com"}, "orders_to_redact": [1]}).encode()
@@ -184,7 +202,8 @@ class TestBrandedEmailAndSample(unittest.TestCase):
         client = TestClient(main.app, headers=AUTH_HEADERS)
         with patch.object(main, "load_feed_products", new_callable=AsyncMock, return_value=(products, None)), \
                 patch.object(main.email_dispatcher, "send_email", new_callable=AsyncMock,
-                             return_value={"success": True, "provider": "resend"}) as send:
+                             return_value={"success": True, "provider": "resend"}) as send, \
+                patch.dict(os.environ, {"MERCHANT_NOTIFY_EMAIL": "Owner@Example.org"}):
             r = client.post("/api/email/test", json={"shop": SHOP, "to_email": "owner@example.org"})
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()["sample_products"], 2)
@@ -200,9 +219,24 @@ class TestBrandedEmailAndSample(unittest.TestCase):
         db.upsert_shop(SHOP, "shpat_0123456789abcdef0123456789abcd", "Grozavu")
         client = TestClient(main.app, headers=AUTH_HEADERS)
         with patch.object(main.email_dispatcher, "send_email", new_callable=AsyncMock,
-                          return_value={"success": True}) as send:
+                          return_value={"success": True}) as send, \
+                patch.dict(os.environ, {"MERCHANT_NOTIFY_EMAIL": "owner@example.org"}):
             client.post("/api/email/test", json={"shop": SHOP, "to_email": "owner@example.org", "kind": "basic"})
         self.assertIn("[Jarvis Test]", send.call_args.kwargs["subject"])
+
+    def test_test_email_never_goes_to_a_customer(self):
+        db.init_db()
+        client = TestClient(main.app, headers=AUTH_HEADERS)
+        with patch.object(main.email_dispatcher, "send_email", new_callable=AsyncMock,
+                          return_value={"success": True}) as send, \
+                patch.dict(os.environ, {"MERCHANT_NOTIFY_EMAIL": "owner@example.org"}):
+            r = client.post("/api/email/test", json={"shop": SHOP, "to_email": "random.customer@gmail.com"})
+            own_domain = client.post("/api/email/test", json={"shop": SHOP, "to_email": "team@maisongrozavu.com",
+                                                              "kind": "basic"})
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(own_domain.status_code, 200)
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(send.call_args.kwargs["to_email"], "team@maisongrozavu.com")
 
 
 class TestAutopilotInterval(unittest.TestCase):

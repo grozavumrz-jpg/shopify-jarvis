@@ -125,6 +125,12 @@ class PostDeliveryService:
 
     # Max days after scheduled_for a pending thank-you may still go out (then 'expired').
     VIP_MAX_LATE_DAYS = 14
+    # With carrier tracking: thank-you this many days after the parcel is reported delivered...
+    DAYS_AFTER_DELIVERY = 2
+    # ...and if tracking never says "delivered", at the latest this many days after fulfillment.
+    MAX_WAIT_FOR_DELIVERY_DAYS = 14
+    _IN_TRANSIT = {"label_printed", "label_purchased", "confirmed", "in_transit", "out_for_delivery",
+                   "attempted_delivery", "ready_for_pickup", "failure"}
 
     # Thank-you + code for the NEXT order + separate, optional review request.
     # Never "review for a discount", never "5 stars".
@@ -252,6 +258,27 @@ class PostDeliveryService:
         )
         return subject[:1].upper() + subject[1:] if subject else subject
 
+    @classmethod
+    def compute_schedule(cls, fulfillments: List[Dict[str, Any]], fulfilled_at: datetime,
+                         delay_days: int = 5) -> datetime:
+        """
+        When the thank-you should go out:
+          - every fulfillment reported "delivered" by the carrier -> delivered + DAYS_AFTER_DELIVERY
+          - tracking exists but not delivered yet -> fulfilled + MAX_WAIT_FOR_DELIVERY_DAYS
+            (moved earlier on a later sync, once the carrier reports delivery)
+          - no tracking information at all -> fulfilled + delay_days (5)
+        """
+        statuses = [str(f.get("shipment_status") or "").strip().lower() for f in fulfillments if isinstance(f, dict)]
+        known = [st for st in statuses if st]
+        if known and all(st == "delivered" for st in known) and len(known) == len(statuses):
+            delivered = [cls.parse_datetime(f.get("updated_at") or f.get("created_at")) for f in fulfillments]
+            delivered = [d for d in delivered if d is not None]
+            if delivered:
+                return max(max(delivered), fulfilled_at) + timedelta(days=cls.DAYS_AFTER_DELIVERY)
+        if any(st in cls._IN_TRANSIT or st == "delivered" for st in known):
+            return fulfilled_at + timedelta(days=cls.MAX_WAIT_FOR_DELIVERY_DAYS)
+        return fulfilled_at + timedelta(days=delay_days)
+
     @staticmethod
     def sequence_key(order_id: Any) -> str:
         """Frequency-policy key for the post-delivery thank-you (max 1 per order)."""
@@ -327,8 +354,14 @@ class PostDeliveryService:
             order_id = str(order.get("id"))
             order_number = str(order.get("order_number") or order.get("name") or order_id).lstrip("#")
 
-            # 6. Scheduled date: fulfilled_at + 5 days
-            scheduled_for = latest_fulfilled_at + timedelta(days=delay_days)
+            # 6. Scheduled date: after the carrier reports delivery when tracking exists, else fulfilled + 5 days
+            scheduled_for = self.compute_schedule(valid_fulfillments, latest_fulfilled_at, delay_days)
+            ship = order.get("shipping_address") if isinstance(order.get("shipping_address"), dict) else {}
+            bill = order.get("billing_address") if isinstance(order.get("billing_address"), dict) else {}
+            geo = detect_customer_language_and_country(
+                c_name, c_email, c_phone, ship.get("country_code") or bill.get("country_code") or "",
+                ship.get("country") or bill.get("country") or "", locale=order.get("customer_locale"))
+            order_lang = (geo or {}).get("lang") or None
 
             # 7. Line items summary
             items_summary = [
@@ -360,10 +393,18 @@ class PostDeliveryService:
                     fulfilled_at=latest_fulfilled_at,
                     scheduled_for=scheduled_for,
                     items_summary=items_summary,
-                    discount_code=self.DISCOUNT_CODE_MGVIP15
+                    discount_code=self.DISCOUNT_CODE_MGVIP15,
+                    lang=order_lang,
                 )
                 if ok:
                     enqueued_count += 1
+                else:
+                    # Already queued: follow the carrier (e.g. "delivered" reported after the first sync).
+                    existing = db.get_post_delivery_automation(order_id) if hasattr(db, "get_post_delivery_automation") else None
+                    if existing and existing.get("status") == "pending":
+                        current = self.parse_datetime(existing.get("scheduled_for"))
+                        if current is None or abs((current - scheduled_for).total_seconds()) > 3600:
+                            db.reschedule_post_delivery(order_id, scheduled_for)
             except Exception as insert_err:
                 print(f"[PostDeliverySync DB Insert Error {order_id}]: {insert_err}")
 
@@ -479,8 +520,17 @@ class PostDeliveryService:
         first_item = ""
         if items_summary and isinstance(items_summary[0], dict):
             first_item = str(items_summary[0].get("title") or "").strip()
-        geo = detect_customer_language_and_country(c_name, c_email or "", c_phone or "", "", "")
-        lang = (geo or {}).get("lang", "en") or "en"
+        lang = str(record.get("lang") or "").strip().lower()
+        if lang not in self.VIP_TEMPLATES:
+            geo = detect_customer_language_and_country(c_name, c_email or "", c_phone or "", "", "")
+            lang = (geo or {}).get("lang", "en") or "en"
+
+        # A thank-you that is far too late (e.g. after a long outage) is closed, never sent.
+        sched = self.parse_datetime(record.get("scheduled_for"))
+        if sched is not None and (now - sched) > timedelta(days=self.VIP_MAX_LATE_DAYS):
+            self._close_without_send(shop, order_id, c_name, c_email, c_phone, discount_code, lang, "expired",
+                                     f"prea târziu: programat pentru {sched.isoformat()}, peste {self.VIP_MAX_LATE_DAYS} zile")
+            return 0
 
         vip_message = self.build_vip_message(
             customer_name=c_name,

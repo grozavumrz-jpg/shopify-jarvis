@@ -302,10 +302,11 @@ class TestProductionHealthDegradedWithoutKeys(unittest.TestCase):
 
     def test_whatsapp_test_endpoint_degraded(self):
         """POST /api/whatsapp/test waterfalls gracefully to wa.me 1-click link when Meta/Twilio absent."""
-        res = self.client.post("/api/whatsapp/test", json={
-            "shop": self.shop,
-            "to_phone": "+40722123456"
-        })
+        with patch.dict(os.environ, {"MERCHANT_NOTIFY_PHONE": "+40722123456"}):
+            res = self.client.post("/api/whatsapp/test", json={
+                "shop": self.shop,
+                "to_phone": "+40722123456"
+            })
         self.assertEqual(res.status_code, 200)
         data = res.json()
         self.assertIn("wa_me", data.get("provider", ""))
@@ -549,10 +550,11 @@ class TestProductionHealthWithConfiguredKeys(unittest.TestCase):
 
         with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
             mock_post.return_value = mock_meta_response
-            res = self.client.post("/api/whatsapp/test", json={
-                "shop": self.shop,
-                "to_phone": "+40722111222"
-            })
+            with patch.dict(os.environ, {"MERCHANT_NOTIFY_PHONE": "+40722111222"}):
+                res = self.client.post("/api/whatsapp/test", json={
+                    "shop": self.shop,
+                    "to_phone": "+40722111222"
+                })
             self.assertEqual(res.status_code, 200)
             data = res.json()
             self.assertTrue(data.get("ok"))

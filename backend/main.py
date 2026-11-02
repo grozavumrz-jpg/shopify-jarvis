@@ -5,7 +5,8 @@ import time
 import uuid
 import asyncio
 import html as html_lib
-from datetime import datetime, timezone
+from collections import OrderedDict
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List
 
 from fastapi import FastAPI, Request, HTTPException, Query, Depends
@@ -31,11 +32,17 @@ from google_merchant_feed import build_google_merchant_xml, build_feed_items, va
 from seo_optimizer import ProductSEOOptimizer
 from deliverability_checker import DeliverabilityChecker
 import compliance_guard
+import net_guard
 from compliance_guard import (is_quiet_hours, can_dispatch_to_customer, log_customer_dispatch,
                               ephemeral_db_blocks_marketing)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-app = FastAPI(title="Jarvis for Shopify")
+# Interactive API docs list every endpoint; they stay off in production unless JARVIS_ENABLE_DOCS=1.
+_DOCS_ON = os.getenv("JARVIS_ENABLE_DOCS", "").strip().lower() in ("1", "true", "yes")
+app = FastAPI(title="Jarvis for Shopify",
+              docs_url="/docs" if _DOCS_ON else None,
+              redoc_url="/redoc" if _DOCS_ON else None,
+              openapi_url="/openapi.json" if _DOCS_ON else None)
 
 APP_URL = public_app_url()
 BRAND_NAME = os.getenv("BRAND_NAME", "Grozavu")
@@ -228,6 +235,9 @@ async def add_security_headers(request: Request, call_next):
     shop = normalize_shop(request.query_params.get("shop"))
     ancestors = f"https://{shop} https://admin.shopify.com" if shop else "https://admin.shopify.com https://*.myshopify.com"
     response.headers["Content-Security-Policy"] = f"frame-ancestors {ancestors};"
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
     for h in ("x-frame-options", "X-Frame-Options"):
         if h in response.headers:
             del response.headers[h]
@@ -275,7 +285,7 @@ async def install(shop: str = Query(...)):
     if not clean:
         raise HTTPException(400, "invalid_shop_domain")
     nonce = str(uuid.uuid4())
-    db.store_nonce(clean, nonce)
+    db.store_nonce_fresh(clean, nonce)
     return RedirectResponse(build_install_url(clean, nonce))
 
 
@@ -572,11 +582,11 @@ async def get_history(shop: Optional[str] = Query(None), limit: int = Query(30, 
 
 
 @app.get("/api/status")
-async def status(shop: str = Query(None)):
+async def status(request: Request, shop: str = Query(None)):
+    """Public liveness ping. Installation details for a shop require the dashboard auth."""
     if shop:
-        clean = normalize_shop(shop)
-        if not clean:
-            raise HTTPException(400, "invalid_shop_domain")
+        auth = await require_auth(request)
+        clean = resolve_shop(auth, shop)
         try:
             record = db.get_shop(clean)
         except Exception:
@@ -737,10 +747,9 @@ async def process_single_checkout_recovery(shop: str, client: Optional[ShopifyCl
     if not email_ok and not wa_ok:
         return skip(f"Email: {email_reason} | WhatsApp: {wa_reason}")
 
-    previous_stage = int(state.get("current_stage", 0) or 0)
-    if not db.claim_drip_stage(cid, previous_stage, stage):
-        return skip("Mesajul pentru această etapă este deja în curs / trimis")
-
+    # Everything that can fail before sending happens BEFORE the stage is claimed, so a DB hiccup
+    # never leaves a stage marked as sent when nothing went out.
+    settings = db.get_shop_settings(shop)
     meta = cadence_mgr.get_stage_metadata(stage)
     discount_code = meta.get("discount_code")
     raw_checkout_url = c.get("abandoned_checkout_url") or c.get("checkout_url") or ""
@@ -748,7 +757,10 @@ async def process_single_checkout_recovery(shop: str, client: Optional[ShopifyCl
     c_copy = dict(c)
     c_copy["checkout_url"] = stage_checkout_url
     lang = c.get("detected_lang") or "en"
-    settings = db.get_shop_settings(shop)
+
+    previous_stage = int(state.get("current_stage", 0) or 0)
+    if not db.claim_drip_stage(cid, previous_stage, stage):
+        return skip("Mesajul pentru această etapă este deja în curs / trimis")
 
     try:
         if stage == 1:
@@ -887,16 +899,23 @@ async def run_shop_cycle(s: dict, skip_log: Optional[List[dict]] = None) -> Dict
         result["errors"].append(f"Comenzi: {getattr(e, 'detail', e)}")
 
     try:
-        for c in await client.get_abandoned_checkouts_detailed():
+        checkouts = await client.get_abandoned_checkouts_detailed()
+    except Exception as e:
+        checkouts = []
+        result["errors"].append(f"Coșuri: {getattr(e, 'detail', e)}")
+    for c in checkouts:
+        # One bad checkout (or a DB hiccup) must not stop the others in this cycle.
+        try:
             if skip_log is None:
                 res = await process_single_checkout_recovery(shop, client, shop_name, c)
             else:
                 res = await process_single_checkout_recovery(shop, client, shop_name, c, skip_log=skip_log)
-            if res:
-                result["sent"] += 1
-                result["items"].append(res)
-    except Exception as e:
-        result["errors"].append(f"Coșuri: {getattr(e, 'detail', e)}")
+        except Exception as e:
+            res = None
+            result["errors"].append(f"Coș {c.get('id') if isinstance(c, dict) else '?'}: {getattr(e, 'detail', e)}")
+        if res:
+            result["sent"] += 1
+            result["items"].append(res)
 
     try:
         await asyncio.to_thread(post_delivery_service.sync_fulfilled_orders, shop, 14)
@@ -950,10 +969,29 @@ async def autopilot_daemon_loop():
 
 # ── Shopify webhooks (HMAC-verified) ──────────────────────────────────────────
 
+_SEEN_WEBHOOK_IDS: "OrderedDict[str, float]" = OrderedDict()
+MAX_SEEN_WEBHOOK_IDS = 2000
+
+
+def _already_processed(webhook_id: Optional[str]) -> bool:
+    """True if this X-Shopify-Webhook-Id was already handled (Shopify retries / replays)."""
+    wid = (webhook_id or "").strip()
+    if not wid:
+        return False
+    if wid in _SEEN_WEBHOOK_IDS:
+        return True
+    _SEEN_WEBHOOK_IDS[wid] = time.time()
+    while len(_SEEN_WEBHOOK_IDS) > MAX_SEEN_WEBHOOK_IDS:
+        _SEEN_WEBHOOK_IDS.popitem(last=False)
+    return False
+
+
 async def _verified_webhook(request: Request) -> tuple:
     raw = await request.body()
     if not verify_webhook_hmac(raw, request.headers.get("x-shopify-hmac-sha256")):
         raise HTTPException(401, "invalid_hmac")
+    if _already_processed(request.headers.get("x-shopify-webhook-id")):
+        return None, {}
     try:
         body = json.loads(raw or b"{}")
     except Exception:
@@ -1112,21 +1150,11 @@ URL_SETTING_FIELDS = ("discord_webhook_url", "whatsapp_webhook_url")
 
 
 def _safe_public_url(value: str) -> bool:
-    """Outbound webhook URLs must be public https endpoints (no localhost / private / metadata IPs)."""
-    import ipaddress
-    from urllib.parse import urlparse
-    try:
-        parsed = urlparse(value.strip())
-    except Exception:
-        return False
-    host = (parsed.hostname or "").lower()
-    if parsed.scheme != "https" or not host or host == "localhost" or host.endswith(".local") or host.endswith(".internal"):
-        return False
-    try:
-        ip = ipaddress.ip_address(host)
-        return ip.is_global
-    except ValueError:
-        return "." in host
+    """
+    Outbound webhook URLs must be public https endpoints (no localhost / private / metadata IPs,
+    including legacy IPv4 spellings like 127.1). The resolved addresses are checked again at send time.
+    """
+    return net_guard.is_public_https_url(value)
 
 
 def _merge_settings(current: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
@@ -1149,7 +1177,7 @@ async def get_whatsapp_settings(shop: Optional[str] = Query(None), auth: AuthCon
     s = mask_settings(db.get_shop_settings(shop))
     keys = ("whatsapp_provider", "whatsapp_api_token", "whatsapp_api_token_configured", "whatsapp_phone_number_id",
             "twilio_account_sid", "twilio_auth_token", "twilio_auth_token_configured", "twilio_whatsapp_number",
-            "whatsapp_webhook_url", "whatsapp_webhook_url_configured", "updated_at")
+            "whatsapp_webhook_url", "whatsapp_webhook_url_configured", "merchant_notify_phone", "updated_at")
     out = {k: s.get(k) for k in keys}
     out["shop"] = shop
     out["whatsapp_provider"] = out.get("whatsapp_provider") or "auto"
@@ -1170,6 +1198,7 @@ class WhatsAppSettingsUpdateRequest(BaseModel):
     twilio_whatsapp_number: Optional[str] = None
     whatsapp_webhook_url: Optional[str] = None
     webhook_url: Optional[str] = None  # alias
+    merchant_notify_phone: Optional[str] = None  # the only number /api/whatsapp/test may reach
 
 
 @app.post("/api/settings/whatsapp")
@@ -1183,7 +1212,10 @@ async def save_whatsapp_settings(req: WhatsAppSettingsUpdateRequest, auth: AuthC
         "twilio_auth_token": req.twilio_auth_token if req.twilio_auth_token is not None else req.twilio_token,
         "twilio_whatsapp_number": req.twilio_whatsapp_number,
         "whatsapp_webhook_url": req.whatsapp_webhook_url if req.whatsapp_webhook_url is not None else req.webhook_url,
+        "merchant_notify_phone": req.merchant_notify_phone,
     }
+    if req.merchant_notify_phone and not db.normalize_phone(req.merchant_notify_phone):
+        raise HTTPException(400, "invalid_merchant_notify_phone")
     if updates["whatsapp_provider"] not in (None, "auto", "meta", "twilio", "webhook", "wa_me"):
         raise HTTPException(400, "invalid_provider")
     current = _merge_settings(db.get_shop_settings(shop), updates)
@@ -1193,18 +1225,55 @@ async def save_whatsapp_settings(req: WhatsAppSettingsUpdateRequest, auth: AuthC
 
 class TestWhatsAppRequest(BaseModel):
     shop: Optional[str] = None
-    to_phone: str
+    to_phone: Optional[str] = None
     message: Optional[str] = None
+
+
+def merchant_test_phones(settings: Dict[str, Any]) -> set:
+    """Phones a test WhatsApp may go to: only the merchant's own (settings or MERCHANT_NOTIFY_PHONE)."""
+    out = set()
+    for raw in (settings.get("merchant_notify_phone"), os.getenv("MERCHANT_NOTIFY_PHONE", "")):
+        norm = db.normalize_phone(raw)
+        if norm:
+            out.add(norm)
+    return out
+
+
+def merchant_test_emails(settings: Dict[str, Any]) -> set:
+    """Addresses a test email may go to: the merchant's contacts, the sender, or the brand's own domain."""
+    out = set()
+    for raw in (settings.get("merchant_notify_email"), os.getenv("MERCHANT_NOTIFY_EMAIL", ""),
+                os.getenv("REPLY_TO_EMAIL", ""), BRAND_CONTACT_EMAIL, EmailDispatcher.resolve_sender(settings)[1]):
+        norm = db.normalize_email(raw)
+        if norm and "@" in norm:
+            out.add(norm)
+    return out
+
+
+def is_merchant_test_email(addr: Optional[str], settings: Dict[str, Any]) -> bool:
+    norm = db.normalize_email(addr)
+    if not norm or "@" not in norm:
+        return False
+    domain = norm.rsplit("@", 1)[1]
+    return norm in merchant_test_emails(settings) or domain == (BRAND_DOMAIN or "").strip().lower()
 
 
 @app.post("/api/whatsapp/test")
 async def test_whatsapp_send(req: TestWhatsAppRequest, auth: AuthContext = Depends(require_auth)):
+    """Fixed test text, ONLY to the merchant's own phone (it skips marketing consent by design)."""
     shop = resolve_shop(auth, req.shop)
     record = get_shop_or_404(shop)
     shop_name = record.get("shop_name") or BRAND_NAME
-    # Fixed text: this endpoint skips marketing rules, so it must not be usable to send arbitrary messages
+    settings = db.get_shop_settings(shop)
+    allowed = merchant_test_phones(settings)
+    target = db.normalize_phone(req.to_phone) or (sorted(allowed)[0] if len(allowed) == 1 else None)
+    if not target or target not in allowed:
+        raise HTTPException(403, "Mesajul de test se trimite doar la telefonul tău de comerciant: salvează-l în "
+                                 "Setări WhatsApp → „Telefonul tău (comerciant)”, apoi trimite testul.")
+    if db.get_consent_status(shop, phone=target, channel="whatsapp") == db.CONSENT_OPTED_OUT:
+        raise HTTPException(403, "Numărul este dezabonat — Jarvis nu îi trimite nimic.")
     test_msg = f"[Jarvis Test] Mesaj de test de la {shop_name}. Dacă îl primești, WhatsApp funcționează."
-    return await wa_dispatcher.send_message(phone=req.to_phone, message=test_msg, settings=db.get_shop_settings(shop),
+    return await wa_dispatcher.send_message(phone=target, message=test_msg, settings=settings,
                                             shop_domain=shop, message_type="transactional")
 
 
@@ -1298,7 +1367,7 @@ async def save_delivery_settings(req: DeliverySettingsUpdateRequest, auth: AuthC
 
 class TestEmailRequest(BaseModel):
     shop: Optional[str] = None
-    to_email: str
+    to_email: Optional[str] = None
     # "cart": the real abandoned-cart email (stage 2, MG10) with real products; "basic": plain delivery test
     kind: Optional[str] = "cart"
     lang: Optional[str] = "es"
@@ -1327,6 +1396,13 @@ async def test_email_send(req: TestEmailRequest, auth: AuthContext = Depends(req
     shop = resolve_shop(auth, req.shop)
     record = get_shop_or_404(shop)
     shop_name = record.get("shop_name") or BRAND_NAME
+    settings = db.get_shop_settings(shop)
+    to_email = (req.to_email or settings.get("merchant_notify_email") or os.getenv("MERCHANT_NOTIFY_EMAIL", "")).strip()
+    # The test skips consent / unsubscribe rules, so it may only reach the merchant's own mailboxes.
+    if not is_merchant_test_email(to_email, settings):
+        raise HTTPException(403, "Emailul de test se trimite doar la adresa ta de comerciant (Email Notificare "
+                                 f"Comerciant, salvat în setări) sau la o adresă @{BRAND_DOMAIN}.")
+    req.to_email = to_email
     if (req.kind or "cart").strip().lower() == "cart":
         # Exactly what a customer receives (stage 2 of the cart sequence), sent only to the merchant.
         lang = EmailDispatcher._normalize_lang(req.lang or "es")
@@ -1349,7 +1425,7 @@ async def test_email_send(req: TestEmailRequest, auth: AuthContext = Depends(req
             customer_email=req.to_email, shop_domain=shop)
         result = await email_dispatcher.send_email(
             to_email=req.to_email, subject=f"[TEST] {copy.get('subject') or shop_name}", body_text=body,
-            body_html=html_body, settings=db.get_shop_settings(shop), shop_domain=shop, is_internal=True)
+            body_html=html_body, settings=settings, shop_domain=shop, is_internal=True)
         result.update(kind="cart", sample_products=len(items), lang=lang)
         return result
     subject = f"[Jarvis Test] Email de test de la {shop_name}"
@@ -1359,7 +1435,7 @@ async def test_email_send(req: TestEmailRequest, auth: AuthContext = Depends(req
         shop_name=shop_name, customer_name="", items_str="", checkout_url=f"https://{BRAND_DOMAIN}",
         text_body=body, lang="ro", customer_email=req.to_email, shop_domain=shop, is_internal=True)
     return await email_dispatcher.send_email(to_email=req.to_email, subject=subject, body_text=body,
-                                             body_html=html_body, settings=db.get_shop_settings(shop),
+                                             body_html=html_body, settings=settings,
                                              is_internal=True)
 
 
@@ -1476,7 +1552,12 @@ async def privacy_policy():
 
 class BillingCreateRequest(BaseModel):
     shop: Optional[str] = None
-    test: bool = True
+    test: Optional[bool] = None  # ignored: the server decides (JARVIS_BILLING_TEST)
+
+
+def billing_test_mode() -> bool:
+    """Shopify test charges cost nothing. Real charges only with JARVIS_BILLING_TEST=0."""
+    return os.getenv("JARVIS_BILLING_TEST", "1").strip().lower() not in ("0", "false", "no")
 
 
 @app.post("/api/billing/create")
@@ -1488,7 +1569,7 @@ async def billing_create(req: BillingCreateRequest, auth: AuthContext = Depends(
         return {"ok": False, "demo_mode": True, "error": "Shopify nu este conectat (token lipsă)."}
     try:
         confirmation_url = await ShopifyClient(shop, token).create_app_subscription(
-            return_url=f"{APP_URL}/api/billing/callback?shop={shop}", test=req.test)
+            return_url=f"{APP_URL}/api/billing/callback?shop={shop}", test=billing_test_mode())
         if not confirmation_url:
             return {"ok": False, "demo_mode": True, "error": "Shopify nu a returnat un link de confirmare."}
         return {"ok": True, "confirmation_url": confirmation_url}
@@ -1509,7 +1590,10 @@ async def billing_callback(shop: str = Query(...), charge_id: Optional[str] = Qu
     if has_real_token(token):
         try:
             subs = await ShopifyClient(clean, token).get_active_subscriptions()
-            confirmed = any(str(s.get("status", "")).upper() == "ACTIVE" for s in (subs or []))
+            live_only = not billing_test_mode()
+            # In live mode a free Shopify *test* subscription must not unlock Pro.
+            confirmed = any(str(s.get("status", "")).upper() == "ACTIVE" and not (live_only and s.get("test") is True)
+                            for s in (subs or []))
         except Exception as e:
             print(f"[Billing callback verify warning]: {e}")
     if confirmed:
@@ -1572,10 +1656,8 @@ async def get_google_merchant_feed(shop: Optional[str] = Query(None)):
 
 
 @app.get("/api/google/feed-validation")
-async def validate_merchant_feed_endpoint(shop: Optional[str] = Query(None)):
-    clean = normalize_shop(shop) if shop else default_shop()
-    if not clean:
-        raise HTTPException(400, "invalid_shop_domain")
+async def validate_merchant_feed_endpoint(shop: Optional[str] = Query(None), auth: AuthContext = Depends(require_auth)):
+    clean = resolve_shop(auth, shop)
     products, error = await load_feed_products(clean)
     if products is None:
         return {"valid": False, "connected": False, "items_count": 0, "product_groups": 0,
@@ -1688,13 +1770,26 @@ async def get_compliance_stats(shop: Optional[str] = Query(None), auth: AuthCont
 
 
 UNSUB_TEXT = {
-    "es": ("Te has dado de baja", "La dirección <strong>{who}</strong> ya no recibirá comunicaciones comerciales de <strong>{brand}</strong>.",
-           "Enlace incompleto. Escríbenos a {contact} y te daremos de baja.", "Volver a la tienda"),
-    "ro": ("Te-ai dezabonat cu succes", "Adresa <strong>{who}</strong> nu va mai primi comunicări comerciale de la <strong>{brand}</strong>.",
-           "Link incomplet. Scrie-ne la {contact} și te dezabonăm.", "Înapoi la magazin"),
-    "en": ("You have been unsubscribed", "<strong>{who}</strong> will no longer receive marketing messages from <strong>{brand}</strong>.",
-           "This link is incomplete. Email us at {contact} and we'll unsubscribe you.", "Back to the store"),
+    "es": {"done_title": "Te has dado de baja",
+           "done": "La dirección <strong>{who}</strong> ya no recibirá comunicaciones comerciales de <strong>{brand}</strong>.",
+           "confirm_title": "¿Darte de baja?",
+           "confirm": "¿Quieres dejar de recibir comunicaciones comerciales de <strong>{brand}</strong> en <strong>{who}</strong>?",
+           "button": "Sí, darme de baja",
+           "bad": "Enlace incompleto. Escríbenos a {contact} y te daremos de baja.", "back": "Volver a la tienda"},
+    "ro": {"done_title": "Te-ai dezabonat cu succes",
+           "done": "Adresa <strong>{who}</strong> nu va mai primi comunicări comerciale de la <strong>{brand}</strong>.",
+           "confirm_title": "Te dezabonezi?",
+           "confirm": "Vrei să nu mai primești comunicări comerciale de la <strong>{brand}</strong> pe <strong>{who}</strong>?",
+           "button": "Da, dezabonează-mă",
+           "bad": "Link incomplet. Scrie-ne la {contact} și te dezabonăm.", "back": "Înapoi la magazin"},
+    "en": {"done_title": "You have been unsubscribed",
+           "done": "<strong>{who}</strong> will no longer receive marketing messages from <strong>{brand}</strong>.",
+           "confirm_title": "Unsubscribe?",
+           "confirm": "Stop receiving marketing messages from <strong>{brand}</strong> at <strong>{who}</strong>?",
+           "button": "Yes, unsubscribe me",
+           "bad": "This link is incomplete. Email us at {contact} and we'll unsubscribe you.", "back": "Back to the store"},
 }
+MAX_EMAIL_LEN = 254
 
 
 def _pick_lang(request: Request, explicit: Optional[str]) -> str:
@@ -1707,46 +1802,119 @@ def _pick_lang(request: Request, explicit: Optional[str]) -> str:
     return "en"
 
 
+def _unsub_identity(email: str, phone: str) -> tuple:
+    """(email, phone) cleaned and bounded; invalid values become ''."""
+    e = (email or "").strip()
+    if not e or "@" not in e or len(e) > MAX_EMAIL_LEN or any(ch in e for ch in "\r\n"):
+        e = ""
+    digits = db.normalize_phone(phone) or ""
+    if not (6 <= len(digits) <= 15):
+        digits = ""
+    return e, (phone or "").strip() if digits else ""
+
+
+def _unsub_page(code: str, title: str, inner_html: str, status_code: int = 200) -> HTMLResponse:
+    brand = html_lib.escape(BRAND_NAME)
+    back = html_lib.escape(UNSUB_TEXT[code]["back"])
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="{code}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex">
+<title>{html_lib.escape(title)} | {brand}</title>
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:#111; color:#f5f5f5; display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; padding:20px; box-sizing:border-box; }}
+.card {{ background:#1c1c1c; border:1px solid #333; border-radius:16px; padding:40px; max-width:500px; text-align:center; }}
+h1 {{ font-size:22px; margin-bottom:12px; color:#fff; font-weight:600; }}
+p {{ font-size:15px; color:#d1d5db; line-height:1.6; margin-bottom:24px; }}
+a.btn, button.btn {{ display:inline-block; background:#fff; color:#111; padding:12px 24px; border-radius:8px; text-decoration:none; font-weight:600; font-size:14px; border:0; cursor:pointer; }}
+a.link {{ color:#9ca3af; font-size:13px; display:inline-block; margin-top:18px; }}
+</style></head>
+<body><div class="card"><h1>{html_lib.escape(title)}</h1>{inner_html}
+<a href="https://{html_lib.escape(BRAND_DOMAIN)}" class="link">{back}</a></div></body></html>""", status_code=status_code)
+
+
+async def _form_fields(request: Request) -> Dict[str, str]:
+    """application/x-www-form-urlencoded body as a flat dict (no python-multipart dependency)."""
+    from urllib.parse import parse_qs
+    try:
+        raw = (await request.body())[:4096].decode("utf-8", errors="replace")
+    except Exception:
+        return {}
+    return {k: v[-1] for k, v in parse_qs(raw, keep_blank_values=True).items() if v}
+
+
 @app.api_route("/api/unsubscribe", methods=["GET", "POST"], response_class=HTMLResponse)
 async def handle_unsubscribe(request: Request, email: str = Query(""), phone: str = Query(""),
                              shop: str = Query(""), lang: Optional[str] = Query(None)):
-    """Opt-out for links in emails (GET) and RFC 8058 one-click (POST List-Unsubscribe=One-Click)."""
+    """
+    GET  = confirmation page only. Mail security scanners open every link in an email, so a GET must
+           never unsubscribe anybody by itself.
+    POST = the opt-out: the page's button (confirm=1 -> HTML) or RFC 8058 one-click from the mail
+           client ("List-Unsubscribe=One-Click" -> JSON). Opt-outs are recorded per shop, email AND phone.
+    """
+    form = await _form_fields(request) if request.method == "POST" else {}
+    email = form.get("email", email)
+    phone = form.get("phone", phone)
+    shop = form.get("shop", shop)
+    lang = form.get("lang", lang)
     shop_n = normalize_shop(shop) or default_shop()
-    clean_email = (email or "").strip()
-    clean_phone = (phone or "").strip()
+    clean_email, clean_phone = _unsub_identity(email, phone)
+    code = _pick_lang(request, lang)
+    t = UNSUB_TEXT[code]
+    brand = html_lib.escape(BRAND_NAME)
+    who = html_lib.escape(clean_email or clean_phone)
+    contact = html_lib.escape(BRAND_CONTACT_EMAIL)
+
+    if not clean_email and not clean_phone:
+        if request.method == "POST" and form.get("confirm") != "1":
+            return JSONResponse({"ok": False}, status_code=400)
+        return _unsub_page(code, "⚠️", f"<p>{t['bad'].format(contact=contact)}</p>", status_code=400)
+
+    if request.method == "GET":
+        hidden = "".join(
+            f'<input type="hidden" name="{name}" value="{html_lib.escape(value)}">'
+            for name, value in (("email", clean_email), ("phone", clean_phone), ("shop", shop_n), ("lang", code),
+                                ("confirm", "1")) if value)
+        return _unsub_page(code, t["confirm_title"],
+                           f"<p>{t['confirm'].format(who=who, brand=brand)}</p>"
+                           f'<form method="post" action="/api/unsubscribe">{hidden}'
+                           f'<button type="submit" class="btn">{html_lib.escape(t["button"])}</button></form>')
+
     recorded = False
     try:
-        if clean_email and "@" in clean_email:
+        if clean_email:
             recorded = bool(db.record_opt_out(shop_n, email=clean_email)) or recorded
         if clean_phone:
             recorded = bool(db.record_opt_out(shop_n, phone=clean_phone)) or recorded
     except Exception as e:
-        print(f"[Unsubscribe error]: {e}")
+        print(f"[Unsubscribe error]: {type(e).__name__}")
         recorded = False
 
-    if request.method == "POST":
+    if form.get("confirm") != "1":  # RFC 8058 one-click from the mail client
         return JSONResponse({"ok": recorded}, status_code=200 if recorded else 400)
+    if not recorded:
+        return _unsub_page(code, "⚠️", f"<p>{t['bad'].format(contact=contact)}</p>", status_code=400)
+    return _unsub_page(code, t["done_title"], f"<p>{t['done'].format(who=who, brand=brand)}</p>")
 
-    code = _pick_lang(request, lang)
-    title, ok_msg, bad_msg, back = UNSUB_TEXT[code]
-    who = html_lib.escape(clean_email or clean_phone)
-    brand = html_lib.escape(BRAND_NAME)
-    contact = html_lib.escape(BRAND_CONTACT_EMAIL)
-    text = ok_msg.format(who=who, brand=brand) if recorded else bad_msg.format(contact=contact)
-    heading = title if recorded else "⚠️"
-    return HTMLResponse(f"""<!DOCTYPE html>
-<html lang="{code}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{html_lib.escape(title)} | {brand}</title>
-<style>
-body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:#181513; color:#FEF3C7; display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; padding:20px; box-sizing:border-box; }}
-.card {{ background:#231F1C; border:1px solid #451A03; border-radius:16px; padding:40px; max-width:500px; text-align:center; }}
-h1 {{ font-size:22px; margin-bottom:12px; color:#F59E0B; font-weight:600; }}
-p {{ font-size:15px; color:#D1D5DB; line-height:1.6; margin-bottom:24px; }}
-a.btn {{ display:inline-block; background:#D97706; color:#181513; padding:12px 24px; border-radius:8px; text-decoration:none; font-weight:600; font-size:14px; }}
-</style></head>
-<body><div class="card"><h1>{html_lib.escape(heading)}</h1><p>{text}</p>
-<a href="https://{html_lib.escape(BRAND_DOMAIN)}" class="btn">{html_lib.escape(back)}</a></div></body></html>""",
-                        status_code=200 if recorded else 400)
+
+class LiftOptOutRequest(BaseModel):
+    shop: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+
+
+@app.post("/api/compliance/lift-opt-out")
+async def lift_opt_out_endpoint(req: LiftOptOutRequest, auth: AuthContext = Depends(require_auth)):
+    """
+    Merchant action, ONLY when the customer asked to receive messages again. Removes the opt-out;
+    consent returns to "unknown" (never "granted") until Shopify reports the customer's consent again.
+    """
+    shop = resolve_shop(auth, req.shop)
+    if not db.normalize_email(req.email) and not db.normalize_phone(req.phone):
+        raise HTTPException(400, "email_or_phone_required")
+    changed = db.lift_opt_out(shop, email=req.email, phone=req.phone)
+    return {"ok": True, "changed": bool(changed),
+            "message": ("Dezabonarea a fost ridicată. Jarvis îi va scrie din nou doar dacă Shopify arată "
+                        "acordul de marketing al clientului.") if changed else "Nu exista nicio dezabonare pentru acest contact."}
 
 
 if __name__ == "__main__":

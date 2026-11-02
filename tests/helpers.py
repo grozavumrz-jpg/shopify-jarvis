@@ -5,6 +5,10 @@ Authoritative models derived from PROJECT.md and ORIGINAL_REQUEST.md.
 
 import sys
 import os
+try:
+    from tests import _test_env  # noqa: F401  (isolated SQLite file per test run)
+except ImportError:  # pragma: no cover
+    import _test_env  # noqa: F401
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone, timedelta
 

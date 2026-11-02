@@ -10,6 +10,11 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List, Union
 import httpx
 
+try:
+    import net_guard
+except ImportError:  # pragma: no cover - package-style import
+    from backend import net_guard
+
 logger = logging.getLogger("mobile_notifier")
 
 
@@ -258,6 +263,8 @@ class MobileNotifier:
         url = (webhook_url or "").strip()
         if not url:
             return {"ok": False, "reason": "missing_discord_webhook_url"}
+        if not net_guard.url_resolves_public(url):
+            return {"ok": False, "reason": "discord_webhook_url_not_public"}
 
         # Ensure embed field values do not exceed DISCORD_FIELD_VALUE_LIMIT
         sanitized_embed = dict(embed_payload)
@@ -281,7 +288,7 @@ class MobileNotifier:
                 resp = await client.post(url, json=payload)
                 if resp.status_code in (200, 204):
                     return {"ok": True, "status": resp.status_code}
-                return {"ok": False, "status": resp.status_code, "error": resp.text}
+                return {"ok": False, "status": resp.status_code, "error": (resp.text or "")[:300]}
         except Exception as e:
             logger.error(f"[Discord Webhook Exception]: {e}")
             return {"ok": False, "error": str(e)}

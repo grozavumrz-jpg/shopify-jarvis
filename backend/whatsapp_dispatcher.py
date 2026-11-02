@@ -21,6 +21,11 @@ import urllib.parse
 from typing import Dict, Optional, Any
 import httpx
 
+try:
+    import net_guard
+except ImportError:  # pragma: no cover - package-style import
+    from backend import net_guard
+
 # Jarvis has no inbound WhatsApp webhook, so a "reply STOP" promise would be false.
 # The opt-out line links to the same unsubscribe endpoint used by emails (?phone=...).
 OPT_OUT_LINES: Dict[str, str] = {
@@ -220,7 +225,15 @@ class WhatsAppDispatcher:
             }
 
     async def _dispatch_webhook(self, clean_phone: str, message: str, webhook_url: str, customer_name: Optional[str] = None) -> Dict[str, Any]:
-        """Send message via generic custom webhook gateway."""
+        """Send message via generic custom webhook gateway (public https endpoints only)."""
+        if not net_guard.url_resolves_public(webhook_url):
+            return {
+                "ok": False,
+                "success": False,
+                "provider": "webhook",
+                "gateway": "webhook",
+                "error": "Webhook URL refuzat: trebuie să fie un endpoint https public (nu localhost / rețea privată).",
+            }
         payload = {
             "phone": clean_phone,
             "customer_name": customer_name or "Client",
@@ -235,7 +248,7 @@ class WhatsAppDispatcher:
                 "success": False,
                 "provider": "webhook",
                 "gateway": "webhook",
-                "error": f"Webhook HTTP {resp.status_code}: {resp.text}",
+                "error": f"Webhook HTTP {resp.status_code}: {(resp.text or '')[:200]}",
                 "status_code": resp.status_code
             }
 

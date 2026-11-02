@@ -28,6 +28,24 @@ SHOP_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\.myshopify\.com$")
 MIN_ADMIN_KEY_LEN = 12
 TOKEN_LEEWAY_SECONDS = 10
 
+# Brute-force brake for X-Jarvis-Key: after too many wrong keys in a window, admin-key logins pause
+# briefly for everyone (session tokens from Shopify admin are not affected). Process-local on purpose:
+# no client IP is trusted (behind Render's proxy the source address is the proxy).
+ADMIN_KEY_MAX_FAILURES = 20
+ADMIN_KEY_WINDOW_SECONDS = 60
+_admin_key_failures: list = []
+
+
+def _admin_key_locked(now: Optional[float] = None) -> bool:
+    t = time.time() if now is None else now
+    while _admin_key_failures and _admin_key_failures[0] < t - ADMIN_KEY_WINDOW_SECONDS:
+        _admin_key_failures.pop(0)
+    return len(_admin_key_failures) >= ADMIN_KEY_MAX_FAILURES
+
+
+def _record_admin_key_failure(now: Optional[float] = None) -> None:
+    _admin_key_failures.append(time.time() if now is None else now)
+
 
 def normalize_shop(shop: Optional[str]) -> Optional[str]:
     """Return a canonical `<name>.myshopify.com` or None if the value is not a valid shop domain."""
@@ -108,8 +126,12 @@ async def require_auth(request: Request) -> AuthContext:
     """FastAPI dependency: 401 unless a valid admin key or Shopify session token is present."""
     admin_key = _admin_key()
     provided = request.headers.get("x-jarvis-key", "")
-    if admin_key and provided and hmac.compare_digest(provided.encode(), admin_key.encode()):
-        return AuthContext(method="admin_key")
+    if admin_key and provided:
+        if _admin_key_locked():
+            raise HTTPException(status_code=429, detail="too_many_attempts")
+        if hmac.compare_digest(provided.encode(), admin_key.encode()):
+            return AuthContext(method="admin_key")
+        _record_admin_key_failure()
 
     authz = request.headers.get("authorization", "")
     if authz[:7].lower() == "bearer ":

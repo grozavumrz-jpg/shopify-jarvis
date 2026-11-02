@@ -237,14 +237,34 @@ class TestUnsubscribe(unittest.TestCase):
         db.init_db()
         self.client = TestClient(main.app)
 
-    def test_get_records_opt_out_and_escapes(self):
+    def test_get_only_asks_for_confirmation_and_escapes(self):
+        """Mail security scanners open every link: a GET must never unsubscribe anybody by itself."""
         payload = '<img src=x onerror=alert(1)>@x.com'
         with patch.object(main.db, "record_opt_out", return_value=True) as opt:
             r = self.client.get("/api/unsubscribe", params={"email": payload, "shop": SHOP})
         self.assertEqual(r.status_code, 200)
         self.assertNotIn("<img", r.text)
         self.assertIn("&lt;img", r.text)
-        opt.assert_called_once()
+        self.assertIn('method="post"', r.text)
+        opt.assert_not_called()
+
+    def test_confirmation_button_records_opt_out(self):
+        with patch.object(main.db, "record_opt_out", return_value=True) as opt:
+            r = self.client.post("/api/unsubscribe", data={"email": "ana@x.com", "shop": SHOP, "lang": "es",
+                                                           "confirm": "1"})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Te has dado de baja", r.text)
+        opt.assert_called_once_with(SHOP, email="ana@x.com")
+
+    def test_public_status_without_shop_but_details_need_auth(self):
+        self.assertEqual(self.client.get("/api/status").status_code, 200)
+        self.assertEqual(self.client.get(f"/api/status?shop={SHOP}").status_code, 401)
+        self.assertEqual(self.client.get(f"/api/status?shop={SHOP}", headers=AUTH).status_code, 200)
+
+    def test_api_docs_are_not_public(self):
+        for path in ("/docs", "/redoc", "/openapi.json"):
+            self.assertEqual(self.client.get(path).status_code, 404, path)
+        self.assertEqual(self.client.get("/api/google/feed-validation").status_code, 401)
 
     def test_empty_email_is_not_a_fake_success(self):
         r = self.client.get("/api/unsubscribe?email=")
@@ -316,7 +336,7 @@ class TestGoogleFeed(unittest.TestCase):
         with patch.object(main, "get_shop_or_404", return_value={"shop": SHOP, "access_token": "shpat_0123456789abcdef"}), \
                 patch.object(main, "ShopifyClient", return_value=fake):
             r = self.client.get("/feeds/google-merchant.xml")
-            v = self.client.get("/api/google/feed-validation").json()
+            v = self.client.get("/api/google/feed-validation", headers=AUTH).json()
         self.assertEqual(r.status_code, 200)
         root = ET.fromstring(r.content)
         self.assertEqual(len(root.find("channel").findall("item")), 2)
