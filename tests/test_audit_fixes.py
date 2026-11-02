@@ -304,5 +304,17 @@ class TestSecurityHeaders(unittest.TestCase):
         self.assertIn("max-age", r.headers.get("strict-transport-security", ""))
 
 
+class TestHealthDoesNotWakeTheDatabase(unittest.TestCase):
+    def test_repeated_health_pings_hit_the_db_at_most_once_per_window(self):
+        client = TestClient(main.app)
+        main._OAUTH_MODE_CACHE.update(at=0.0, oauth=False)
+        with patch.dict(main.SHOPIFY_CONNECTION, {"mode": "none"}), \
+                patch.object(main.db, "get_shop", return_value={"access_token": "shpat_0123456789abcdef0123456789abcd"}) as get_shop:
+            for _ in range(10):
+                self.assertEqual(client.get("/health").json()["shopify_connection"], "oauth")
+        self.assertEqual(get_shop.call_count, 1)
+        main._OAUTH_MODE_CACHE.update(at=0.0, oauth=False)
+
+
 if __name__ == "__main__":
     unittest.main()

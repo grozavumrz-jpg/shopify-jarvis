@@ -198,17 +198,29 @@ def autopilot_status_payload() -> Dict[str, Any]:
     return status
 
 
+_OAUTH_MODE_CACHE: Dict[str, Any] = {"at": 0.0, "oauth": False, "shop": None}
+OAUTH_MODE_CACHE_SECONDS = 1800
+
+
 def shopify_connection_mode() -> str:
-    """client_credentials / env_token when managed here; 'oauth' when a token came from the install flow."""
+    """
+    client_credentials / env_token when managed here; 'oauth' when a token came from the install flow.
+    The OAuth check is cached for 30 minutes: /health is pinged every few minutes by uptime monitors and
+    must not wake the (free, auto-suspending) Neon database each time.
+    """
     mode = SHOPIFY_CONNECTION.get("mode") or "none"
-    if mode == "none":
+    if mode != "none":
+        return mode
+    shop = default_shop()
+    if _OAUTH_MODE_CACHE["shop"] != shop or time.time() - _OAUTH_MODE_CACHE["at"] > OAUTH_MODE_CACHE_SECONDS:
+        oauth = False
         try:
-            record = db.get_shop(default_shop())
-            if record and has_real_token(record.get("access_token")):
-                return "oauth"
+            record = db.get_shop(shop)
+            oauth = bool(record and has_real_token(record.get("access_token")))
         except Exception:
-            pass
-    return mode
+            oauth = False
+        _OAUTH_MODE_CACHE.update(at=time.time(), oauth=oauth, shop=shop)
+    return "oauth" if _OAUTH_MODE_CACHE["oauth"] else "none"
 
 
 @app.api_route("/health", methods=["GET", "HEAD"])  # HEAD: uptime monitors and Render's probe
@@ -333,6 +345,7 @@ async def callback(request: Request):
     except Exception as e:
         print(f"[OAuth] shop info warning: {e}")
     db.upsert_shop(shop, access_token, shop_name)
+    _OAUTH_MODE_CACHE["at"] = 0.0  # /health shows the new installation right away
     await register_webhooks(shop, access_token)
 
     shop_sub = shop.replace(".myshopify.com", "")
