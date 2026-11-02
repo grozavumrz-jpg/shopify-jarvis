@@ -1723,7 +1723,7 @@ async def privacy_policy():
 <style>body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; line-height: 1.6; max-width: 800px; margin: 40px auto; padding: 0 20px; color: #1e293b; }} code {{ background: #f1f5f9; padding: 2px 6px; border-radius: 4px; }}</style>
 </head><body>
 <h1>Privacy Policy — Jarvis for Shopify</h1>
-<p><em>Last updated: October 2026</em></p>
+<p><em>Last updated: November 2026</em></p>
 <h2>1. What the app does</h2>
 <p>Jarvis helps the merchant follow up with their own shoppers (abandoned checkouts, post-delivery thank-you messages), builds a Google Merchant product feed and shows store analytics.</p>
 <h2>2. Data we process</h2>
@@ -1732,7 +1732,7 @@ async def privacy_policy():
 <li><strong>Shopper contact data</strong>: name, email, phone, cart contents and the marketing-consent status recorded by Shopify — only for shoppers of the merchant's own store.</li>
 <li><strong>Message history</strong>: which messages were sent, when, and opt-outs (to respect frequency limits and unsubscribes).</li>
 </ul>
-<p>Marketing messages are sent only to shoppers whose consent is recorded in Shopify. Every email contains an unsubscribe link; opt-outs are permanent.</p>
+<p>Marketing messages are sent only to shoppers whose consent is recorded in Shopify. Every email contains an unsubscribe link; an opt-out is kept until the shopper asks the merchant to be contacted again. Addresses that bounce permanently or report a message as spam are no longer emailed.</p>
 <h2>3. Processors</h2>
 <p>Email delivery (Resend or the merchant's SMTP), optional WhatsApp providers configured by the merchant, Google Gemini for text generation: store metrics, product names and the shopper's language/country only — shopper names, emails, phones and checkout links are never sent to Gemini.</p>
 <h2>4. Retention and deletion</h2>

@@ -31,6 +31,9 @@ services:
         sync: false
       - key: RESEND_API_KEY
         sync: false
+      # Resend → Webhooks → signing secret: bounces / spam complaints are suppressed automatically.
+      - key: RESEND_WEBHOOK_SECRET
+        sync: false
       - key: SENDER_EMAIL
         value: Grozavu <contact@maisongrozavu.com>
       - key: REPLY_TO_EMAIL

@@ -33,6 +33,8 @@ Every feature from the Survey phase appears here with its assigned milestone. No
 | 5 | Post-Delivery VIP Review & Upsell Automation | Capture order fulfillments; schedule 5-day post-fulfillment VIP review sequence with `MGVIP15` discount code via Email & WhatsApp. | M3 | Survey 2 |
 | 6 | Database Schema & Settings Persistence | Schemas for drip states, post-delivery queue, and store settings for WhatsApp/Telegram/Discord credentials. | M1, M2, M3 | Survey 1, 2, 3 |
 | 7 | Full E2E Integration & Adversarial Hardening | Verify 100% pass of E2E test suite (Tiers 1-4) and execute Tier 5 adversarial coverage hardening. | M4 | Dual Track |
+| 8 | Consent, Security & Production Safety | Consent-only messaging, quiet hours, frequency caps, GDPR webhooks, auth on every data route, HMAC webhooks, persistent-DB guard on Render. | M4 | Audit Oct 2026 |
+| 9 | Merchant Insights & Audit Hardening | Bounce/complaint suppression (Resend), downtime / failure alerts, weekly report, delivery-based VIP timing, checkout-locale language, SSRF guard, merchant-only test sends, confirm-before-unsubscribe, CI. | M5 | Audit Nov 2026 |
 
 ---
 
@@ -41,9 +43,10 @@ Every feature from the Survey phase appears here with its assigned milestone. No
 | # | Name | Scope | Dependencies | Status |
 |---|------|-------|-------------|--------|
 | 1 | Core Checkout Recovery & Visual Email Engine | Features 1 & 2: Line items & image extraction, luxury HTML email showcase, `checkout_drip_states` schema, 30m/4h/24h cadence, MG10 discount logic. | none | **DONE** |
-| 2 | Multi-Channel Messaging: WhatsApp & Mobile Alerts | Features 3 & 5: Multi-tenant `shop_settings` columns, Twilio/Meta/wa.me WhatsApp dispatcher, Telegram Bot API & Discord Webhook alerts. | M1 | **DONE** |
-| 3 | Post-Delivery VIP Review & Upsell Automation | Feature 4: Ingest fulfillments, 5-day delay queue `post_delivery_automations`, `MGVIP15` discount, AI review copy & multi-channel dispatch. | M1, M2 | PLANNED |
-| 4 | Full E2E Integration & Adversarial Hardening | Phase 1: Pass 100% E2E test suite (Tiers 1-4); Phase 2: Challenger-driven adversarial coverage hardening (Tier 5). | M1, M2, M3, E2E | PLANNED |
+| 2 | Multi-Channel Messaging: WhatsApp & Mobile Alerts | Features 3 & 4: Multi-tenant `shop_settings` columns, Twilio/Meta/wa.me WhatsApp dispatcher, Telegram Bot API & Discord Webhook alerts. | M1 | **DONE** |
+| 3 | Post-Delivery VIP Thank-You | Feature 5: Ingest fulfillments, `post_delivery_automations` queue, `MGVIP15` code for the next order (never conditioned on a review), consent-gated email & WhatsApp dispatch, wired into the autopilot cycle. | M1, M2 | **DONE** (2026-10-27, hardened 2026-10-31) |
+| 4 | Full E2E Integration & Adversarial Hardening | Features 7 & 8: E2E suite (Tiers 1-4), Tier 5 adversarial hardening, consent/auth/GDPR production fixes. | M1, M2, M3, E2E | **DONE** |
+| 5 | Merchant Insights & Audit Hardening | Feature 9 (see interface contracts 7–9). | M4 | **DONE** (2026-11-02) |
 
 ---
 
@@ -61,10 +64,12 @@ Every feature from the Survey phase appears here with its assigned milestone. No
   - `checkout_drip_states`:
     - `id`, `shop_domain`, `checkout_id` (UNIQUE), `email`, `phone`, `customer_name`, `checkout_url`, `total_price`, `currency`, `items` (JSONB), `created_at`, `current_stage` (0,1,2,3), `stage_1_sent_at`, `stage_2_sent_at`, `stage_3_sent_at`, `status` ('active', 'converted', 'exhausted', 'canceled'), `updated_at`
   - `post_delivery_automations`:
-    - `id`, `shop_domain`, `order_id` (UNIQUE), `order_number`, `customer_email`, `customer_phone`, `customer_name`, `fulfilled_at`, `scheduled_for`, `items_summary` (JSONB), `status` ('pending', 'sent', 'canceled'), `sent_at`, `discount_code` ('MGVIP15'), `created_at`
+    - `id`, `shop_domain`, `order_id` (UNIQUE), `order_number`, `customer_email`, `customer_phone`, `customer_name`, `fulfilled_at`, `scheduled_for`, `items_summary` (JSONB), `status` ('pending', 'sent', 'suppressed', 'expired', 'failed', 'canceled'), `sent_at`, `discount_code` ('MGVIP15'), `lang`, `created_at`
+  - Compliance: `marketing_consents` (tri-state consent per email / phone and channel), `message_frequency_logs` (per-person caps), `suppression_list` (hashed opt-outs that survive GDPR redaction).
+  - `app_state` (`shop`, `key`, `value`): autopilot heartbeat, alert and weekly-report bookkeeping.
 
 ### 2. Line Items & Email Showcase (`backend/shopify_api.py` & `backend/email_dispatcher.py`) [IMPLEMENTED & VERIFIED]
-- `ShopifyClient.get_abandoned_checkouts_detailed(created_at_min=None, limit=50) -> List[Dict]`:
+- `ShopifyClient.get_abandoned_checkouts_detailed(created_at_min=None, limit=250) -> List[Dict]`:
   - Returns checkouts with enriched `line_items`:
     `[{ "title": str, "variant_title": str, "quantity": int, "price": str, "image_url": Optional[str] }]`
   - Raw `checkout_url` preserved without premature discount injection.
@@ -97,18 +102,33 @@ Every feature from the Survey phase appears here with its assigned milestone. No
   - `generate_wa_me_link(phone: str, message: str) -> str`:
     - Returns canonical `https://wa.me/{clean_phone}?text={quote(message)}`.
 
-### 5. Post-Delivery VIP Service (`backend/post_delivery_service.py`)
+### 5. Post-Delivery VIP Service (`backend/post_delivery_service.py`) [IMPLEMENTED & VERIFIED]
 - `PostDeliveryService`:
   - `sync_fulfilled_orders(shop: str, days_back: int = 14) -> int`:
-    - Captures fulfilled orders from Shopify API, parses `fulfillments.created_at`, enqueues in `post_delivery_automations` with `scheduled_for = fulfilled_at + 5 days`.
+    - Captures fulfilled orders, records Shopify consent, enqueues in `post_delivery_automations`.
+    - `scheduled_for` = carrier "delivered" + 2 days; tracking but not delivered → fulfilled + 14 days (moved earlier once delivered); no tracking → fulfilled + 5 days.
+    - Stores the shopper's language from the order `customer_locale` / shipping country.
   - `process_due_vip_automations(shop: str, settings: Dict) -> int`:
-    - Dispatches due VIP review & upsell requests with `MGVIP15` discount code via email & WhatsApp.
+    - Thank-you + `MGVIP15` for the next order, per channel through `compliance_guard.can_dispatch_to_customer`; more than 14 days late → `expired`, never sent.
 
 ### 6. Mobile Notifier (`backend/mobile_notifier.py`) [IMPLEMENTED & VERIFIED]
 - `MobileNotifier`:
   - `async notify_merchant(event_type: str, data: Dict, settings: Dict) -> Dict`:
     - Supported events: `abandoned_cart`, `recovery_converted`, `vip_upsell_sent`.
     - Channels: Telegram Bot API (HTML formatted), Discord Webhook (Rich Embeds with color coding).
+
+### 7. Compliance & Auth (`backend/compliance_guard.py`, `backend/auth_guard.py`, `backend/net_guard.py`) [IMPLEMENTED & VERIFIED]
+- `can_dispatch_to_customer(...)`: consent for that channel (unknown = no), opt-out wins, quiet hours 21:00–09:00 Europe/Madrid, cart max 3 per checkout, VIP max 1 per order, max 4 marketing messages per person / 30 days, new sequence blocked for 72 h; marketing paused on Render without a persistent `DATABASE_URL`.
+- `require_auth`: Shopify session token (pinned to its shop) or `X-Jarvis-Key` (brute-force brake). Shopify webhooks: HMAC + de-duplication; Resend webhooks: Svix signature.
+- `net_guard`: merchant-configured outbound targets (webhooks, SMTP) must be public, checked at save and send time.
+- Unsubscribe: GET = confirmation page, POST / RFC 8058 one-click = opt-out; `/api/compliance/lift-opt-out` returns consent to unknown.
+
+### 8. Merchant Alerts & Weekly Report (`backend/main.py`) [IMPLEMENTED & VERIFIED]
+- Downtime alert after a restart (> 1 h without a cycle), alert after 3 failing cycles and on recovery.
+- Weekly report every Monday from 09:00 Spain time (Telegram / Discord / email) and `GET /api/reports/weekly`.
+
+### 9. Deliverability (`/webhooks/resend`) [IMPLEMENTED & VERIFIED]
+- `email.bounced` (permanent) and `email.complained` add the address to the suppression list.
 
 ---
 
@@ -121,5 +141,13 @@ Every feature from the Survey phase appears here with its assigned milestone. No
 - `backend/post_delivery_service.py` — Order fulfillment tracking and 5-day VIP review queue.
 - `backend/mobile_notifier.py` — Telegram & Discord merchant notifications.
 - `backend/ai_advisor.py` — AI copy generation (Gemini) with multi-language fallbacks.
-- `backend/main.py` — FastAPI application routes and background daemon loops.
-- `tests/` — Comprehensive test suites (Unit, Integration, and E2E).
+- `backend/main.py` — FastAPI application routes, autopilot daemon, alerts and weekly report.
+- `backend/compliance_guard.py` — Consent, quiet hours, frequency caps, persistent-DB guard.
+- `backend/auth_guard.py` — Session-token / admin-key auth, Shopify HMAC and Svix webhook signatures.
+- `backend/net_guard.py` — Public-URL / public-host checks for outbound requests.
+- `backend/shopify_auth.py` — OAuth install flow and client-credentials token.
+- `backend/google_merchant_feed.py` — Google Merchant Center feed from real products.
+- `backend/deliverability_checker.py` — SPF / DKIM / DMARC audit via DNS-over-HTTPS.
+- `backend/seo_optimizer.py` — SEO proposals (preview only).
+- `tests/` — Unit, integration, E2E and adversarial suites (isolated SQLite file per run).
+- `.github/workflows/` — `tests.yml` (tests, pip-audit, frontend build) and `keepalive.yml`.
