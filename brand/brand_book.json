@@ -1,0 +1,135 @@
+{
+  "_about": "Hard rules for every Jarvis agent (director, quality sub-director, copy and image workers). Built on 2026-11-02 from the live Shopify catalog (all 80 active products) and the existing BRAND_FACTS. Fields marked 'to_confirm' still need the owner's OK.",
+  "brand": {
+    "name": "Grozavu",
+    "domain": "maisongrozavu.com",
+    "storefront_language": "en",
+    "priority_markets": [
+      "ES",
+      "RO"
+    ],
+    "currency": "EUR",
+    "origin_wording_allowed": "Designed in Spain",
+    "production": "Made to order (print on demand via Printful)",
+    "price_range_eur": [
+      25,
+      165
+    ],
+    "audience": "men and women, plus a small kids line (Kids Organic Tee, Kids Cotton Cap)",
+    "fabric_weights_g_m2": {
+      "crewnecks": [
+        280,
+        330,
+        350,
+        500
+      ],
+      "hoodies": [
+        265,
+        280,
+        308,
+        330,
+        339,
+        340,
+        350
+      ],
+      "tees_and_tanks": [
+        142,
+        148,
+        155,
+        170,
+        183,
+        200,
+        220,
+        237
+      ],
+      "wide_leg_pants": [
+        300
+      ]
+    }
+  },
+  "emblem": {
+    "primary": "the Grozavu hare with the GROZAVU wordmark",
+    "approved_variants": [
+      "hare inside its orbit (Orbit Hare)",
+      "hare inside a diamond (Heritage Diamond / Hare Argyle)",
+      "sequence of leaping hares from black through grey to white (Sculpted Hare)",
+      "embroidered hare and wordmark in white on black (beanies, bucket hat)",
+      "black-on-black all-over hare print"
+    ],
+    "rules": [
+      "The hare and the wordmark must never be redrawn, distorted, recoloured outside the product's real colourway, or replaced by an invented logo.",
+      "No other brand's logo, text or watermark may appear."
+    ]
+  },
+  "collections": {
+    "Heritage": "cocoa brown & bone and bordeaux & bone tartan, hare argyle, Christmas season",
+    "Icons": "core pieces carrying the hare: heavyweight hoodies, half-zips, wide-leg pants, Magenta Smoke, Two-Tone (black / soft pink), garment-dyed blush pink",
+    "SS26": "lighter summer pieces: boxy tees, long shorts, crossbody bags, snapback",
+    "Street Culture": "graffiti lettering, hare and wordmark, 'Urban Explorers'",
+    "Lookbook": "Shopify tag used on pieces featured in lookbook imagery",
+    "Essentials": "men essentials / women essentials: plain heavyweight basics"
+  },
+  "palette": {
+    "core": [
+      "black",
+      "bone / ivory / white"
+    ],
+    "seasonal": [
+      "cocoa brown",
+      "bordeaux",
+      "dust (warm sand)",
+      "sandshell (soft warm cream)",
+      "blush pink",
+      "soft pink",
+      "magenta smoke accent",
+      "maroon",
+      "desert dust",
+      "vintage white",
+      "french navy",
+      "deep red (SS26 mark)"
+    ],
+    "email_and_brand_frames": "black and white"
+  },
+  "tone_of_voice": {
+    "summary": "Calm, precise and understated. Lead with the real fabric and cut; let details speak. No hype.",
+    "do": [
+      "State the real fabric weight and composition from Shopify (e.g. '339 g/m² three-end fleece').",
+      "Describe how it wears: 'Sits close without clinging', 'stays quiet from a distance', 'the one you reach for'.",
+      "Short, concrete sentences. Men and women are addressed as 'men and women' or by the product's own cut."
+    ],
+    "dont": [
+      "No exclamation-mark hype, no 'must-have', no fake urgency or countdowns.",
+      "Never generalise a fabric weight across products: quote the product's own data."
+    ]
+  },
+  "forbidden_words": [
+    "unisex",
+    "atelier",
+    "silk",
+    "tailoring",
+    "tailored",
+    "handmade",
+    "hand-made",
+    "Bucharest",
+    "made in Spain",
+    "crafted in Spain"
+  ],
+  "forbidden_claims": [
+    "invented shipping times, return policies, reviews, ratings or sales figures",
+    "stock scarcity or reserved items (products are made to order)",
+    "discounts or codes that do not exist in Shopify",
+    "certifications a product does not carry in its Shopify description (GOTS, GRS, organic, recycled)"
+  ],
+  "visual_quality_gate": {
+    "product_fidelity": "Compare with the product's real Shopify photos: same colourway name (cocoa is not bordeaux), same print placement, same cut and length, same hardware (silver zip, metal eyelets), correct hare.",
+    "technical": "No distorted hands, faces or text; no AI artefacts; sharp product; minimum 1080 px on the short side for social.",
+    "people": "No likeness of real, identifiable people. Never generate children with AI: kids products are shown as flat-lays or real photos only.",
+    "disclosure": "Label AI-generated or AI-altered imagery where the platform or EU law requires it.",
+    "style_to_confirm": "Photo style (studio vs street, black & white vs colour) is not verified yet: product images and the website could not be opened from the cloud session."
+  },
+  "channels_to_confirm": [
+    "instagram",
+    "facebook",
+    "tiktok"
+  ]
+}
