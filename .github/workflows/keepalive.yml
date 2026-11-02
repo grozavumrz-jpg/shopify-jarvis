@@ -1,11 +1,12 @@
 # Keeps the free Render instance awake so the autopilot (every 5-15 min) keeps running.
-# Render free sleeps after 15 minutes without inbound traffic. GitHub may delay
-# scheduled runs, so an external monitor (UptimeRobot, every 5 min) is still recommended.
+# Render free sleeps after 15 minutes without inbound traffic. GitHub may delay or skip
+# scheduled runs (and only runs them from the default branch), so an external monitor
+# (UptimeRobot, every 5 min) is still recommended. /health does not wake the Neon database.
 name: keepalive
 
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions: {}
