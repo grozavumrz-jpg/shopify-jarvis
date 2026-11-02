@@ -10,6 +10,11 @@ Validates:
 7. Autopilot daemon loop Step 2 resilience: unconfigured/dummy/failing Shopify tokens do not abort VIP order sync or VIP review dispatch.
 """
 
+try:
+    from tests import _test_env  # noqa: F401  (isolated SQLite file per test run)
+except ImportError:  # pragma: no cover
+    import _test_env  # noqa: F401
+
 import os
 import sys
 import unittest

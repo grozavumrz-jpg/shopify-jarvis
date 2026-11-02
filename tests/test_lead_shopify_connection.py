@@ -1,4 +1,9 @@
 """Shopify connection through the client credentials grant (Dev Dashboard app, ~24h tokens)."""
+
+try:
+    from tests import _test_env  # noqa: F401  (isolated SQLite file per test run)
+except ImportError:  # pragma: no cover
+    import _test_env  # noqa: F401
 import os
 import sys
 import time

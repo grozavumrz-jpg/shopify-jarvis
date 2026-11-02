@@ -11,6 +11,11 @@ Adversarial Challenge Vectors:
 6. Empirical vulnerability probes: string list in items_summary (AttributeError), unstripped whitespace customer names.
 """
 
+try:
+    from tests import _test_env  # noqa: F401  (isolated SQLite file per test run)
+except ImportError:  # pragma: no cover
+    import _test_env  # noqa: F401
+
 import unittest
 from unittest.mock import patch, MagicMock, AsyncMock
 from datetime import datetime, timezone, timedelta

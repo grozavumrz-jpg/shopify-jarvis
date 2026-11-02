@@ -10,6 +10,11 @@ Evaluates 4 Challenge Dimensions:
 4. Shopify payload edge cases: missing customer object, shipping address phone/name extraction, invalid fulfillments, corrupt items_summary.
 """
 
+try:
+    from tests import _test_env  # noqa: F401  (isolated SQLite file per test run)
+except ImportError:  # pragma: no cover
+    import _test_env  # noqa: F401
+
 import unittest
 import asyncio
 import concurrent.futures

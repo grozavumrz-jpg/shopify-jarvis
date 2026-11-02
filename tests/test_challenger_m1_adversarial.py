@@ -13,6 +13,11 @@ This test suite subjects Shopify Jarvis to extreme adversarial edge conditions:
 Zero unhandled 500 exceptions allowed.
 """
 
+try:
+    from tests import _test_env  # noqa: F401  (isolated SQLite file per test run)
+except ImportError:  # pragma: no cover
+    import _test_env  # noqa: F401
+
 import os
 import sys
 import json

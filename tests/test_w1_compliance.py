@@ -17,6 +17,11 @@ Covers every P0/P1 fixed by W1:
 No real network calls: httpx / smtplib are mocked everywhere.
 """
 
+try:
+    from tests import _test_env  # noqa: F401  (isolated SQLite file per test run)
+except ImportError:  # pragma: no cover
+    import _test_env  # noqa: F401
+
 import os
 import re
 import sys

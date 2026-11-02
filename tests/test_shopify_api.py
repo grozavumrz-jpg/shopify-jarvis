@@ -7,6 +7,11 @@ Validates:
 4. append_discount_to_url utility behavior
 5. Parameter passing and defaults for get_abandoned_checkouts_detailed
 """
+
+try:
+    from tests import _test_env  # noqa: F401  (isolated SQLite file per test run)
+except ImportError:  # pragma: no cover
+    import _test_env  # noqa: F401
 import unittest
 from unittest.mock import AsyncMock, patch, MagicMock
 import sys

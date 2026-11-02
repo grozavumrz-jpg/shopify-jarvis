@@ -14,6 +14,11 @@ Adversarially verifies:
 8. Shopify GraphQL top-level errors and null confirmationUrl degradation probe.
 """
 
+try:
+    from tests import _test_env  # noqa: F401  (isolated SQLite file per test run)
+except ImportError:  # pragma: no cover
+    import _test_env  # noqa: F401
+
 import os
 import sys
 import io

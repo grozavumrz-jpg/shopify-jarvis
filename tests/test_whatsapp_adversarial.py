@@ -21,6 +21,11 @@ Probes:
    - Explicit provider failure handling and wa.me link preservation.
 """
 
+try:
+    from tests import _test_env  # noqa: F401  (isolated SQLite file per test run)
+except ImportError:  # pragma: no cover
+    import _test_env  # noqa: F401
+
 import unittest
 from unittest.mock import patch, MagicMock, AsyncMock
 import asyncio

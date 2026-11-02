@@ -15,6 +15,11 @@ Exhaustively validates:
 9. Network timeout & partial failure resilience: catches httpx.TimeoutException without crashing.
 """
 
+try:
+    from tests import _test_env  # noqa: F401  (isolated SQLite file per test run)
+except ImportError:  # pragma: no cover
+    import _test_env  # noqa: F401
+
 import unittest
 from unittest.mock import patch, MagicMock, AsyncMock
 import asyncio

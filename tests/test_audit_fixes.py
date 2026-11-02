@@ -4,6 +4,11 @@ SSRF guard, VIP expiry / delivery-based schedule / stored language, opt-out lift
 admin-key brute-force brake, server-side billing test mode, webhook de-duplication, checkout locale,
 per-checkout error isolation and SMTP TLS verification.
 """
+
+try:
+    from tests import _test_env  # noqa: F401  (isolated SQLite file per test run)
+except ImportError:  # pragma: no cover
+    import _test_env  # noqa: F401
 import asyncio
 import json
 import os

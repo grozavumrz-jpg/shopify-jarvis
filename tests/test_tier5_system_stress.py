@@ -11,6 +11,11 @@ Scope across all 5 core revenue features:
 5. Daemon Resilience & Concurrency (Multi-store batch failure isolation, provider crash fault tolerance, clock skew resilience)
 """
 
+try:
+    from tests import _test_env  # noqa: F401  (isolated SQLite file per test run)
+except ImportError:  # pragma: no cover
+    import _test_env  # noqa: F401
+
 import unittest
 import asyncio
 from unittest.mock import patch, MagicMock, AsyncMock

@@ -2,6 +2,11 @@
 Regression tests for the security / truthfulness fixes in main.py, auth_guard.py
 and google_merchant_feed.py. No real network calls: ShopifyClient is mocked.
 """
+
+try:
+    from tests import _test_env  # noqa: F401  (isolated SQLite file per test run)
+except ImportError:  # pragma: no cover
+    import _test_env  # noqa: F401
 import base64
 import hashlib
 import hmac

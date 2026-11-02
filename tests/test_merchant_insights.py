@@ -2,6 +2,11 @@
 Bounce/complaint suppression via Resend webhooks, merchant alerts (downtime, repeated failures)
 and the weekly report.
 """
+
+try:
+    from tests import _test_env  # noqa: F401  (isolated SQLite file per test run)
+except ImportError:  # pragma: no cover
+    import _test_env  # noqa: F401
 import asyncio
 import base64
 import hashlib

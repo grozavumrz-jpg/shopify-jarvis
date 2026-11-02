@@ -12,6 +12,11 @@ Stress test suites:
 7. Database level adversarial checks: column safety and terminal state protection.
 """
 
+try:
+    from tests import _test_env  # noqa: F401  (isolated SQLite file per test run)
+except ImportError:  # pragma: no cover
+    import _test_env  # noqa: F401
+
 import unittest
 from unittest.mock import patch, MagicMock
 from datetime import datetime, timezone, timedelta

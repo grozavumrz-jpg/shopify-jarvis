@@ -3,6 +3,11 @@ Tier 1: Feature Coverage Test Suite (>=25 tests: >=5 tests per feature across 5 
 Authoritative specification: PROJECT.md Section 5 (Interface Contracts) & ORIGINAL_REQUEST.md.
 """
 
+try:
+    from tests import _test_env  # noqa: F401  (isolated SQLite file per test run)
+except ImportError:  # pragma: no cover
+    import _test_env  # noqa: F401
+
 import unittest
 from unittest.mock import patch, MagicMock, AsyncMock
 import asyncio

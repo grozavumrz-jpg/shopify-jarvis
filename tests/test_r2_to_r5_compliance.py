@@ -6,6 +6,11 @@ Unit and Integration Tests for Jarvis R2-R5 Enhancements:
 - R5: Truthful Reporting Endpoints & Compliance Tracking
 """
 
+try:
+    from tests import _test_env  # noqa: F401  (isolated SQLite file per test run)
+except ImportError:  # pragma: no cover
+    import _test_env  # noqa: F401
+
 import unittest
 import os
 import sys

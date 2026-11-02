@@ -4,6 +4,11 @@ W2 truth tests: shopify_api, ai_advisor, seo_optimizer, deliverability_checker.
 Every HTTP call is served by httpx.MockTransport — no real network. The default handler for
 each test raises ConnectError so an unexpected real request can never leave the machine.
 """
+
+try:
+    from tests import _test_env  # noqa: F401  (isolated SQLite file per test run)
+except ImportError:  # pragma: no cover
+    import _test_env  # noqa: F401
 import os
 import re
 import sys

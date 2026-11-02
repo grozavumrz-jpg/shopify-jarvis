@@ -5,6 +5,11 @@ Conducts high-rigor adversarial boundary testing, stress injection, race conditi
 and failure resilience across all 5 core revenue features.
 """
 
+try:
+    from tests import _test_env  # noqa: F401  (isolated SQLite file per test run)
+except ImportError:  # pragma: no cover
+    import _test_env  # noqa: F401
+
 import sys
 import os
 import unittest
