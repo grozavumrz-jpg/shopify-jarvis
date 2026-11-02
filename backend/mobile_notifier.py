@@ -130,6 +130,12 @@ class MobileNotifier:
             ]
             return "\n".join(lines)
 
+        elif event_type in ("jarvis_alert", "weekly_report"):
+            title = html.escape(str(data.get("title") or "Jarvis"))
+            lines = [html.escape(str(line)) for line in (data.get("lines") or []) if str(line).strip()]
+            icon = "📊" if event_type == "weekly_report" else "⚠️"
+            return "\n".join([f"{icon} <b>{title}</b>\n"] + lines)
+
         # Generic fallback
         return f"🔔 <b>Eveniment Jarvis: {html.escape(str(event_type))}</b>\n👤 Client: {c_name}"
 
@@ -211,6 +217,16 @@ class MobileNotifier:
                 "timestamp": now_iso,
                 "fields": fields,
                 "footer": {"text": "Shopify Jarvis Autonomous VIP Engine"}
+            }
+
+        elif event_type in ("jarvis_alert", "weekly_report"):
+            lines = [str(line) for line in (data.get("lines") or []) if str(line).strip()]
+            return {
+                "title": self._truncate(str(data.get("title") or "Jarvis"), self.DISCORD_FIELD_NAME_LIMIT),
+                "description": self._truncate("\n".join(lines), self.DISCORD_DESCRIPTION_LIMIT),
+                "color": self.COLOR_PURPLE if event_type == "weekly_report" else self.COLOR_AMBER,
+                "timestamp": now_iso,
+                "footer": {"text": "Shopify Jarvis"},
             }
 
         # Fallback embed

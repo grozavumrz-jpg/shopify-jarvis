@@ -1,0 +1,51 @@
+# Runs the backend test suite, a dependency audit and the frontend build on every push and PR,
+# so a regression is caught on GitHub before Render deploys it.
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"  # same as the Render Docker image
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt
+      - name: Unit tests (no real network calls)
+        run: python -m unittest discover -s tests -p "test_*.py"
+      - name: Dependency audit
+        run: |
+          pip install pip-audit
+          pip-audit -r backend/requirements.txt
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"  # same as the Dockerfile build stage
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build

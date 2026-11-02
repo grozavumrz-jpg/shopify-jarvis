@@ -157,6 +157,41 @@ def resolve_shop(auth: AuthContext, requested: Optional[str]) -> str:
     return norm or default_shop()
 
 
+SVIX_TOLERANCE_SECONDS = 300
+
+
+def verify_svix_signature(raw_body: bytes, msg_id: Optional[str], timestamp: Optional[str],
+                          signature_header: Optional[str], secret: Optional[str],
+                          now: Optional[float] = None) -> bool:
+    """
+    Resend webhooks (Svix / Standard Webhooks): base64(HMAC-SHA256(key, "{id}.{timestamp}.{body}")),
+    key = base64-decoded part of "whsec_...". The timestamp must be within 5 minutes (no replays).
+    """
+    if not (secret and msg_id and timestamp and signature_header):
+        return False
+    try:
+        ts = int(str(timestamp).strip())
+    except ValueError:
+        return False
+    t = time.time() if now is None else now
+    if abs(t - ts) > SVIX_TOLERANCE_SECONDS:
+        return False
+    key = secret.strip()
+    if key.startswith("whsec_"):
+        key = key[len("whsec_"):]
+    try:
+        key_bytes = base64.b64decode(key)
+    except Exception:
+        return False
+    signed = f"{msg_id}.{ts}.".encode() + (raw_body or b"")
+    expected = base64.b64encode(hmac.new(key_bytes, signed, hashlib.sha256).digest())
+    for part in str(signature_header).split():
+        version, _, sig = part.partition(",")
+        if version == "v1" and sig and hmac.compare_digest(expected, sig.strip().encode()):
+            return True
+    return False
+
+
 def verify_webhook_hmac(raw_body: bytes, header_hmac: Optional[str], secret: Optional[str] = None) -> bool:
     """Shopify webhook signature: base64(HMAC-SHA256(secret, raw body))."""
     secret = secret if secret is not None else os.getenv("SHOPIFY_API_SECRET", "")

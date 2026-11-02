@@ -19,6 +19,7 @@ import httpx
 import database as db
 from auth_guard import (
     AuthContext, require_auth, resolve_shop, normalize_shop, default_shop, verify_webhook_hmac,
+    verify_svix_signature,
 )
 from shopify_auth import verify_hmac, build_install_url, exchange_code_for_token, public_app_url, fetch_client_credentials_token
 from shopify_api import ShopifyClient
@@ -607,6 +608,7 @@ AUTOPILOT_STATUS: Dict[str, Any] = {
     "total_auto_recovered": 0,
     "interval_minutes": 5,
     "last_error": None,
+    "consecutive_failed_cycles": 0,
 }
 
 
@@ -958,13 +960,154 @@ async def run_autopilot_cycle(only_shop: Optional[str] = None, skip_log: Optiona
 async def autopilot_daemon_loop():
     await asyncio.sleep(15)
     print(f"[AUTOPILOT] Starting autonomous follow-up engine (every {AUTOPILOT_INTERVAL_SECONDS // 60} minutes)...")
+    await check_downtime_on_start()
     while True:
+        totals = None
         try:
-            await run_autopilot_cycle()
+            totals = await run_autopilot_cycle()
         except Exception as e:
             AUTOPILOT_STATUS["last_error"] = str(e)[:500]
             print(f"[Autopilot Daemon Loop Error]: {e}")
+        await watchdog_after_cycle(totals)
+        await maybe_send_weekly_report()
         await asyncio.sleep(AUTOPILOT_INTERVAL_SECONDS)
+
+
+# ── Merchant alerts: downtime, repeated failures, weekly report ───────────────
+
+ALERT_AFTER_FAILED_CYCLES = 3
+DOWNTIME_ALERT_MIN_SECONDS = 3600
+
+
+def _alert_shop() -> str:
+    return default_shop()
+
+
+async def notify_merchant_text(shop: str, title: str, lines: List[str], event: str = "jarvis_alert") -> Dict[str, Any]:
+    """Internal alert to the merchant on every configured channel (Telegram / Discord / email). Never raises."""
+    out: Dict[str, Any] = {"mobile": None, "email": None}
+    try:
+        settings = db.get_shop_settings(shop)
+    except Exception:
+        settings = {}
+    try:
+        out["mobile"] = await mobile_notifier.notify_merchant(event, {"title": title, "lines": lines}, settings)
+    except Exception as e:
+        out["mobile"] = {"ok": False, "error": type(e).__name__}
+    merchant = (settings.get("merchant_notify_email") or os.getenv("MERCHANT_NOTIFY_EMAIL", "")).strip()
+    if merchant:
+        try:
+            out["email"] = await email_dispatcher.send_email(
+                to_email=merchant, subject=f"[Jarvis] {title}", body_text="\n".join(lines),
+                settings=settings, is_internal=True)
+        except Exception as e:
+            out["email"] = {"success": False, "reason": type(e).__name__}
+    return out
+
+
+def _parse_iso(value: Optional[str]) -> Optional[datetime]:
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+async def check_downtime_on_start(now: Optional[datetime] = None) -> Optional[timedelta]:
+    """After a restart: if the last finished cycle is older than 1h, tell the merchant how long Jarvis was off."""
+    shop = _alert_shop()
+    now = now or datetime.now(timezone.utc)
+    try:
+        last = _parse_iso(db.get_state(shop, "autopilot_last_cycle_at"))
+    except Exception:
+        return None
+    if last is None:
+        return None
+    gap = now - last
+    threshold = max(DOWNTIME_ALERT_MIN_SECONDS, 3 * AUTOPILOT_INTERVAL_SECONDS)
+    if gap.total_seconds() < threshold:
+        return None
+    hours = gap.total_seconds() / 3600
+    local_last = compliance_guard.madrid_local_time(last).strftime("%d.%m %H:%M")
+    await notify_merchant_text(shop, "Jarvis a fost oprit", [
+        f"Jarvis nu a rulat de la {local_last} (ora Spaniei) — aproximativ {hours:.1f} ore.",
+        "Între timp nu s-au trimis mesaje pentru coșuri abandonate și mulțumiri VIP.",
+        "Acum a pornit din nou și reia automat coșurile care mai sunt în fereastra de 72 de ore.",
+        "Cauza obișnuită: serverul Render gratuit adoarme fără trafic. Un monitor UptimeRobot pe /health la 5 minute "
+        "sau planul Render plătit rezolvă asta.",
+    ])
+    return gap
+
+
+async def watchdog_after_cycle(totals: Optional[Dict[str, Any]]) -> None:
+    """Heartbeat + one alert after ALERT_AFTER_FAILED_CYCLES failing cycles in a row (and one when it recovers)."""
+    shop = _alert_shop()
+    errors = list((totals or {}).get("errors") or []) if totals is not None else ["ciclul s-a oprit cu o eroare"]
+    try:
+        db.set_state(shop, "autopilot_last_cycle_at", datetime.now(timezone.utc).isoformat())
+    except Exception:
+        pass
+    failed = int(AUTOPILOT_STATUS.get("consecutive_failed_cycles") or 0)
+    if errors:
+        failed += 1
+        AUTOPILOT_STATUS["consecutive_failed_cycles"] = failed
+        if failed == ALERT_AFTER_FAILED_CYCLES:
+            AUTOPILOT_STATUS["failure_alert_sent"] = True
+            await notify_merchant_text(shop, "Jarvis are probleme", [
+                f"Ultimele {failed} cicluri ale autopilotului au avut erori:",
+                *[f"• {str(e)[:200]}" for e in errors[:5]],
+                "Mesajele care nu au putut fi trimise se reîncearcă automat. Verifică /health și setările.",
+            ])
+        return
+    AUTOPILOT_STATUS["consecutive_failed_cycles"] = 0
+    if AUTOPILOT_STATUS.pop("failure_alert_sent", False):
+        await notify_merchant_text(shop, "Jarvis funcționează din nou", ["Ultimul ciclu al autopilotului a rulat fără erori."])
+
+
+def _money(value: float) -> str:
+    return f"{value:,.2f}".replace(",", " ")
+
+
+def build_weekly_report(shop: str, now: Optional[datetime] = None, days: int = 7) -> Dict[str, Any]:
+    """Real numbers for the last `days` days, plus ready-to-send lines (Romanian)."""
+    now = now or datetime.now(timezone.utc)
+    since = now - timedelta(days=days)
+    data = db.weekly_report_data(shop, since, now)
+    lines = [
+        f"Perioada: {compliance_guard.madrid_local_time(since):%d.%m} – {compliance_guard.madrid_local_time(now):%d.%m.%Y}",
+        f"🛒 Mesaje pentru coșuri abandonate trimise: {data['cart_messages_sent']}"
+        + (f" (eșuate: {data['cart_messages_failed']})" if data["cart_messages_failed"] else ""),
+        f"💶 Comenzi plasate după un mesaj Jarvis: {data['recovered_orders']} — {_money(data['recovered_revenue'])} {FEED_CURRENCY}",
+        f"🎁 Mulțumiri după livrare trimise: {data['vip_thank_yous_sent']}",
+        f"🚫 Dezabonări: {data['opt_outs']}"
+        + (f" (din care adrese invalide / spam: {data['bounces_and_complaints']})" if data["bounces_and_complaints"] else ""),
+    ]
+    if AUTOPILOT_STATUS.get("last_error"):
+        lines.append(f"⚙️ Ultima eroare a autopilotului: {str(AUTOPILOT_STATUS['last_error'])[:200]}")
+    if ephemeral_db_blocks_marketing():
+        lines.append("⏸️ Marketingul e în pauză: lipsește baza de date permanentă (DATABASE_URL).")
+    lines.append("„Comenzi după un mesaj” = comenzi ale clienților care primiseră cel puțin un mesaj Jarvis.")
+    return {"shop": shop, "since": since.isoformat(), "until": now.isoformat(), "data": data, "lines": lines}
+
+
+async def maybe_send_weekly_report(now: Optional[datetime] = None) -> bool:
+    """Monday from 09:00 (Spain), once per ISO week, for the configured shop. Never raises."""
+    now = now or datetime.now(timezone.utc)
+    local = compliance_guard.madrid_local_time(now)
+    if local.weekday() != 0 or local.hour < 9:
+        return False
+    shop = _alert_shop()
+    week = f"{local.isocalendar()[0]}-W{local.isocalendar()[1]:02d}"
+    try:
+        if db.get_state(shop, "weekly_report_week") == week:
+            return False
+        report = build_weekly_report(shop, now)
+        db.set_state(shop, "weekly_report_week", week)
+    except Exception as e:
+        print(f"[Weekly report error]: {type(e).__name__}: {str(e)[:120]}")
+        return False
+    await notify_merchant_text(shop, f"Raportul săptămânal Jarvis — {BRAND_NAME}", report["lines"], event="weekly_report")
+    return True
 
 
 # ── Shopify webhooks (HMAC-verified) ──────────────────────────────────────────
@@ -1083,6 +1226,57 @@ async def app_uninstalled(request: Request):
                 cur.execute("UPDATE shops SET active=FALSE WHERE shop=%s", (shop,))
             conn.commit()
     return {"ok": True}
+
+
+# ── Resend webhooks: hard bounces and spam complaints are never emailed again ──
+
+@app.post("/webhooks/resend")
+async def resend_webhook(request: Request):
+    """
+    Resend → Jarvis (Svix-signed, RESEND_WEBHOOK_SECRET). email.bounced (permanent) and
+    email.complained add the address to the suppression list, protecting the domain's reputation.
+    """
+    raw = await request.body()
+    h = request.headers
+    if not verify_svix_signature(raw, h.get("svix-id") or h.get("webhook-id"),
+                                 h.get("svix-timestamp") or h.get("webhook-timestamp"),
+                                 h.get("svix-signature") or h.get("webhook-signature"),
+                                 os.getenv("RESEND_WEBHOOK_SECRET", "")):
+        raise HTTPException(401, "invalid_signature")
+    try:
+        event = json.loads(raw or b"{}")
+    except ValueError:
+        event = {}
+    event = event if isinstance(event, dict) else {}
+    etype = str(event.get("type") or "")
+    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+    if etype == "email.complained":
+        source = "resend_complaint"
+    elif etype == "email.bounced":
+        bounce = data.get("bounce") if isinstance(data.get("bounce"), dict) else {}
+        if str(bounce.get("type") or "").strip().lower() in ("transient", "temporary", "undetermined"):
+            return {"ok": True, "ignored": "transient_bounce"}
+        source = "resend_bounce"
+    else:
+        return {"ok": True, "ignored": etype or "unknown"}
+    recipients = data.get("to") or []
+    recipients = [recipients] if isinstance(recipients, str) else recipients
+    suppressed = 0
+    for addr in recipients[:50]:
+        if isinstance(addr, str) and "@" in addr:
+            try:
+                if db.record_opt_out(default_shop(), email=addr, source=source):
+                    suppressed += 1
+            except Exception as e:
+                print(f"[Resend webhook] suppression failed: {type(e).__name__}")
+    return {"ok": True, "suppressed": suppressed}
+
+
+@app.get("/api/reports/weekly")
+async def get_weekly_report(shop: Optional[str] = Query(None), days: int = Query(7, ge=1, le=90),
+                            auth: AuthContext = Depends(require_auth)):
+    """The same real numbers the Monday report sends (last `days` days)."""
+    return build_weekly_report(resolve_shop(auth, shop), days=days)
 
 
 # ── Post-delivery VIP (thank-you + next-order code) ───────────────────────────
