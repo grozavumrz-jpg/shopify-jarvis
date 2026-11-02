@@ -325,6 +325,9 @@ function dnsCheckNote(check) {
   return null
 }
 
+const VIP_STATUS_LABELS = {
+  pending: 'programat', sent: 'trimis', suppressed: 'fără acord', expired: 'expirat', canceled: 'anulat', failed: 'eșuat'
+}
 const consentText = (v) => (v === true ? '✓' : v === false ? '✗' : 'necunoscut')
 const consentColor = (v) => (v === true ? '#10b981' : v === false ? '#f87171' : '#94a3b8')
 
@@ -473,7 +476,7 @@ export default function App() {
     smtp_password: '',
     sender_email: 'contact@maisongrozavu.com',
     sender_name: 'Grozavu',
-    merchant_notify_email: 'grozavumrz@gmail.com',
+    merchant_notify_email: '',
     notify_merchant_on_cart: true
   })
   const [savingDelivery, setSavingDelivery] = useState(false)
@@ -488,12 +491,18 @@ export default function App() {
     twilio_account_sid: '',
     twilio_auth_token: '',
     twilio_whatsapp_number: 'whatsapp:+14155238886',
-    whatsapp_webhook_url: ''
+    whatsapp_webhook_url: '',
+    merchant_notify_phone: ''
   })
   const [savingWa, setSavingWa] = useState(false)
   const [waFeedback, setWaFeedback] = useState(null)
-  const [testPhone, setTestPhone] = useState('')
   const [sendingTestWa, setSendingTestWa] = useState(false)
+
+  // Weekly report + opt-out lift
+  const [weeklyReport, setWeeklyReport] = useState(null)
+  const [liftContact, setLiftContact] = useState('')
+  const [liftFeedback, setLiftFeedback] = useState(null)
+  const [liftingOptOut, setLiftingOptOut] = useState(false)
 
   // Mobile Notifications Settings State
   const [notifySettings, setNotifySettings] = useState({
@@ -657,6 +666,29 @@ export default function App() {
     `/api/deliverability/dns-audit?domain=maisongrozavu.com`, setDnsAuditData, (err) => setDnsAuditData({ error: err })
   )
   const loadCompliance = () => loadJsonInto(`/api/compliance/stats?${qShop}`, setComplianceStats)
+  const loadWeeklyReport = () => loadJsonInto(
+    `/api/reports/weekly?${qShop}&days=7`, setWeeklyReport, (err) => setWeeklyReport({ error: err })
+  )
+
+  const handleLiftOptOut = async () => {
+    const value = (liftContact || '').trim()
+    if (!value) return
+    setLiftingOptOut(true)
+    setLiftFeedback(null)
+    try {
+      const body = value.includes('@') ? { shop, email: value } : { shop, phone: value }
+      const res = await apiPost('/api/compliance/lift-opt-out', body)
+      const data = await readJson(res)
+      setLiftFeedback(res.ok
+        ? { type: 'success', text: data.message || 'OK' }
+        : { type: 'error', text: errorText(data, res) })
+      if (res.ok) loadCompliance()
+    } catch (e) {
+      setLiftFeedback({ type: 'error', text: e.message })
+    } finally {
+      setLiftingOptOut(false)
+    }
+  }
 
   const parseGoal = (v) => {
     const n = Number(String(v === null || v === undefined ? '' : v).replace(',', '.').trim())
@@ -822,6 +854,10 @@ export default function App() {
     } else if (activeTab === 'autopilot') {
       ensureLoaded('delivery', loadDeliverySettings)
       ensureLoaded('compliance', loadCompliance)
+      ensureLoaded('notify', loadNotifySettings)
+      ensureLoaded('wa', loadWaSettings)
+      ensureLoaded('vip', loadVipQueue)
+      ensureLoaded('weekly', loadWeeklyReport)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, activeRadarSubtab, reloadToken])
@@ -912,6 +948,11 @@ export default function App() {
     setSendingTestEmail(true)
     setDeliveryFeedback(null)
     try {
+      const saved = await apiPost('/api/settings/delivery', { shop, ...deliverySettings })
+      if (!saved.ok) {
+        setDeliveryFeedback({ type: 'error', text: errorText(await readJson(saved), saved) })
+        return
+      }
       const res = await apiPost('/api/email/test', { shop, to_email: targetEmail })
       const data = await readJson(res)
       if (res.ok && data.success === true) {
@@ -969,10 +1010,19 @@ export default function App() {
   }
 
   const handleSendTestWa = async () => {
-    if (!testPhone) return
+    const testPhone = (waSettings.merchant_notify_phone || '').trim()
+    if (!testPhone) {
+      setWaFeedback({ type: 'error', text: lang === 'ro' ? 'Completează „Telefonul tău (comerciant)”.' : 'Fill in your merchant phone.' })
+      return
+    }
     setSendingTestWa(true)
     setWaFeedback(null)
     try {
+      const saved = await apiPost('/api/settings/whatsapp', { shop, ...waSettings })
+      if (!saved.ok) {
+        setWaFeedback({ type: 'error', text: errorText(await readJson(saved), saved) })
+        return
+      }
       const res = await apiPost('/api/whatsapp/test', { shop, to_phone: testPhone })
       const data = await readJson(res)
       if (res.ok && data.ok === true) {
@@ -1177,7 +1227,7 @@ export default function App() {
     setSubscribing(true)
     setBillingFeedback(null)
     try {
-      const res = await apiPost('/api/billing/create', { shop, test: true })
+      const res = await apiPost('/api/billing/create', { shop })
       const data = await readJson(res)
       if (res.status === 401) return
       if (res.ok && typeof data.confirmation_url === 'string' && data.confirmation_url) {
@@ -2027,6 +2077,22 @@ export default function App() {
                       </div>
                     </div>
                   )}
+
+                  <div className="tips-box" style={{ marginTop: '12px' }}>
+                    <div className="box-subtitle">↩️ Reactivează un client dezabonat</div>
+                    <p style={{ fontSize: '12px', color: '#a8a29e', margin: '6px 0 10px' }}>
+                      Doar dacă clientul ți-a cerut explicit să primească din nou mesaje. Dezabonarea se șterge, iar Jarvis îi scrie
+                      doar după ce Shopify arată din nou acordul lui de marketing.
+                    </p>
+                    <div className="live-search-bar">
+                      <input type="text" className="live-search-input" placeholder="email sau telefon"
+                        value={liftContact} onChange={(e) => setLiftContact(e.target.value)} />
+                      <button className="calculate-btn" onClick={handleLiftOptOut} disabled={liftingOptOut || !liftContact.trim()}>
+                        {liftingOptOut ? 'Se salvează...' : 'Reactivează'}
+                      </button>
+                    </div>
+                    {liftFeedback && <div className={`delivery-alert ${liftFeedback.type}`}>{liftFeedback.text}</div>}
+                  </div>
                 </div>
               </div>
             )}
@@ -2798,6 +2864,176 @@ export default function App() {
                   {deliveryFeedback.text}
                 </div>
               )}
+            </div>
+
+            {/* Mobile alerts: Telegram / Discord */}
+            <div className="hud-card" style={{ marginTop: '20px' }}>
+              <div className="card-title">
+                <span>📱 Alerte pe telefon (Telegram / Discord)</span>
+              </div>
+              <p className="card-desc">
+                Primești aici coșurile abandonate, comenzile recuperate, alertele „Jarvis a fost oprit / are erori” și raportul de luni dimineață.
+                Cheile salvate nu se mai afișează (••••); lasă câmpul neatins ca să le păstrezi.
+              </p>
+              <div className="settings-form-grid">
+                <div className="form-group">
+                  <label>Telegram bot token:</label>
+                  <input type="password" autoComplete="off" value={notifySettings.telegram_bot_token || ''}
+                    onChange={(e) => setNotifySettings({ ...notifySettings, telegram_bot_token: e.target.value })} />
+                </div>
+                <div className="form-group">
+                  <label>Telegram chat ID:</label>
+                  <input type="text" value={notifySettings.telegram_chat_id || ''}
+                    onChange={(e) => setNotifySettings({ ...notifySettings, telegram_chat_id: e.target.value })} />
+                </div>
+                <div className="form-group">
+                  <label>Discord webhook URL:</label>
+                  <input type="password" autoComplete="off" value={notifySettings.discord_webhook_url || ''}
+                    onChange={(e) => setNotifySettings({ ...notifySettings, discord_webhook_url: e.target.value })} />
+                </div>
+                <div className="form-group">
+                  <label>Canale active:</label>
+                  <label style={{ display: 'flex', gap: '8px', alignItems: 'center', justifyContent: 'flex-start', fontWeight: 400 }}>
+                    <input type="checkbox" style={{ width: 'auto', margin: 0 }} checked={!!notifySettings.notify_telegram}
+                      onChange={(e) => setNotifySettings({ ...notifySettings, notify_telegram: e.target.checked })} /> Telegram
+                  </label>
+                  <label style={{ display: 'flex', gap: '8px', alignItems: 'center', justifyContent: 'flex-start', fontWeight: 400 }}>
+                    <input type="checkbox" style={{ width: 'auto', margin: 0 }} checked={!!notifySettings.notify_discord}
+                      onChange={(e) => setNotifySettings({ ...notifySettings, notify_discord: e.target.checked })} /> Discord
+                  </label>
+                </div>
+              </div>
+              <div className="form-actions-row">
+                <button className="save-btn" onClick={handleSaveNotifySettings} disabled={savingNotify}>
+                  {savingNotify ? 'Se salvează...' : 'Salvează alertele'}
+                </button>
+                <button className="test-btn" onClick={() => handleTestAlert('all')} disabled={testingAlert}>
+                  {testingAlert ? 'Se trimite...' : 'Trimite o alertă de test'}
+                </button>
+              </div>
+              {notifyFeedback && <div className={`delivery-alert ${notifyFeedback.type}`}>{notifyFeedback.text}</div>}
+            </div>
+
+            {/* WhatsApp gateway */}
+            <div className="hud-card" style={{ marginTop: '20px' }}>
+              <div className="card-title">
+                <span>💬 WhatsApp</span>
+              </div>
+              <p className="card-desc">
+                Mesajele de marketing pe WhatsApp pleacă doar către clienții cu acord SMS/WhatsApp în Shopify (acordul de email nu e suficient).
+                Testul se trimite doar la telefonul tău de comerciant.
+              </p>
+              <div className="settings-form-grid">
+                <div className="form-group">
+                  <label>Furnizor:</label>
+                  <select value={waSettings.whatsapp_provider || 'auto'}
+                    onChange={(e) => setWaSettings({ ...waSettings, whatsapp_provider: e.target.value })}>
+                    <option value="auto">Automat (Meta → Twilio → Webhook)</option>
+                    <option value="meta">Meta WhatsApp Cloud API</option>
+                    <option value="twilio">Twilio</option>
+                    <option value="webhook">Webhook propriu (https)</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>Telefonul tău (comerciant):</label>
+                  <input type="tel" placeholder="+34 600 000 000" value={waSettings.merchant_notify_phone || ''}
+                    onChange={(e) => setWaSettings({ ...waSettings, merchant_notify_phone: e.target.value })} />
+                </div>
+                <div className="form-group">
+                  <label>Meta token:</label>
+                  <input type="password" autoComplete="off" value={waSettings.whatsapp_api_token || ''}
+                    onChange={(e) => setWaSettings({ ...waSettings, whatsapp_api_token: e.target.value })} />
+                </div>
+                <div className="form-group">
+                  <label>Meta phone number ID:</label>
+                  <input type="text" value={waSettings.whatsapp_phone_number_id || ''}
+                    onChange={(e) => setWaSettings({ ...waSettings, whatsapp_phone_number_id: e.target.value })} />
+                </div>
+                <div className="form-group">
+                  <label>Twilio Account SID:</label>
+                  <input type="text" value={waSettings.twilio_account_sid || ''}
+                    onChange={(e) => setWaSettings({ ...waSettings, twilio_account_sid: e.target.value })} />
+                </div>
+                <div className="form-group">
+                  <label>Twilio auth token:</label>
+                  <input type="password" autoComplete="off" value={waSettings.twilio_auth_token || ''}
+                    onChange={(e) => setWaSettings({ ...waSettings, twilio_auth_token: e.target.value })} />
+                </div>
+                <div className="form-group">
+                  <label>Număr Twilio WhatsApp:</label>
+                  <input type="text" value={waSettings.twilio_whatsapp_number || ''}
+                    onChange={(e) => setWaSettings({ ...waSettings, twilio_whatsapp_number: e.target.value })} />
+                </div>
+                <div className="form-group">
+                  <label>Webhook URL (https):</label>
+                  <input type="password" autoComplete="off" value={waSettings.whatsapp_webhook_url || ''}
+                    onChange={(e) => setWaSettings({ ...waSettings, whatsapp_webhook_url: e.target.value })} />
+                </div>
+              </div>
+              <div className="form-actions-row">
+                <button className="save-btn" onClick={handleSaveWaSettings} disabled={savingWa}>
+                  {savingWa ? 'Se salvează...' : 'Salvează WhatsApp'}
+                </button>
+                <button className="test-btn" onClick={handleSendTestWa} disabled={sendingTestWa}>
+                  {sendingTestWa ? 'Se trimite...' : 'Trimite-mi un WhatsApp de test'}
+                </button>
+              </div>
+              {waFeedback && <div className={`delivery-alert ${waFeedback.type}`}>{waFeedback.text}</div>}
+            </div>
+
+            {/* Post-delivery thank-you queue */}
+            <div className="hud-card" style={{ marginTop: '20px' }}>
+              <div className="card-title">
+                <span>🎁 Mulțumiri după livrare</span>
+              </div>
+              <p className="card-desc">
+                Pleacă la 2 zile după ce curierul raportează livrarea (sau la 5 zile după expediere, dacă nu există tracking), doar clienților cu acord de marketing.
+                Codul MGVIP15 trebuie să existe în Shopify → Reduceri.
+              </p>
+              {vipQueue.length === 0 ? (
+                <div className="empty-notice">Nicio mulțumire programată acum.</div>
+              ) : (
+                <div className="audit-logs-list">
+                  {vipQueue.map((item) => (
+                    <div key={item.order_id} className="log-item">
+                      <div className="log-badge-type">{VIP_STATUS_LABELS[item.status] || item.status || DASH}</div>
+                      <div className="log-details">
+                        <div className="log-title">#{item.order_number || item.order_id} · {item.customer_name || DASH}</div>
+                        <div className="log-sub">{item.sent_at ? 'trimis' : 'programat'} · limba {item.lang || DASH}</div>
+                      </div>
+                      <div className="log-meta">
+                        <div className="log-date">{fmtDateTime(item.sent_at || item.scheduled_for, locale)}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="form-actions-row">
+                <button className="test-btn" onClick={handleSyncVip} disabled={syncingVip}>
+                  {syncingVip ? 'Se sincronizează...' : 'Sincronizează comenzile livrate'}
+                </button>
+              </div>
+              {vipFeedback && <div className={`delivery-alert ${vipFeedback.type}`}>{vipFeedback.text}</div>}
+            </div>
+
+            {/* Weekly report */}
+            <div className="hud-card" style={{ marginTop: '20px' }}>
+              <div className="card-title">
+                <span>📊 Ultimele 7 zile</span>
+              </div>
+              <p className="card-desc">Aceleași cifre reale pe care Jarvis ți le trimite lunea dimineață pe canalele de alertă.</p>
+              {!weeklyReport ? (
+                <div className="empty-notice">Se încarcă...</div>
+              ) : weeklyReport.error ? (
+                <div className="empty-notice">Raport indisponibil: {String(weeklyReport.error)}</div>
+              ) : (
+                <ul className="plain-list" style={{ fontSize: '13px', color: '#e7e5e4', lineHeight: 1.8 }}>
+                  {asArray(weeklyReport.lines).map((line, i) => <li key={i}>{line}</li>)}
+                </ul>
+              )}
+              <div className="form-actions-row">
+                <button className="test-btn" onClick={loadWeeklyReport}>🔄 Actualizează</button>
+              </div>
             </div>
           </div>
         )}
