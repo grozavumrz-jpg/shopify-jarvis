@@ -891,21 +891,23 @@ class ShopifyClient:
 
     # ── Brand Discount Codes (Owner / Brand Name Only — never 'JARVIS') ──────
 
+    # Only the codes Jarvis' own emails mention: MG10 (abandoned cart) and MGVIP15 (thank-you + 30-day
+    # reminder). Public codes nobody uses are a leak risk (coupon sites), so no extra codes here.
     BRAND_DISCOUNT_SPECS: List[Dict[str, Any]] = [
         {"code": "MG10", "percent": 10, "title": "Grozavu MG10 — 10% Cart Recovery"},
-        {"code": "GROZAVU10", "percent": 10, "title": "Grozavu GROZAVU10 — 10% Recovery"},
         {"code": "MGVIP15", "percent": 15, "title": "Grozavu MGVIP15 — 15% VIP & Win-Back"},
-        {"code": "GROZAVU15", "percent": 15, "title": "Grozavu GROZAVU15 — 15% VIP & Win-Back"},
-        {"code": "GROZAVU5", "percent": 5, "title": "Grozavu GROZAVU5 — 5% Welcome"},
     ]
 
     async def ensure_brand_discount_codes(
         self,
         specs: Optional[List[Dict[str, Any]]] = None,
+        create_missing: bool = True,
     ) -> Dict[str, Any]:
         """
-        Verify and automatically create brand discount codes (MG10, GROZAVU10, MGVIP15, GROZAVU15, GROZAVU5)
-        in Shopify using GraphQL discountCodeBasicCreate with REST price_rules fallback.
+        Verify brand discount codes (MG10, MGVIP15) in Shopify and, only when create_missing=True
+        (an explicit owner action), create missing ones via GraphQL discountCodeBasicCreate with a
+        REST price_rules fallback. create_missing=False is strictly read-only: no create, no rename;
+        missing codes go to "missing" and non-ACTIVE ones to "inactive".
         Strictly rejects any code containing 'jarvis'. Never raises.
         """
         target_specs = specs if specs is not None else self.BRAND_DISCOUNT_SPECS
@@ -913,6 +915,8 @@ class ShopifyClient:
         created: List[str] = []
         existing: List[str] = []
         renamed: List[str] = []
+        missing: List[str] = []
+        inactive: List[str] = []
         errors: List[str] = []
 
         check_query = """
@@ -922,6 +926,7 @@ class ShopifyClient:
             codeDiscount {
               ... on DiscountCodeBasic {
                 title
+                status
               }
             }
           }
@@ -969,12 +974,18 @@ class ShopifyClient:
             # 1. Check if code already exists via GraphQL (and rename if old title mentions 'Jarvis')
             try:
                 chk = await self._graphql(check_query, {"code": code})
+                if isinstance(chk, dict) and chk.get("errors") and not create_missing:
+                    first_e = chk["errors"][0] if isinstance(chk["errors"], list) and chk["errors"] else chk["errors"]
+                    raise Exception(first_e.get("message") if isinstance(first_e, dict) else str(first_e))
                 node = ((chk or {}).get("data") or {}).get("codeDiscountNodeByCode")
                 if isinstance(node, dict) and node.get("id"):
                     existing.append(code)
                     cur_title = str(((node.get("codeDiscount") or {}).get("title")) or "")
+                    cur_status = str(((node.get("codeDiscount") or {}).get("status")) or "").upper()
+                    if cur_status and cur_status != "ACTIVE":
+                        inactive.append(code)
                     did_rename = False
-                    if "jarvis" in cur_title.lower():
+                    if create_missing and "jarvis" in cur_title.lower():
                         try:
                             upd = await self._graphql(
                                 update_mutation,
@@ -991,10 +1002,20 @@ class ShopifyClient:
                         "percent": pct,
                         "id": node["id"],
                         "title": title if did_rename else (cur_title or title),
+                        "discount_status": cur_status or None,
                     }
                     continue
-            except Exception:
-                pass
+            except Exception as chk_err:
+                if not create_missing:
+                    # Read-only check failed: report it, never fall through to creating anything.
+                    errors.append(f"{code}: verificare eșuată ({str(chk_err)[:140]})")
+                    results[code] = {"status": "error", "percent": pct, "reason": str(chk_err)[:180]}
+                    continue
+
+            if not create_missing:
+                missing.append(code)
+                results[code] = {"status": "missing", "percent": pct}
+                continue
 
             # 2. Try creating via GraphQL discountCodeBasicCreate
             gql_err_msg = None
@@ -1075,10 +1096,63 @@ class ShopifyClient:
             results[code] = {"status": "error", "percent": pct, "reason": err_summary}
 
         return {
-            "ok": len(errors) == 0,
+            "ok": len(errors) == 0 and not missing and not inactive,
             "created": created,
             "existing": existing,
             "renamed": renamed,
+            "missing": missing,
+            "inactive": inactive,
             "errors": errors,
             "codes": results,
+        }
+
+    async def get_winback_customer_state(self, email: str, order_id: Any) -> Dict[str, Any]:
+        """
+        Live Shopify state needed right before a 30-day win-back email (read-only):
+          - email_state: the customer's CURRENT email marketing state (SUBSCRIBED / UNSUBSCRIBED /
+            NOT_SUBSCRIBED / PENDING / ...), so opt-outs made in Shopify are respected;
+          - last_order_at: when the customer last ordered (a newer order = no win-back);
+          - order_cancelled / order_financial_status: the original order (refunded = no win-back).
+        Raises on API errors so the caller can fail closed (no consent proof = no email).
+        """
+        em = (email or "").strip().lower()
+        if not em or "@" not in em:
+            raise ValueError("invalid email")
+        oid = str(order_id or "").strip()
+        order_gid = oid if oid.startswith("gid://") else f"gid://shopify/Order/{oid}"
+        query = """
+        query JarvisWinbackState($q: String!, $orderId: ID!) {
+          customers(first: 1, query: $q) {
+            nodes {
+              id
+              defaultEmailAddress { emailAddress marketingState }
+              lastOrder { createdAt }
+            }
+          }
+          order(id: $orderId) { cancelledAt displayFinancialStatus }
+        }
+        """
+        safe_q = em.replace("\\", "").replace('"', "")
+        res = await self._graphql(query, {"q": f'email:"{safe_q}"', "orderId": order_gid})
+        if not isinstance(res, dict):
+            raise Exception("Shopify GraphQL: unexpected response")
+        if res.get("errors"):
+            first = res["errors"][0] if isinstance(res["errors"], list) and res["errors"] else res["errors"]
+            raise Exception(f"Shopify GraphQL error: {first.get('message') if isinstance(first, dict) else first}")
+        data = res.get("data") or {}
+        nodes = ((data.get("customers") or {}).get("nodes")) or []
+        customer = None
+        for n in nodes:
+            addr = ((n or {}).get("defaultEmailAddress") or {})
+            if str(addr.get("emailAddress") or "").strip().lower() == em:
+                customer = n
+                break
+        order = data.get("order") or {}
+        return {
+            "found": customer is not None,
+            "email_state": str((((customer or {}).get("defaultEmailAddress") or {}).get("marketingState")) or "").upper() or None,
+            "last_order_at": (((customer or {}).get("lastOrder") or {}).get("createdAt")),
+            "order_found": bool(order),
+            "order_cancelled": bool(order.get("cancelledAt")),
+            "order_financial_status": str(order.get("displayFinancialStatus") or "").upper() or None,
         }

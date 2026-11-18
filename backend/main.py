@@ -163,12 +163,11 @@ async def ensure_shop_connection(force: bool = False) -> None:
 
 
 _daemon_task: Optional[asyncio.Task] = None
-_watchdog_task: Optional[asyncio.Task] = None
 
 
 @app.on_event("startup")
 async def startup():
-    global _daemon_task, _watchdog_task
+    global _daemon_task
     try:
         db.init_db()
         db_type = "SQLite (ephemeral on Render free!)" if getattr(db, "USING_SQLITE", False) else "PostgreSQL"
@@ -180,8 +179,9 @@ async def startup():
     if not os.getenv("JARVIS_ADMIN_KEY"):
         print("[Startup Warning] JARVIS_ADMIN_KEY is not set: the dashboard only works embedded in Shopify admin.")
     if os.getenv("JARVIS_DISABLE_DAEMON") != "1":
+        # ONE background loop: the Store Watchdog runs right after each autopilot cycle, so the
+        # (free Neon) database wakes up once per interval instead of twice.
         _daemon_task = asyncio.create_task(autopilot_daemon_loop())
-        _watchdog_task = asyncio.create_task(watchdog_daemon_loop())
 
 
 def daemon_running() -> bool:
@@ -189,7 +189,8 @@ def daemon_running() -> bool:
 
 
 def watchdog_running() -> bool:
-    return _watchdog_task is not None and not _watchdog_task.done()
+    # The watchdog pass runs inside the autopilot loop (merged to halve database wake-ups).
+    return daemon_running()
 
 
 def autopilot_status_payload() -> Dict[str, Any]:
@@ -235,9 +236,13 @@ async def health():
                                     "deci mesajele de marketing așteaptă Postgres.")
         if ephemeral_db_blocks_marketing() else None,
         "autopilot_last_cycle_at": AUTOPILOT_STATUS.get("last_cycle_at"),
+        "autopilot_interval_minutes": AUTOPILOT_INTERVAL_SECONDS // 60,
+        "auto_create_discounts": auto_create_discounts_enabled(),
+        "winback_enabled": winback_enabled(),
         "web_search_grounding_enabled": True,
         "gemini_configured": bool(len(ai._get_api_key()) >= 10),
-        "gemini_last_error": ai.last_gemini_error,
+        # Public endpoint: only whether the last Gemini call failed, never the raw error text.
+        "gemini_last_call_failed": bool(ai.last_gemini_error),
         "google_search_console_configured": google_traffic.is_gsc_configured(),
         "google_analytics_configured": google_traffic.is_ga4_configured(),
     }
@@ -812,9 +817,10 @@ AUTOPILOT_STATUS: Dict[str, Any] = {
 
 def autopilot_interval_minutes() -> int:
     """
-    JARVIS_AUTOPILOT_MINUTES (1–60) if set. Otherwise 15 on Neon, 5 elsewhere: Neon's free plan has
-    100 CU-hours/month and only suspends after 5 idle minutes, so a 5-minute loop would keep the
-    database awake 24/7 (~186 CU-h) and get it suspended mid-month. 15 minutes lets it sleep in between.
+    JARVIS_AUTOPILOT_MINUTES (1–60) if set. Otherwise 30 on Neon, 5 elsewhere: Neon's free plan has
+    100 CU-hours/month and only suspends after 5 idle minutes. With Render kept awake 24/7, a
+    15-minute loop keeps the database up ~half the time (~90 CU-h, too close to the cap); 30 minutes
+    keeps it around 45 CU-h with headroom.
     """
     raw = os.getenv("JARVIS_AUTOPILOT_MINUTES", "").strip()
     if raw:
@@ -822,7 +828,7 @@ def autopilot_interval_minutes() -> int:
             return max(1, min(60, int(raw)))
         except ValueError:
             pass
-    return 15 if "neon.tech" in (getattr(db, "DATABASE_URL", "") or "") else 5
+    return 30 if "neon.tech" in (getattr(db, "DATABASE_URL", "") or "") else 5
 
 
 AUTOPILOT_INTERVAL_SECONDS = autopilot_interval_minutes() * 60
@@ -1080,6 +1086,29 @@ async def _notify_conversion(shop: str, order: dict) -> None:
 
 _DISCOUNT_ENSURE_CACHE: Dict[str, tuple] = {}
 DISCOUNT_ENSURE_TTL_SECONDS = 6 * 3600
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on", "da")
+
+
+def auto_create_discounts_enabled() -> bool:
+    """
+    Background loops never create discount codes unless the owner turns it on
+    (JARVIS_AUTO_CREATE_DISCOUNTS=1). Public codes without expiry or usage limit end up on coupon
+    sites; the owner creates codes in Shopify (or with the explicit button in Jarvis).
+    """
+    return _env_flag("JARVIS_AUTO_CREATE_DISCOUNTS", False)
+
+
+def winback_enabled() -> bool:
+    """30-day win-back reminder on/off switch (JARVIS_WINBACK_ENABLED=0 turns it off)."""
+    return _env_flag("JARVIS_WINBACK_ENABLED", True)
+
+
 SELF_HEAL_STATUS: Dict[str, Any] = {
     "last_healed_at": None,
     "actions_taken": [],
@@ -1093,7 +1122,7 @@ async def run_self_heal(shop: Optional[str] = None, force_discounts: bool = Fals
     1. Evicts expired _FAILED_UNTIL retry cooldowns so transient failures recover automatically.
     2. Re-initializes DB schema if a previous cycle recorded a DB error.
     3. Re-establishes Shopify connection when token is missing, expired or in error state.
-    4. Verifies/creates brand discount codes (MG10, GROZAVU10, MGVIP15, GROZAVU15, GROZAVU5) when due or requested.
+    4. Verifies/creates brand discount codes (MG10, MGVIP15) only when explicitly requested (force_discounts).
     """
     actions: List[str] = []
     now_ts = time.time()
@@ -1205,7 +1234,7 @@ async def run_shop_cycle(s: dict, skip_log: Optional[List[dict]] = None) -> Dict
 
     try:
         winback_fn = getattr(post_delivery_service, "process_winback_automations", None)
-        if callable(winback_fn):
+        if callable(winback_fn) and winback_enabled():
             cached_prods = (_FEED_CACHE.get(shop) or (0, None))[1]
             wb_sent = await asyncio.to_thread(
                 winback_fn, shop, settings, None, shop_name, cached_prods, recent_customer_emails
@@ -1246,17 +1275,23 @@ async def run_autopilot_cycle(only_shop: Optional[str] = None, skip_log: Optiona
 
 async def autopilot_daemon_loop():
     await asyncio.sleep(15)
-    print(f"[AUTOPILOT] Starting autonomous follow-up & self-healing engine (every {AUTOPILOT_INTERVAL_SECONDS // 60} minutes)...")
+    store_watchdog.state["is_running"] = True
+    print(f"[AUTOPILOT] Starting autopilot + 24/7 Store Guardian (one loop, every {AUTOPILOT_INTERVAL_SECONDS // 60} minutes)...")
     while True:
         try:
             shop_d = default_shop()
             last_disc_ts = (_DISCOUNT_ENSURE_CACHE.get(shop_d) or (0, None))[0]
-            if time.time() - last_disc_ts >= DISCOUNT_ENSURE_TTL_SECONDS:
+            if auto_create_discounts_enabled() and time.time() - last_disc_ts >= DISCOUNT_ENSURE_TTL_SECONDS:
                 await run_self_heal(shop=shop_d, force_discounts=True)
             await run_autopilot_cycle()
         except Exception as e:
             AUTOPILOT_STATUS["last_error"] = str(e)[:500]
             print(f"[Autopilot Daemon Loop Error]: {e}")
+        # Store Watchdog in the same wake-up (merged loop: the database wakes once per interval).
+        try:
+            await run_watchdog_pass(shop=default_shop())
+        except Exception as e:
+            print(f"[Watchdog Pass Error]: {e}")
         await asyncio.sleep(AUTOPILOT_INTERVAL_SECONDS)
 
 
@@ -1299,24 +1334,12 @@ async def run_watchdog_pass(shop: Optional[str] = None, check_storefront: bool =
         ephemeral_db_blocked=ephemeral_db_blocks_marketing(),
         check_storefront=check_storefront,
         check_dns=check_dns,
-        auto_fix_discounts=True,
+        auto_fix_discounts=auto_create_discounts_enabled(),
         currency=FEED_CURRENCY,
         google_traffic_report=traffic_report,
     )
     report["is_running"] = watchdog_running()
     return report
-
-
-async def watchdog_daemon_loop():
-    await asyncio.sleep(25)
-    store_watchdog.state["is_running"] = True
-    print(f"[WATCHDOG] Starting 24/7 Store Guardian agent (every {AUTOPILOT_INTERVAL_SECONDS // 60} minutes)...")
-    while True:
-        try:
-            await run_watchdog_pass(shop=default_shop())
-        except Exception as e:
-            print(f"[Watchdog Loop Error]: {e}")
-        await asyncio.sleep(AUTOPILOT_INTERVAL_SECONDS)
 
 
 # ── Shopify webhooks (HMAC-verified) ──────────────────────────────────────────
@@ -1796,7 +1819,7 @@ async def trigger_self_heal(req: Optional[AutopilotDispatchRequest] = None, auth
 
 @app.post("/api/discounts/ensure")
 async def ensure_discounts_endpoint(req: Optional[AutopilotDispatchRequest] = None, auth: AuthContext = Depends(require_auth)):
-    """Ensure owner/brand discount codes (MG10, GROZAVU10, MGVIP15, GROZAVU15, GROZAVU5) exist in Shopify."""
+    """Owner action: ensure the brand discount codes used by Jarvis' emails (MG10, MGVIP15) exist in Shopify."""
     shop = resolve_shop(auth, req.shop if req else None)
     record = get_shop_or_404(shop)
     token = record.get("access_token", "")
@@ -1811,7 +1834,7 @@ async def ensure_discounts_endpoint(req: Optional[AutopilotDispatchRequest] = No
 
 @app.get("/api/discounts/status")
 async def get_discounts_status(shop: Optional[str] = Query(None), auth: AuthContext = Depends(require_auth)):
-    """Return status of owner/brand discount codes (MG10, GROZAVU10, MGVIP15, GROZAVU15, GROZAVU5)."""
+    """Return status of the brand discount codes used by Jarvis' emails (MG10, MGVIP15)."""
     shop = resolve_shop(auth, shop)
     cached = (_DISCOUNT_ENSURE_CACHE.get(shop) or (0, None))[1]
     return {

@@ -2001,6 +2001,58 @@ def record_message_sent(
     return True
 
 
+def count_recent_messages_of_type(
+    shop_domain: str,
+    recipient: str,
+    channel: str,
+    message_type: str,
+    days: int,
+    now_dt: Optional[datetime] = None,
+) -> int:
+    """How many messages of one type (e.g. 'winback_30d') this recipient got in the last `days` days."""
+    ident = normalize_recipient(recipient, channel)
+    if not ident:
+        return 0
+    since = _utc_naive(now_dt) - timedelta(days=max(1, int(days)))
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(*) AS cnt FROM message_frequency_logs
+                WHERE shop_domain = %s AND recipient = %s AND channel = %s
+                  AND message_type = %s AND sent_at >= %s
+            """, (shop_domain, ident, channel, message_type, since))
+            return _count(cur.fetchone())
+
+
+def remove_last_message_record(
+    shop_domain: str,
+    recipient: str,
+    channel: str,
+    message_type: str,
+    sequence_key: Optional[str] = None,
+) -> bool:
+    """
+    Undo a claim made with record_message_sent when the send then failed (claim-before-send:
+    the row is written BEFORE sending so an overlapping run can never send the same message twice).
+    """
+    ident = normalize_recipient(recipient, channel)
+    if not ident:
+        return False
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                DELETE FROM message_frequency_logs WHERE id IN (
+                    SELECT id FROM message_frequency_logs
+                    WHERE shop_domain = %s AND recipient = %s AND channel = %s AND message_type = %s
+                      AND COALESCE(sequence_key, '') = %s
+                    ORDER BY sent_at DESC, id DESC LIMIT 1
+                )
+            """, (shop_domain, ident, channel, message_type, str(sequence_key) if sequence_key else ""))
+            removed = _rowcount(cur) > 0
+        conn.commit()
+    return removed
+
+
 def get_consent_stats(shop_domain: str) -> Dict[str, int]:
     """Return summary of consent and messaging metrics for dashboard."""
     with get_conn() as conn:

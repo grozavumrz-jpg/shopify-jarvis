@@ -124,8 +124,16 @@ class PostDeliveryService:
     WINBACK_DELAY_DAYS = 30
     WINBACK_MAX_DAYS = 90
     DISCOUNT_CODE_MGVIP15 = "MGVIP15"
-    DISCOUNT_CODE_GROZAVU15 = "GROZAVU15"
     VIP_DISCOUNT_CODE = "MGVIP15"
+    # The 30-day reminder repeats the thank-you code (MGVIP15, once per customer) instead of a
+    # second public 15% code. Kept as an alias for older callers.
+    WINBACK_DISCOUNT_CODE = "MGVIP15"
+    DISCOUNT_CODE_GROZAVU15 = WINBACK_DISCOUNT_CODE
+    # Safety limits for the 30-day reminder
+    WINBACK_MAX_PER_RUN = 3            # no burst: at most 3 reminders per cycle
+    WINBACK_MAX_LIVE_CHECKS = 15       # bounded Shopify lookups per cycle
+    WINBACK_PERSON_COOLDOWN_DAYS = 90  # one reminder per PERSON (not per order) in 90 days
+    WINBACK_RECHECK_SECONDS = 24 * 3600  # a customer that failed the live check is re-checked after 24h
 
     # Max days after scheduled_for a pending thank-you may still go out (then 'expired').
     VIP_MAX_LATE_DAYS = 14
@@ -134,7 +142,7 @@ class PostDeliveryService:
         "ro": {
             "greeting": "Salut {customer_name}!",
             "greeting_generic": "Salut!",
-            "msg": "{greeting} A trecut o lună de când ți-a ajuns comanda {brand} ({purchased_item}). Dacă vrei să-ți completezi ținuta{upsell_clause}, ți-am pregătit codul personal {discount_code} pentru 15% reducere la următoarea comandă pe maisongrozavu.com.",
+            "msg": "{greeting} A trecut o lună de când ți-a ajuns comanda {brand} ({purchased_item}). Dacă vrei să-ți completezi ținuta{upsell_clause}, folosește codul {discount_code} pentru 15% reducere la următoarea comandă pe maisongrozavu.com.",
             "upsell": " cu {upsell_item}",
             "subject": "{name_prefix}15% reducere la următoarea ta piesă {brand} ({discount_code})",
             "item_default": "piesa ta Grozavu",
@@ -330,7 +338,7 @@ class PostDeliveryService:
         customer_name: str,
         purchased_item: str = "",
         upsell_item: Optional[str] = None,
-        discount_code: str = "GROZAVU15",
+        discount_code: str = "MGVIP15",
         lang: str = "en",
         shop_name: Optional[str] = None,
     ) -> str:
@@ -346,14 +354,14 @@ class PostDeliveryService:
             brand=(shop_name or "").strip() or cls.DEFAULT_BRAND,
             purchased_item=(purchased_item or "").strip() or tmpl["item_default"],
             upsell_clause=upsell_clause,
-            discount_code=(discount_code or "").strip() or cls.DISCOUNT_CODE_GROZAVU15,
+            discount_code=(discount_code or "").strip() or cls.WINBACK_DISCOUNT_CODE,
         )
 
     @classmethod
     def build_winback_subject(
         cls,
         customer_name: str,
-        discount_code: str = "GROZAVU15",
+        discount_code: str = "MGVIP15",
         lang: str = "en",
         shop_name: Optional[str] = None,
     ) -> str:
@@ -365,7 +373,7 @@ class PostDeliveryService:
         subject = tmpl["subject"].format(
             name_prefix=f"{name}, " if name else "",
             brand=brand,
-            discount_code=(discount_code or "").strip() or cls.DISCOUNT_CODE_GROZAVU15,
+            discount_code=(discount_code or "").strip() or cls.WINBACK_DISCOUNT_CODE,
         )
         return subject[:1].upper() + subject[1:] if subject else subject
 
@@ -873,6 +881,29 @@ class PostDeliveryService:
         except Exception as log_err:
             print(f"[VIP Autopilot Log Error {order_id}]: {log_err}")
 
+    def _winback_live_state(self, shop: str, email: str, order_id: str) -> Dict[str, Any]:
+        """Live Shopify consent / last order / refund state (raises on any failure -> caller skips)."""
+        rec = db.get_shop(shop) if db else None
+        token = (rec or {}).get("access_token", "")
+        if not token:
+            raise RuntimeError("Shopify token missing")
+        client = ShopifyClient(shop, token)
+        return _run_coroutine(client.get_winback_customer_state(email, order_id))
+
+    def _discount_code_active(self, shop: str, code: str) -> bool:
+        """True only if the code exists in Shopify and is ACTIVE (read-only check)."""
+        rec = db.get_shop(shop) if db else None
+        token = (rec or {}).get("access_token", "")
+        if not token:
+            return False
+        client = ShopifyClient(shop, token)
+        res = _run_coroutine(client.ensure_brand_discount_codes(
+            [{"code": code, "percent": 15, "title": code}], create_missing=False
+        )) or {}
+        return (code in (res.get("existing") or [])
+                and code not in (res.get("inactive") or [])
+                and not res.get("errors"))
+
     def process_winback_automations(
         self,
         shop: str,
@@ -883,11 +914,17 @@ class PostDeliveryService:
         recent_customer_emails: Optional[set] = None,
     ) -> int:
         """
-        Autonomous 30-day Win-Back sequence:
-        Finds customers whose post-delivery thank-you was sent 30–90 days ago, who have not ordered
-        again in the last 30 days, and who have explicit marketing consent.
-        Sends at most 1 win-back check-in per order (sequence_key 'winback:<order_id>') with
-        discount code GROZAVU15 and a real complementary product suggestion from the active catalog.
+        30-day reminder (email only), sent to customers whose thank-you went out 30-90 days ago.
+        Every guard fails CLOSED (any doubt = no email):
+          - local consent + quiet hours + frequency caps (can_dispatch_to_customer);
+          - LIVE Shopify check right before sending: the customer must still be SUBSCRIBED to email
+            marketing (an opt-out made in Shopify is respected and recorded locally), the original
+            order must not be cancelled/refunded, and there must be no newer order;
+          - the discount code must exist and be ACTIVE in Shopify;
+          - one reminder per PERSON in 90 days (several orders != several emails), max
+            WINBACK_MAX_PER_RUN per cycle (no burst);
+          - claim-before-send: the dispatch is logged BEFORE sending (an overlapping run can never send
+            it twice) and the claim is removed again if the send fails.
         """
         if not db or not hasattr(db, "get_due_winback_candidates"):
             return 0
@@ -913,38 +950,87 @@ class PostDeliveryService:
 
         recent_emails = {str(em).strip().lower() for em in (recent_customer_emails or set()) if em}
         brand = self._resolve_brand(shop, resolved_settings, shop_name)
-        discount_code = self.DISCOUNT_CODE_GROZAVU15
+        skip_until: Dict[str, float] = self.__dict__.setdefault("_winback_skip_until", {})
+        now_ts = now.timestamp()
+        code_active: Dict[str, bool] = {}
+        seen_people: set = set()
+        live_checks = 0
         sent_count = 0
 
         for record in candidates:
+            if sent_count >= self.WINBACK_MAX_PER_RUN or live_checks >= self.WINBACK_MAX_LIVE_CHECKS:
+                break
             if not isinstance(record, dict):
                 continue
             order_id = str(record.get("order_id") or "").strip()
-            if not order_id:
+            if not order_id or skip_until.get(order_id, 0) > now_ts:
                 continue
             c_email = (record.get("customer_email") or "").strip() or None
-            c_phone = (record.get("customer_phone") or "").strip() or None
-            if c_email and c_email.lower() in recent_emails:
-                continue  # customer already placed a new order recently
+            if not c_email or "@" not in c_email:
+                continue  # email only: WhatsApp marketing consent cannot be re-verified live here
+            person = c_email.lower()
+            if person in recent_emails or person in seen_people:
+                continue  # ordered again recently / already handled in this run
             c_name = (record.get("customer_name") or "").strip()
             if c_name.lower() in ("client", "valued client", "customer", "cliente"):
                 c_name = ""
 
-            seq_key = self.winback_sequence_key(order_id)
-            email_ok, _ = (False, "no email")
-            if c_email and "@" in c_email:
-                email_ok, _ = can_dispatch_to_customer(
-                    shop, email=c_email, phone=c_phone, channel="email", now_dt=now,
-                    message_type="winback_30d", sequence_key=seq_key,
-                )
-            wa_ok, _ = (False, "no phone")
-            if c_phone:
-                wa_ok, _ = can_dispatch_to_customer(
-                    shop, email=c_email, phone=c_phone, channel="whatsapp", now_dt=now,
-                    message_type="winback_30d", sequence_key=seq_key,
-                )
-            if not email_ok and not wa_ok:
+            try:
+                if db.count_recent_messages_of_type(
+                    shop, c_email, "email", "winback_30d", self.WINBACK_PERSON_COOLDOWN_DAYS, now_dt=now
+                ) > 0:
+                    continue  # this person already got a reminder (for another order)
+            except Exception as e:
+                print(f"[WinBack Cooldown Check Error {order_id}]: {e}")
                 continue
+
+            seq_key = self.winback_sequence_key(order_id)
+            # phone only feeds the per-PERSON frequency caps; the reminder itself is email-only
+            c_phone = (record.get("customer_phone") or "").strip() or None
+            email_ok, _reason = can_dispatch_to_customer(
+                shop, email=c_email, phone=c_phone, channel="email", now_dt=now,
+                message_type="winback_30d", sequence_key=seq_key,
+            )
+            if not email_ok:
+                continue
+            seen_people.add(person)
+
+            # ── Live Shopify check, right before sending ────────────────────────
+            live_checks += 1
+            try:
+                live = self._winback_live_state(shop, c_email, order_id) or {}
+            except Exception as e:
+                print(f"[WinBack Live Check Error {order_id}]: {e}")
+                skip_until[order_id] = now_ts + 3600  # Shopify unreachable: retry in an hour
+                continue
+            state = str(live.get("email_state") or "").upper()
+            if not live.get("found") or state != "SUBSCRIBED":
+                if state == "UNSUBSCRIBED":
+                    try:
+                        db.record_opt_out(shop, email=c_email, source="shopify_unsubscribed")
+                    except Exception as e:
+                        print(f"[WinBack Opt-out Sync Error {order_id}]: {e}")
+                skip_until[order_id] = now_ts + self.WINBACK_RECHECK_SECONDS
+                continue
+            if live.get("order_cancelled") or str(live.get("order_financial_status") or "").upper() in ("REFUNDED", "VOIDED"):
+                skip_until[order_id] = now_ts + self.WINBACK_RECHECK_SECONDS
+                continue
+            last_order = self.parse_datetime(live.get("last_order_at"))
+            fulfilled = self.parse_datetime(record.get("fulfilled_at"))
+            if last_order is None or (fulfilled and last_order > fulfilled) \
+                    or last_order > now - timedelta(days=self.WINBACK_DELAY_DAYS):
+                skip_until[order_id] = now_ts + self.WINBACK_RECHECK_SECONDS
+                continue  # newer order exists (or unknown): the customer did come back
+
+            discount_code = (record.get("discount_code") or "").strip().upper() or self.WINBACK_DISCOUNT_CODE
+            if discount_code not in code_active:
+                try:
+                    code_active[discount_code] = bool(self._discount_code_active(shop, discount_code))
+                except Exception as e:
+                    print(f"[WinBack Discount Check Error {discount_code}]: {e}")
+                    code_active[discount_code] = False
+            if not code_active[discount_code]:
+                continue  # never promise a code that does not work
 
             items_summary = record.get("items_summary") or []
             if isinstance(items_summary, str):
@@ -963,6 +1049,7 @@ class PostDeliveryService:
             first_item = str(items_summary[0].get("title") or "").strip() if items_summary else ""
             comp = self.pick_complementary_product(first_item, catalog_products)
             upsell_title = comp.get("title") if isinstance(comp, dict) else None
+            # Only the suggested product is shown (labelled "picked for you"), never as "your order".
             display_items = [
                 {
                     "title": comp["title"],
@@ -971,7 +1058,7 @@ class PostDeliveryService:
                     "variant_title": "",
                     "image_url": comp.get("image_url"),
                 }
-            ] if isinstance(comp, dict) else items_summary
+            ] if isinstance(comp, dict) else []
 
             geo = detect_customer_language_and_country(c_name, c_email or "", c_phone or "", "", "")
             lang = (geo or {}).get("lang", "en") or "en"
@@ -983,59 +1070,55 @@ class PostDeliveryService:
                 lang=lang,
                 shop_name=brand,
             )
+            subj = self.build_winback_subject(c_name, discount_code=discount_code, lang=lang, shop_name=brand)
+            html_body = self.email_dispatcher.build_html_email(
+                shop_name=brand,
+                customer_name=c_name,
+                text_body=msg,
+                discount_code=discount_code,
+                line_items=display_items,
+                lang=lang,
+                customer_email=c_email,
+                shop_domain=shop,
+                email_kind="winback",
+            )
 
-            delivered_channels: List[str] = []
-            if email_ok:
-                subj = self.build_winback_subject(c_name, discount_code=discount_code, lang=lang, shop_name=brand)
-                html_body = self.email_dispatcher.build_html_email(
-                    shop_name=brand,
-                    customer_name=c_name,
-                    text_body=msg,
-                    discount_code=discount_code,
-                    line_items=display_items,
+            # Claim BEFORE sending: an overlapping run sees the claim and cannot send it twice.
+            try:
+                log_customer_dispatch(shop, c_email, "email", "winback_30d", sequence_key=seq_key)
+            except Exception as e:
+                print(f"[WinBack Claim Error {order_id}]: {e}")
+                continue
+            sent_ok = False
+            try:
+                m_res = _run_coroutine(self.email_dispatcher.send_email(
+                    to_email=c_email, subject=subj, body_text=msg, body_html=html_body,
+                    settings=resolved_settings, shop_domain=shop,
+                ))
+                sent_ok = self._send_succeeded(m_res)
+            except Exception as err:
+                print(f"[WinBack Email Error {order_id}]: {err}")
+            if not sent_ok:
+                try:
+                    db.remove_last_message_record(shop, c_email, "email", "winback_30d", sequence_key=seq_key)
+                except Exception as e:
+                    print(f"[WinBack Claim Release Error {order_id}]: {e}")
+                continue
+
+            sent_count += 1
+            try:
+                db.save_autopilot_log(
+                    shop=shop,
+                    action_type="winback_30d",
+                    target_name=c_name,
+                    target_email=c_email,
+                    subject=f"Win-Back 30d ({discount_code}) via email",
+                    message=msg,
+                    revenue=0.0,
+                    status="winback_sent_email",
                     lang=lang,
-                    customer_email=c_email,
-                    shop_domain=shop,
-                    email_kind="vip",
                 )
-                try:
-                    m_res = _run_coroutine(self.email_dispatcher.send_email(
-                        to_email=c_email, subject=subj, body_text=msg, body_html=html_body,
-                        settings=resolved_settings, shop_domain=shop,
-                    ))
-                    if self._send_succeeded(m_res):
-                        delivered_channels.append("email")
-                        log_customer_dispatch(shop, c_email, "email", "winback_30d", sequence_key=seq_key)
-                except Exception as err:
-                    print(f"[WinBack Email Error {order_id}]: {err}")
-
-            if wa_ok:
-                try:
-                    w_res = _run_coroutine(self.wa_dispatcher.send_message(
-                        phone=c_phone, message=msg, settings=resolved_settings, customer_name=c_name,
-                        shop_domain=shop, message_type="marketing", lang=lang,
-                    ))
-                    if self._send_succeeded(w_res):
-                        delivered_channels.append("whatsapp")
-                        log_customer_dispatch(shop, c_phone, "whatsapp", "winback_30d", sequence_key=seq_key)
-                except Exception as err:
-                    print(f"[WinBack WhatsApp Error {order_id}]: {err}")
-
-            if delivered_channels:
-                sent_count += 1
-                try:
-                    db.save_autopilot_log(
-                        shop=shop,
-                        action_type="winback_30d",
-                        target_name=c_name,
-                        target_email=c_email or c_phone or "",
-                        subject=f"Win-Back 30d ({discount_code}) via {', '.join(delivered_channels)}",
-                        message=msg,
-                        revenue=0.0,
-                        status="winback_sent_" + "_".join(delivered_channels),
-                        lang=lang,
-                    )
-                except Exception as log_err:
-                    print(f"[WinBack Log Error {order_id}]: {log_err}")
+            except Exception as log_err:
+                print(f"[WinBack Log Error {order_id}]: {log_err}")
 
         return sent_count

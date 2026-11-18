@@ -131,11 +131,8 @@ class TestLongTailPreviewOnlySEO(unittest.IsolatedAsyncioTestCase):
 class TestBrandDiscountCodesNoJarvis(unittest.IsolatedAsyncioTestCase):
     def test_brand_discount_specs_never_use_jarvis(self):
         codes = [s["code"] for s in ShopifyClient.BRAND_DISCOUNT_SPECS]
-        self.assertIn("MG10", codes)
-        self.assertIn("GROZAVU10", codes)
-        self.assertIn("MGVIP15", codes)
-        self.assertIn("GROZAVU15", codes)
-        self.assertIn("GROZAVU5", codes)
+        # Only the codes Jarvis' emails actually mention; no extra public codes.
+        self.assertEqual(sorted(codes), ["MG10", "MGVIP15"])
         for c in codes:
             self.assertNotIn("jarvis", c.lower())
 
@@ -240,50 +237,166 @@ class TestComplementaryCrossSellAndWinBack(unittest.TestCase):
 
         self.assertIsNone(self.svc.pick_complementary_product("Hoodie", []))
 
-    def test_winback_30d_sends_once_to_consented_customer_and_skips_repeat_buyer(self):
-        now = datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc)  # 13:00 Madrid (not quiet hours)
-        sent_40d_ago = now - timedelta(days=40)
-        order_id = f"wb_ord_{int(time.time() * 1000)}"
-        email = f"winback_{int(time.time() * 1000)}@example.es"
+    LIVE_OK = {"found": True, "email_state": "SUBSCRIBED", "last_order_at": None,
+               "order_found": True, "order_cancelled": False, "order_financial_status": "PAID"}
 
-        db.record_marketing_consent(SHOP, email=email, accepts_marketing=True, source="order")
+    def _new_shop(self):
+        self.wb_shop = f"wb-{time.time_ns()}.myshopify.com"
+        self.svc._winback_skip_until = {}
+        return self.wb_shop
+
+    def _winback_fixture(self, now, *, order_suffix="", email=None, days_ago=40, consent=True):
+        shop = getattr(self, "wb_shop", None) or self._new_shop()
+        stamp = f"{time.time_ns()}{order_suffix}"
+        order_id = f"wb_ord_{stamp}"
+        email = email or f"winback_{stamp}@example.es"
+        sent_at = now - timedelta(days=days_ago)
+        if consent:
+            db.record_marketing_consent(shop, email=email, accepts_marketing=True, source="order")
         db.enqueue_post_delivery_automation(
-            shop=SHOP,
-            order_id=order_id,
-            order_number="1055",
-            customer_email=email,
-            customer_phone=None,
-            customer_name="Lucía",
-            fulfilled_at=sent_40d_ago - timedelta(days=2),
-            scheduled_for=sent_40d_ago,
+            shop=shop, order_id=order_id, order_number="1055", customer_email=email,
+            customer_phone=None, customer_name="Lucía",
+            fulfilled_at=sent_at - timedelta(days=2), scheduled_for=sent_at,
             items_summary=[{"title": "Heavyweight Brushed Hoodie", "price": "79.00", "quantity": 1}],
             discount_code="MGVIP15",
         )
-        db.mark_post_delivery_sent(order_id, sent_at=sent_40d_ago)
+        db.mark_post_delivery_sent(order_id, sent_at=sent_at)
+        # the live "last order" is the original order itself (placed before it was fulfilled)
+        live = dict(self.LIVE_OK, last_order_at=(sent_at - timedelta(days=4)).isoformat())
+        return order_id, email, live
 
-        with patch.object(self.svc.email_dispatcher, "send_email", new_callable=AsyncMock, return_value={"success": True}) as mock_send:
-            # 1. If customer is in recent_customer_emails -> skipped
-            cnt_skip = self.svc.process_winback_automations(
-                SHOP, now_dt=now, catalog_products=self.catalog, recent_customer_emails={email}
+    def _run(self, now, live_fn, code_ok=True, send_result=None, recent=None):
+        with patch.object(self.svc, "_winback_live_state", side_effect=live_fn) as live_mock, \
+             patch.object(self.svc, "_discount_code_active", return_value=code_ok), \
+             patch.object(self.svc.email_dispatcher, "send_email", new_callable=AsyncMock,
+                          return_value=send_result or {"success": True}) as mock_send:
+            cnt = self.svc.process_winback_automations(
+                self.wb_shop, now_dt=now, catalog_products=self.catalog, recent_customer_emails=recent or set()
             )
-            self.assertEqual(cnt_skip, 0)
-            mock_send.assert_not_called()
+        return cnt, mock_send, live_mock
 
-            # 2. Eligible customer -> sends once with GROZAVU15 and complementary product
-            cnt_sent = self.svc.process_winback_automations(
-                SHOP, now_dt=now, catalog_products=self.catalog, recent_customer_emails=set()
-            )
-            self.assertEqual(cnt_sent, 1)
-            mock_send.assert_called_once()
-            sent_body = mock_send.call_args.kwargs["body_text"]
-            self.assertIn("GROZAVU15", sent_body)
-            self.assertIn("Blush Wide-Leg Pants", sent_body)
+    def test_winback_30d_sends_once_to_consented_customer_and_skips_repeat_buyer(self):
+        now = datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc)  # 13:00 Madrid (not quiet hours)
+        self._new_shop()
+        order_id, email, live = self._winback_fixture(now)
 
-            # 3. Second run -> blocked by sequence_key winback:<order_id> cap (max 1 per order)
-            cnt_again = self.svc.process_winback_automations(
-                SHOP, now_dt=now, catalog_products=self.catalog, recent_customer_emails=set()
-            )
-            self.assertEqual(cnt_again, 0)
+        # 1. Customer in recent_customer_emails -> skipped before any Shopify lookup
+        cnt, send, live_mock = self._run(now, lambda *a: live, recent={email})
+        self.assertEqual(cnt, 0)
+        send.assert_not_called()
+        live_mock.assert_not_called()
+
+        # 2. Eligible -> one email with MGVIP15 + complementary product, labelled as a suggestion
+        cnt, send, _ = self._run(now, lambda *a: live)
+        self.assertEqual(cnt, 1)
+        send.assert_called_once()
+        body = send.call_args.kwargs["body_text"]
+        html_body = send.call_args.kwargs["body_html"]
+        self.assertIn("MGVIP15", body)
+        self.assertNotIn("GROZAVU15", body)
+        self.assertIn("Blush Wide-Leg Pants", body)
+        self.assertNotIn("TU PEDIDO", html_body)
+        self.assertIn("ELEGIDO PARA TI", html_body)
+        self.assertIn("Publicidad", html_body)
+
+        # 3. Second run -> nothing (claim recorded; one per order and per person)
+        cnt, send, _ = self._run(now, lambda *a: live)
+        self.assertEqual(cnt, 0)
+        send.assert_not_called()
+
+    def test_winback_respects_unsubscribe_made_in_shopify(self):
+        now = datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc)
+        self._new_shop()
+        _, email, live = self._winback_fixture(now, order_suffix="u")
+        live = dict(live, email_state="UNSUBSCRIBED")
+        cnt, send, _ = self._run(now, lambda *a: live)
+        self.assertEqual(cnt, 0)
+        send.assert_not_called()
+        self.assertEqual(db.get_consent_status(self.wb_shop, email=email, channel="email"), db.CONSENT_OPTED_OUT)
+
+    def test_winback_skips_not_subscribed_pending_and_unknown_customers(self):
+        now = datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc)
+        for state, found in (("NOT_SUBSCRIBED", True), ("PENDING", True), (None, False)):
+            self._new_shop()
+            _, _, live = self._winback_fixture(now, order_suffix=f"s{state}")
+            live = dict(live, email_state=state, found=found)
+            cnt, send, _ = self._run(now, lambda *a, lv=live: lv)
+            self.assertEqual(cnt, 0, state)
+            send.assert_not_called()
+
+    def test_winback_skips_refunded_cancelled_and_returning_customers(self):
+        now = datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc)
+        cases = (
+            {"order_financial_status": "REFUNDED"},
+            {"order_cancelled": True},
+            {"last_order_at": (now - timedelta(days=10)).isoformat()},   # ordered again recently
+            {"last_order_at": (now - timedelta(days=35)).isoformat()},   # newer order after this one
+            {"last_order_at": None},                                     # unknown -> fail closed
+        )
+        for i, change in enumerate(cases):
+            self._new_shop()
+            _, _, live = self._winback_fixture(now, order_suffix=f"r{i}", days_ago=60)
+            live = dict(live, **change)
+            cnt, send, _ = self._run(now, lambda *a, lv=live: lv)
+            self.assertEqual(cnt, 0, change)
+            send.assert_not_called()
+
+    def test_winback_fails_closed_when_shopify_or_code_unavailable(self):
+        now = datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc)
+        self._new_shop()
+        _, _, live = self._winback_fixture(now, order_suffix="e")
+
+        def boom(*a):
+            raise RuntimeError("Shopify down")
+        cnt, send, _ = self._run(now, boom)
+        self.assertEqual(cnt, 0)
+        send.assert_not_called()
+
+        self._new_shop()
+        cnt, send, _ = self._run(now, lambda *a: live, code_ok=False)  # MGVIP15 missing/inactive
+        self.assertEqual(cnt, 0)
+        send.assert_not_called()
+
+    def test_winback_failed_send_releases_claim_and_can_retry(self):
+        now = datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc)
+        self._new_shop()
+        _, email, live = self._winback_fixture(now, order_suffix="f")
+        cnt, send, _ = self._run(now, lambda *a: live, send_result={"success": False, "error": "x"})
+        self.assertEqual(cnt, 0)
+        send.assert_called_once()
+        self.assertEqual(db.count_recent_messages_of_type(self.wb_shop, email, "email", "winback_30d", 90, now_dt=now), 0)
+        cnt, send, _ = self._run(now, lambda *a: live)
+        self.assertEqual(cnt, 1)
+
+    def test_winback_one_email_per_person_even_with_several_orders(self):
+        now = datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc)
+        self._new_shop()
+        email = f"multi_{int(time.time() * 1000)}@example.es"
+        _, _, live_a = self._winback_fixture(now, order_suffix="a", email=email, days_ago=60)
+        _, _, _live_b = self._winback_fixture(now, order_suffix="b", email=email, days_ago=50)
+        cnt, send, _ = self._run(now, lambda *a: live_a)
+        self.assertEqual(cnt, 1)
+        # 4 days later (past the 72h cap) the second order still does not trigger another email
+        later = now + timedelta(days=4)
+        cnt, send, _ = self._run(later, lambda *a: live_a)
+        self.assertEqual(cnt, 0)
+        send.assert_not_called()
+
+    def test_winback_never_sends_more_than_max_per_run(self):
+        now = datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc)
+        self._new_shop()
+        lives = {}
+        for i in range(5):
+            oid, _, lv = self._winback_fixture(now, order_suffix=f"m{i}", days_ago=45 + i)
+            lives[oid] = lv
+        cnt, send, _ = self._run(now, lambda shop, email, oid: lives.get(oid, self.LIVE_OK))
+        self.assertLessEqual(cnt, pds.PostDeliveryService.WINBACK_MAX_PER_RUN)
+        self.assertLessEqual(send.call_count, pds.PostDeliveryService.WINBACK_MAX_PER_RUN)
+
+    def test_winback_romanian_copy_does_not_call_shared_code_personal(self):
+        msg = self.svc.build_winback_message("Ana", "Hoodie", None, "MGVIP15", lang="ro")
+        self.assertNotIn("personal", msg)
+        self.assertIn("MGVIP15", msg)
 
 
 class TestSelfHealingEndpoints(unittest.TestCase):
@@ -301,7 +414,7 @@ class TestSelfHealingEndpoints(unittest.TestCase):
 
         st = self.client.get(f"/api/discounts/status?shop={SHOP}")
         self.assertEqual(st.status_code, 200)
-        self.assertIn("GROZAVU10", st.json()["configured_codes"])
+        self.assertEqual(sorted(st.json()["configured_codes"]), ["MG10", "MGVIP15"])
         self.assertNotIn("JARVIS10", st.json()["configured_codes"])
 
 

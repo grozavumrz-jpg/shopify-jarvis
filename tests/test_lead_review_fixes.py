@@ -212,7 +212,7 @@ class TestAutopilotInterval(unittest.TestCase):
         with patch.dict(os.environ, {"JARVIS_AUTOPILOT_MINUTES": ""}):
             with patch.object(main.db, "DATABASE_URL",
                               "postgresql://u:p@ep-x-pooler.c-4.us-west-2.aws.neon.tech/neondb?sslmode=require"):
-                self.assertEqual(main.autopilot_interval_minutes(), 15)
+                self.assertEqual(main.autopilot_interval_minutes(), 30)
             with patch.object(main.db, "DATABASE_URL", "postgresql://u:p@db.example.com/x"):
                 self.assertEqual(main.autopilot_interval_minutes(), 5)
             with patch.object(main.db, "DATABASE_URL", ""):

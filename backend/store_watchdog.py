@@ -251,12 +251,27 @@ class StoreWatchdogAgent:
                     "action_ro": "Deschide aplicația din Shopify Admin sau verifică cheile pe Render.",
                 })
 
-            # 4. Brand discount codes (auto-create missing & auto-rename legacy 'Jarvis' titles)
+            # 4. Brand discount codes. Default = READ-ONLY check (codes used by Jarvis' emails exist and
+            #    are active). Creating/renaming codes only happens when the owner turned it on
+            #    (auto_fix_discounts, env JARVIS_AUTO_CREATE_DISCOUNTS=1).
             discounts_summary = None
-            if auto_fix_discounts and shopify_client is not None and callable(getattr(shopify_client, "ensure_brand_discount_codes", None)):
+            if shopify_client is not None and callable(getattr(shopify_client, "ensure_brand_discount_codes", None)):
                 try:
-                    d_res = await shopify_client.ensure_brand_discount_codes()
+                    if auto_fix_discounts:
+                        d_res = await shopify_client.ensure_brand_discount_codes()
+                    else:
+                        d_res = await shopify_client.ensure_brand_discount_codes(create_missing=False)
+                    d_res = d_res if isinstance(d_res, dict) else {}
                     discounts_summary = d_res
+                    not_ready = list(d_res.get("missing") or []) + list(d_res.get("inactive") or [])
+                    if not_ready:
+                        warnings.append({
+                            "code": "discount_code_not_active",
+                            "area": "Coduri Reducere",
+                            "title": f"Cod folosit în emailuri lipsă sau inactiv: {', '.join(not_ready)}",
+                            "detail": "Emailurile Jarvis menționează acest cod, dar în Shopify nu există sau nu este activ.",
+                            "action_ro": "Creează/activează codul în Shopify → Reduceri (Jarvis nu mai creează coduri singur).",
+                        })
                     for c in d_res.get("created") or []:
                         auto_fixed.append({"time": now_iso, "area": "Coduri Reducere", "detail": f"Creat automat codul {c} în Shopify"})
                     for c in d_res.get("renamed") or []:
@@ -269,7 +284,7 @@ class StoreWatchdogAgent:
                             "detail": "; ".join(d_res["errors"])[:240],
                             "action_ro": "Verifică dacă permisiunea write_discounts este activă pe versiunea curentă a aplicației.",
                         })
-                    else:
+                    elif not not_ready:
                         active_codes = sorted(set((d_res.get("existing") or []) + (d_res.get("created") or [])))
                         passed.append({
                             "area": "Coduri Reducere",

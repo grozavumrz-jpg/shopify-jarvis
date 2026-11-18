@@ -74,6 +74,8 @@ EMAIL_I18N: Dict[str, Dict[str, str]] = {
     "en": {
         "items_header": "ITEMS IN YOUR CART",
         "vip_items_header": "YOUR ORDER",
+        "winback_items_header": "PICKED FOR YOU",
+        "winback_preheader_default": "Something new for you at {shop_name}",
         "qty": "Qty",
         "price": "Price",
         "discount_reserved": "YOUR DISCOUNT CODE",
@@ -85,7 +87,7 @@ EMAIL_I18N: Dict[str, Dict[str, str]] = {
         "cta_neutral": "Complete Your Order →",
         "cta_vip": "Discover the collection →",
         "secure_checkout": "🔒 Secure checkout by Shopify",
-        "commercial_label": "Marketing communication",
+        "commercial_label": "Marketing communication · Publicidad",
         "footer_reason": "You are receiving this email because you agreed to receive marketing emails from {shop_name}.",
         "unsubscribe": "Unsubscribe",
         "internal_footer": "Internal notification for the store team — not sent to customers.",
@@ -95,6 +97,8 @@ EMAIL_I18N: Dict[str, Dict[str, str]] = {
     "ro": {
         "items_header": "PRODUSELE DIN COȘUL TĂU",
         "vip_items_header": "COMANDA TA",
+        "winback_items_header": "ALES PENTRU TINE",
+        "winback_preheader_default": "Ceva nou pentru tine la {shop_name}",
         "qty": "Cantitate",
         "price": "Preț",
         "discount_reserved": "CODUL TĂU DE REDUCERE",
@@ -106,7 +110,7 @@ EMAIL_I18N: Dict[str, Dict[str, str]] = {
         "cta_neutral": "Finalizează Comanda Acum →",
         "cta_vip": "Descoperă colecția →",
         "secure_checkout": "🔒 Plată securizată prin Shopify",
-        "commercial_label": "Comunicare comercială",
+        "commercial_label": "Comunicare comercială · Publicidad",
         "footer_reason": "Primești acest email pentru că ai acceptat să primești comunicări de marketing de la {shop_name}.",
         "unsubscribe": "Dezabonare",
         "internal_footer": "Notificare internă pentru echipa magazinului — nu este trimisă clienților.",
@@ -116,6 +120,8 @@ EMAIL_I18N: Dict[str, Dict[str, str]] = {
     "it": {
         "items_header": "GLI ARTICOLI NEL TUO CARRELLO",
         "vip_items_header": "IL TUO ORDINE",
+        "winback_items_header": "SCELTO PER TE",
+        "winback_preheader_default": "Qualcosa di nuovo per te su {shop_name}",
         "qty": "Qtà",
         "price": "Prezzo",
         "discount_reserved": "IL TUO CODICE SCONTO",
@@ -127,7 +133,7 @@ EMAIL_I18N: Dict[str, Dict[str, str]] = {
         "cta_neutral": "Completa il Tuo Ordine →",
         "cta_vip": "Scopri la collezione →",
         "secure_checkout": "🔒 Checkout sicuro con Shopify",
-        "commercial_label": "Comunicazione commerciale",
+        "commercial_label": "Comunicazione commerciale · Publicidad",
         "footer_reason": "Ricevi questa email perché hai accettato di ricevere comunicazioni di marketing da {shop_name}.",
         "unsubscribe": "Annulla l'iscrizione",
         "internal_footer": "Notifica interna per il team del negozio — non inviata ai clienti.",
@@ -137,6 +143,8 @@ EMAIL_I18N: Dict[str, Dict[str, str]] = {
     "es": {
         "items_header": "LOS ARTÍCULOS DE TU CARRITO",
         "vip_items_header": "TU PEDIDO",
+        "winback_items_header": "ELEGIDO PARA TI",
+        "winback_preheader_default": "Algo nuevo para ti en {shop_name}",
         "qty": "Cant.",
         "price": "Precio",
         "discount_reserved": "TU CÓDIGO DE DESCUENTO",
@@ -158,6 +166,8 @@ EMAIL_I18N: Dict[str, Dict[str, str]] = {
     "de": {
         "items_header": "ARTIKEL IN DEINEM WARENKORB",
         "vip_items_header": "DEINE BESTELLUNG",
+        "winback_items_header": "FÜR DICH AUSGEWÄHLT",
+        "winback_preheader_default": "Etwas Neues für dich bei {shop_name}",
         "qty": "Menge",
         "price": "Preis",
         "discount_reserved": "DEIN RABATTCODE",
@@ -169,7 +179,7 @@ EMAIL_I18N: Dict[str, Dict[str, str]] = {
         "cta_neutral": "Bestellung jetzt abschließen →",
         "cta_vip": "Kollektion entdecken →",
         "secure_checkout": "🔒 Sicherer Checkout über Shopify",
-        "commercial_label": "Werbung",
+        "commercial_label": "Werbung · Publicidad",
         "footer_reason": "Du erhältst diese E-Mail, weil du dem Erhalt von Marketing-E-Mails von {shop_name} zugestimmt hast.",
         "unsubscribe": "Abmelden",
         "internal_footer": "Interne Benachrichtigung für das Shop-Team — nicht an Kunden gesendet.",
@@ -179,6 +189,8 @@ EMAIL_I18N: Dict[str, Dict[str, str]] = {
     "fr": {
         "items_header": "LES ARTICLES DE VOTRE PANIER",
         "vip_items_header": "VOTRE COMMANDE",
+        "winback_items_header": "SÉLECTIONNÉ POUR VOUS",
+        "winback_preheader_default": "Du nouveau pour vous sur {shop_name}",
         "qty": "Qté",
         "price": "Prix",
         "discount_reserved": "VOTRE CODE DE RÉDUCTION",
@@ -190,7 +202,7 @@ EMAIL_I18N: Dict[str, Dict[str, str]] = {
         "cta_neutral": "Finaliser ma Commande →",
         "cta_vip": "Découvrir la collection →",
         "secure_checkout": "🔒 Paiement sécurisé via Shopify",
-        "commercial_label": "Communication commerciale",
+        "commercial_label": "Communication commerciale · Publicidad",
         "footer_reason": "Vous recevez cet e-mail car vous avez accepté de recevoir des communications marketing de {shop_name}.",
         "unsubscribe": "Se désabonner",
         "internal_footer": "Notification interne pour l'équipe de la boutique — non envoyée aux clients.",
@@ -388,14 +400,20 @@ class EmailDispatcher:
         message as commercial communication (es "Publicidad", ...) and carries a working
         unsubscribe link built with build_unsubscribe_url(shop_domain, customer_email).
         Without customer_email the link is a placeholder that send_email() fills in with
-        the real recipient. email_kind: "cart" (abandoned checkout) or "vip" (post-delivery).
+        the real recipient. email_kind: "cart" (abandoned checkout), "vip" (post-delivery) or
+        "winback" (30-day reminder with a suggested product).
         is_internal=True (merchant alerts/tests): no marketing label, no unsubscribe link.
         """
         clean_lang = cls._normalize_lang(lang)
         labels = dict(EMAIL_I18N[clean_lang])
         kind = (email_kind or "cart").strip().lower()
-        is_vip = kind == "vip"
-        if is_vip:
+        is_winback = kind == "winback"
+        is_vip = kind == "vip" or is_winback
+        if is_winback:
+            # 30-day reminder: the product shown is a suggestion, not the customer's order.
+            labels["items_header"] = labels["winback_items_header"]
+            labels["vip_preheader_default"] = labels["winback_preheader_default"]
+        elif is_vip:
             labels["items_header"] = labels["vip_items_header"]
 
         safe_shop_name = html.escape(str(shop_name or ""))
