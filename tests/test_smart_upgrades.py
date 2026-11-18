@@ -305,5 +305,115 @@ class TestSelfHealingEndpoints(unittest.TestCase):
         self.assertNotIn("JARVIS10", st.json()["configured_codes"])
 
 
+class TestWatchdogAgentAndImageColors(unittest.IsolatedAsyncioTestCase):
+    def test_colour_from_image_filenames_and_multi_variant_beanie_size(self):
+        from google_merchant_feed import _colour_from_images
+        self.assertEqual(
+            _colour_from_images(["https://cdn.shopify.com/deep-cut-sleeveless-tee-black-relaxed-fit-grey.jpg"]),
+            "Black",
+        )
+        self.assertEqual(
+            _colour_from_images(["https://cdn.shopify.com/structured-five-panel-cap-beige-black-grey.jpg"]),
+            "Beige / Black",
+        )
+        self.assertEqual(
+            _colour_from_images(["https://cdn.shopify.com/full-zip.jpg", "https://cdn.shopify.com/grozavu-full-zip-hoodie-beige-studio-1.jpg"]),
+            "Beige",
+        )
+        # Studio backdrop '-grey.jpg' alone or print names must NOT be guessed as garment colour
+        self.assertEqual(
+            _colour_from_images(["https://cdn.shopify.com/cotton-cap-low-profile-grozavu-ss26-grey.jpg"]),
+            "",
+        )
+        self.assertEqual(
+            _colour_from_images(["https://cdn.shopify.com/ss26-wide-leg-pants-deep-red-mark.jpg"]),
+            "",
+        )
+
+        # Multi-colour beanie with no Size option gets One Size
+        beanie = {
+            "id": 777,
+            "title": "Fisherman Beanie",
+            "handle": "fisherman-beanie",
+            "product_type": "Beanie",
+            "status": "active",
+            "published_at": "2026-10-01T00:00:00Z",
+            "options": [{"name": "Color", "position": 1}],
+            "images": [{"id": 1, "src": "https://cdn.shopify.com/beanie.jpg"}],
+            "variants": [
+                {"id": 1, "price": "29.00", "option1": "Black", "title": "Black"},
+                {"id": 2, "price": "29.00", "option1": "Athletic Heather", "title": "Athletic Heather"},
+            ],
+        }
+        items, _ = build_feed_items([beanie], shop_domain="maisongrozavu.com", brand="Grozavu")
+        self.assertEqual(len(items), 2)
+        self.assertTrue(all(it.get("size") == "One Size" for it in items))
+
+    async def test_watchdog_deep_scan_detects_blockers_and_autofixes_discounts(self):
+        from store_watchdog import StoreWatchdogAgent
+        agent = StoreWatchdogAgent(brand_domain="maisongrozavu.com", brand_name="Grozavu")
+
+        fake_client = MagicMock()
+        fake_client.ensure_brand_discount_codes = AsyncMock(return_value={
+            "ok": True,
+            "created": ["GROZAVU5"],
+            "existing": ["MG10", "MGVIP15"],
+            "renamed": ["MGVIP15"],
+            "errors": [],
+            "codes": {},
+        })
+        fake_dns = MagicMock()
+        fake_dns.audit_domain = AsyncMock(return_value={"score": 100, "rating": "OK"})
+        fake_notifier = MagicMock()
+        fake_notifier.notify_merchant = AsyncMock(return_value={"success": True})
+
+        products = [
+            {
+                "id": 1,
+                "title": "No Image Product",
+                "handle": "no-image-product",
+                "body_html": "<p>Short</p>",
+                "status": "active",
+                "published_at": "2026-10-01T00:00:00Z",
+                "images": [],
+                "variants": [{"id": 11, "price": "45.00"}],
+            },
+            {
+                "id": 2,
+                "title": "Good Heavyweight Hoodie — Black",
+                "handle": "good-hoodie",
+                "body_html": "<p>350 g/m² combed ring-spun cotton in black with brushed fleece interior.</p>",
+                "status": "active",
+                "published_at": "2026-10-01T00:00:00Z",
+                "options": [{"name": "Size", "position": 1}],
+                "images": [{"id": 10, "src": "https://cdn.shopify.com/hoodie-black.jpg", "alt": "Good Hoodie"}],
+                "variants": [{"id": 21, "price": "79.00", "option1": "M"}],
+            },
+        ]
+
+        report = await agent.run_deep_scan(
+            shop=SHOP,
+            shopify_client=fake_client,
+            products=products,
+            deliverability_checker=fake_dns,
+            mobile_notifier=fake_notifier,
+            shop_settings={"notify_telegram": True},
+            check_storefront=False,
+            check_dns=True,
+            auto_fix_discounts=True,
+        )
+        self.assertEqual(report["scans_completed"], 1)
+        self.assertTrue(any("GROZAVU5" in f["detail"] for f in report["auto_fixed"]))
+        self.assertTrue(any("MGVIP15" in f["detail"] for f in report["auto_fixed"]))
+        self.assertTrue(any(c["code"] == "products_missing_images" for c in report["critical_issues"]))
+        self.assertLess(report["health_score"], 100)
+        fake_notifier.notify_merchant.assert_awaited_once()
+
+    def test_watchdog_endpoints_require_auth(self):
+        unauth = TestClient(main.app)
+        self.assertEqual(unauth.get("/api/watchdog/status").status_code, 401)
+        self.assertEqual(unauth.post("/api/watchdog/scan-now", json={}).status_code, 401)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -125,6 +125,17 @@ class MobileNotifier:
             ]
             return "\n".join(lines)
 
+        elif event_type == "watchdog_alert":
+            score = html.escape(str(data.get("health_score", "—")))
+            cnt = html.escape(str(data.get("issues_count", 1)))
+            summary = html.escape(self._truncate(data.get("summary") or "Problemă critică detectată", 600))
+            return "\n".join([
+                "🛡️ <b>Alertă Gardian 24/7 — Problemă Critică Detectată!</b>\n",
+                f"❤️ <b>Scor Sănătate Magazin:</b> {score}/100",
+                f"🚨 <b>Probleme Critice:</b> {cnt}",
+                f"🔎 <b>Detalii:</b> {summary}",
+            ])
+
         # Generic fallback
         return f"🔔 <b>Eveniment Jarvis: {html.escape(str(event_type))}</b>\n👤 Client: {c_name}"
 
@@ -206,6 +217,23 @@ class MobileNotifier:
                 "timestamp": now_iso,
                 "fields": fields,
                 "footer": {"text": "Shopify Jarvis Autonomous VIP Engine"}
+            }
+
+        elif event_type == "watchdog_alert":
+            score = str(data.get("health_score", "—"))
+            cnt = str(data.get("issues_count", 1))
+            summary = self._truncate(data.get("summary") or "Problemă critică detectată", self.DISCORD_FIELD_VALUE_LIMIT)
+            return {
+                "title": "🛡️ Alertă Gardian 24/7 — Problemă Critică Detectată",
+                "description": self._truncate(f"Gardianul 24/7 a detectat **{cnt}** probleme care afectează magazinul.", self.DISCORD_DESCRIPTION_LIMIT),
+                "color": 0xEF4444,
+                "timestamp": now_iso,
+                "fields": [
+                    {"name": "Scor Sănătate", "value": f"{score}/100", "inline": True},
+                    {"name": "Probleme Critice", "value": cnt, "inline": True},
+                    {"name": "Detalii", "value": summary, "inline": False},
+                ],
+                "footer": {"text": "Grozavu Gardian 24/7 Watchdog Agent"},
             }
 
         # Fallback embed

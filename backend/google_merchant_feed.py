@@ -185,6 +185,56 @@ def _colour_from_description(product: Dict[str, Any]) -> str:
     return ""
 
 
+def _colour_from_images(image_urls: List[str]) -> str:
+    """
+    Infer garment colour from Shopify/Printful image filenames when title, options and description
+    don't state it. Strips trailing studio-backdrop suffixes ('-grey.jpg' / '-gray.jpg') and
+    ignores print-only graphic phrases (e.g. 'deep-red-mark').
+    """
+    token_order = [
+        ("beige-black", "Beige / Black"),
+        ("black-white", "Black / White"),
+        ("blush-pink", "Blush Pink"),
+        ("french-navy", "French Navy"),
+        ("forest-green", "Forest Green"),
+        ("desert-dust", "Desert Dust"),
+        ("off-white", "Off-White"),
+        ("bordeaux", "Bordeaux"),
+        ("burgundy", "Burgundy"),
+        ("charcoal", "Charcoal"),
+        ("sandshell", "Sandshell"),
+        ("black", "Black"),
+        ("white", "White"),
+        ("beige", "Beige"),
+        ("ivory", "Ivory"),
+        ("cream", "Cream"),
+        ("navy", "Navy"),
+        ("olive", "Olive"),
+        ("khaki", "Khaki"),
+        ("cocoa", "Cocoa"),
+        ("blush", "Blush"),
+        ("dust", "Dust"),
+        ("sand", "Sand"),
+        ("ecru", "Ecru"),
+        ("bone", "Bone"),
+    ]
+    for url in image_urls or []:
+        if not url or not isinstance(url, str):
+            continue
+        fname = url.rsplit("/", 1)[-1].split("?", 1)[0].lower()
+        # Strip file extension and studio grey backdrop suffix (-grey.jpg / -gray.jpg / -grey-v2.jpg)
+        stem = re.sub(r"\.(?:jpe?g|png|webp|gif)$", "", fname)
+        stem = re.sub(r"[-_](?:grey|gray)(?:[-_]v\d+)?$", "", stem)
+        # Ignore graphic print colour names
+        stem = re.sub(r"\bdeep[-_]red[-_]mark\b", "", stem)
+        stem = re.sub(r"\bgold[-_]hare\b", "", stem)
+        stem = re.sub(r"\bmagenta[-_]smoke\b", "", stem)
+        for tok, label in token_order:
+            if re.search(rf"(?:^|[-_]){re.escape(tok)}(?:$|[-_])", stem):
+                return label
+    return ""
+
+
 def _material_for(product: Dict[str, Any]) -> str:
     """Extract factual fabric/material from body_html or title for <g:material>."""
     hay = " ".join([_plain_text(product.get("body_html")), str(product.get("title") or "")])
@@ -263,9 +313,10 @@ def build_feed_items(
         category = _category_for(p)
         gender = _gender_for(p)
         age_group = _age_group_for(p)
-        title_colour = _colour_from_title(p) or _colour_from_description(p)
+        title_colour = _colour_from_title(p) or _colour_from_description(p) or _colour_from_images([main_image] + extra_images)
         material = _material_for(p)
         positions = _option_positions(p)
+        is_one_size_category = ("Hats" in category) or ("Handbags" in category)
         handle = p["handle"]
         variants = [v for v in (p.get("variants") or []) if isinstance(v, dict)]
         if not variants:
@@ -284,7 +335,7 @@ def build_feed_items(
             color = str(v.get(f"option{positions['color']}") or "").strip() if "color" in positions else title_colour
             size = str(v.get(f"option{positions['size']}") or "").strip() if "size" in positions else ""
             v_title = str(v.get("title") or "").strip()
-            if not size and not multi and v_title.lower() in ("", "default title", "one size", "os"):
+            if not size and (is_one_size_category or (not multi and v_title.lower() in ("", "default title", "one size", "os"))):
                 size = "One Size"
             variant_colour = color if "color" in positions else ""
             label = " / ".join(x for x in (variant_colour, size if "size" in positions else "") if x) or ("" if v_title.lower() == "default title" else v_title)

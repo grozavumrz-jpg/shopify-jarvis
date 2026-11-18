@@ -30,6 +30,7 @@ from post_delivery_service import PostDeliveryService
 from google_merchant_feed import build_google_merchant_xml, build_feed_items, validate_google_merchant_feed
 from seo_optimizer import ProductSEOOptimizer
 from deliverability_checker import DeliverabilityChecker
+from store_watchdog import StoreWatchdogAgent
 import compliance_guard
 from compliance_guard import (is_quiet_hours, can_dispatch_to_customer, log_customer_dispatch,
                               ephemeral_db_blocks_marketing)
@@ -59,6 +60,7 @@ mobile_notifier = MobileNotifier()
 post_delivery_service = PostDeliveryService()
 seo_optimizer = ProductSEOOptimizer(brand_name=BRAND_NAME, domain=BRAND_DOMAIN)
 deliverability_checker = DeliverabilityChecker()
+store_watchdog = StoreWatchdogAgent(brand_domain=BRAND_DOMAIN, brand_name=BRAND_NAME)
 
 FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 assets_dir = os.path.join(FRONTEND_DIST, "assets")
@@ -157,11 +159,12 @@ async def ensure_shop_connection(force: bool = False) -> None:
 
 
 _daemon_task: Optional[asyncio.Task] = None
+_watchdog_task: Optional[asyncio.Task] = None
 
 
 @app.on_event("startup")
 async def startup():
-    global _daemon_task
+    global _daemon_task, _watchdog_task
     try:
         db.init_db()
         db_type = "SQLite (ephemeral on Render free!)" if getattr(db, "USING_SQLITE", False) else "PostgreSQL"
@@ -174,10 +177,15 @@ async def startup():
         print("[Startup Warning] JARVIS_ADMIN_KEY is not set: the dashboard only works embedded in Shopify admin.")
     if os.getenv("JARVIS_DISABLE_DAEMON") != "1":
         _daemon_task = asyncio.create_task(autopilot_daemon_loop())
+        _watchdog_task = asyncio.create_task(watchdog_daemon_loop())
 
 
 def daemon_running() -> bool:
     return _daemon_task is not None and not _daemon_task.done()
+
+
+def watchdog_running() -> bool:
+    return _watchdog_task is not None and not _watchdog_task.done()
 
 
 def autopilot_status_payload() -> Dict[str, Any]:
@@ -213,6 +221,8 @@ async def health():
         "deploy_commit": os.getenv("RENDER_GIT_COMMIT") or None,
         "db": "sqlite" if getattr(db, "USING_SQLITE", False) else "postgres",
         "autopilot_running": daemon_running(),
+        "watchdog_running": watchdog_running(),
+        "watchdog_health_score": store_watchdog.state.get("health_score"),
         "shopify_shop": default_shop(),
         "shopify_connection": mode,
         # A client-credentials failure is irrelevant once the shop is connected through OAuth.
@@ -1070,6 +1080,58 @@ async def autopilot_daemon_loop():
         await asyncio.sleep(AUTOPILOT_INTERVAL_SECONDS)
 
 
+async def run_watchdog_pass(shop: Optional[str] = None, check_storefront: bool = True, check_dns: bool = True) -> Dict[str, Any]:
+    """Run one complete 24/7 Store Watchdog scan + auto-repair pass for a shop."""
+    target_shop = normalize_shop(shop) or default_shop()
+    if target_shop == default_shop():
+        await ensure_shop_connection()
+    record = None
+    try:
+        record = db.get_shop(target_shop)
+    except Exception:
+        record = None
+    token = (record or {}).get("access_token", "")
+    client = ShopifyClient(target_shop, token) if has_real_token(token) else None
+    products = None
+    if client is not None:
+        prods, _err = await load_feed_products(target_shop)
+        if prods is not None:
+            products = prods
+    settings = None
+    try:
+        settings = db.get_shop_settings(target_shop)
+    except Exception:
+        settings = None
+    report = await store_watchdog.run_deep_scan(
+        shop=target_shop,
+        shopify_client=client,
+        products=products,
+        deliverability_checker=deliverability_checker,
+        self_heal_fn=run_self_heal,
+        mobile_notifier=mobile_notifier,
+        shop_settings=settings,
+        ephemeral_db_blocked=ephemeral_db_blocks_marketing(),
+        check_storefront=check_storefront,
+        check_dns=check_dns,
+        auto_fix_discounts=True,
+        currency=FEED_CURRENCY,
+    )
+    report["is_running"] = watchdog_running()
+    return report
+
+
+async def watchdog_daemon_loop():
+    await asyncio.sleep(25)
+    store_watchdog.state["is_running"] = True
+    print(f"[WATCHDOG] Starting 24/7 Store Guardian agent (every {AUTOPILOT_INTERVAL_SECONDS // 60} minutes)...")
+    while True:
+        try:
+            await run_watchdog_pass(shop=default_shop())
+        except Exception as e:
+            print(f"[Watchdog Loop Error]: {e}")
+        await asyncio.sleep(AUTOPILOT_INTERVAL_SECONDS)
+
+
 # ── Shopify webhooks (HMAC-verified) ──────────────────────────────────────────
 
 async def _verified_webhook(request: Request) -> tuple:
@@ -1571,6 +1633,29 @@ async def get_discounts_status(shop: Optional[str] = Query(None), auth: AuthCont
         "specs": ShopifyClient.BRAND_DISCOUNT_SPECS,
         "last_verified": cached,
     }
+
+
+@app.get("/api/watchdog/status")
+async def get_watchdog_status(shop: Optional[str] = Query(None), auth: AuthContext = Depends(require_auth)):
+    """Return latest 24/7 Store Watchdog report (runs initial scan on first view if needed)."""
+    shop = resolve_shop(auth, shop)
+    state = dict(store_watchdog.state)
+    state["is_running"] = watchdog_running()
+    state["interval_minutes"] = AUTOPILOT_INTERVAL_SECONDS // 60
+    if not state.get("scans_completed"):
+        state = await run_watchdog_pass(shop=shop)
+        state["interval_minutes"] = AUTOPILOT_INTERVAL_SECONDS // 60
+    return state
+
+
+@app.post("/api/watchdog/scan-now")
+async def trigger_watchdog_scan(req: Optional[AutopilotDispatchRequest] = None, auth: AuthContext = Depends(require_auth)):
+    """Trigger an immediate 24/7 Watchdog deep scan & auto-repair pass."""
+    shop = resolve_shop(auth, req.shop if req else None)
+    _FEED_CACHE.pop(shop, None)  # ensure fresh products from Shopify
+    state = await run_watchdog_pass(shop=shop)
+    state["interval_minutes"] = AUTOPILOT_INTERVAL_SECONDS // 60
+    return state
 
 
 @app.post("/api/autopilot/dispatch")

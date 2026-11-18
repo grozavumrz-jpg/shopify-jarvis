@@ -463,6 +463,10 @@ export default function App() {
   const [complianceStats, setComplianceStats] = useState(null)
   const [optimizingSeo, setOptimizingSeo] = useState(false)
 
+  // 24/7 Store Watchdog Agent State
+  const [watchdogData, setWatchdogData] = useState(null)
+  const [scanningWatchdog, setScanningWatchdog] = useState(false)
+
   // Delivery & Email Gateway State
   const [deliverySettings, setDeliverySettings] = useState({
     email_provider: 'resend',
@@ -799,6 +803,36 @@ export default function App() {
     return () => { cancelled = true }
   }, [shop, lang, reloadToken])
 
+  const loadWatchdogStatus = async () => {
+    try {
+      const res = await api(`/api/watchdog/status?${qShop}`)
+      if (res.ok) setWatchdogData(await readJson(res))
+    } catch (e) { console.error('Watchdog load failed', e) }
+  }
+
+  const handleWatchdogScanNow = async () => {
+    if (scanningWatchdog) return
+    setScanningWatchdog(true)
+    try {
+      const res = await api('/api/watchdog/scan-now', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop }),
+      })
+      if (res.ok) {
+        const data = await readJson(res)
+        setWatchdogData(data)
+        showToast(lang === 'ro'
+          ? `Gardian 24/7: scanare completă (${data.health_score ?? '—'}/100)!`
+          : `Guardian 24/7: scan complete (${data.health_score ?? '—'}/100)!`)
+      }
+    } catch (e) {
+      console.error('Watchdog scan failed', e)
+    } finally {
+      setScanningWatchdog(false)
+    }
+  }
+
   // Load only what the visible tab / subtab needs
   useEffect(() => {
     if (activeTab === 'radar') {
@@ -822,6 +856,8 @@ export default function App() {
     } else if (activeTab === 'autopilot') {
       ensureLoaded('delivery', loadDeliverySettings)
       ensureLoaded('compliance', loadCompliance)
+    } else if (activeTab === 'watchdog') {
+      ensureLoaded('watchdog', loadWatchdogStatus)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, activeRadarSubtab, reloadToken])
@@ -1425,6 +1461,20 @@ export default function App() {
           <span className="nav-icon">🤖</span> {t.tab_autopilot}
           {isNum(autopilotData?.pending_carts_count) && autopilotData.pending_carts_count > 0 && (
             <span className="nav-pill pulse-badge">{autopilotData.pending_carts_count}</span>
+          )}
+        </button>
+        <button
+          className={`nav-item ${activeTab === 'watchdog' ? 'active' : ''}`}
+          onClick={() => {
+            setActiveTab('watchdog')
+            loadWatchdogStatus()
+          }}
+        >
+          <span className="nav-icon">🛡️</span> {lang === 'ro' ? 'GARDIAN 24/7' : 'GUARDIAN 24/7'}
+          {asArray(watchdogData?.critical_issues).length > 0 && (
+            <span className="nav-pill pulse-badge" style={{ background: '#ef4444', color: '#fff' }}>
+              {asArray(watchdogData.critical_issues).length}
+            </span>
           )}
         </button>
       </nav>
@@ -2786,6 +2836,134 @@ export default function App() {
                   {deliveryFeedback.text}
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* ════ TAB 6: GARDIAN 24/7 (STORE WATCHDOG & AUTO-REPAIR AGENT) ════ */}
+        {activeTab === 'watchdog' && (
+          <div className="view-grid">
+            <div className="hud-card hero-card">
+              <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '16px' }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
+                    <span style={{ fontSize: '24px' }}>🛡️</span>
+                    <h2 style={{ margin: 0, fontSize: '20px' }}>
+                      {lang === 'ro' ? 'Gardian 24/7 — Agent Audit & Auto-Reparare' : 'Guardian 24/7 — Audit & Auto-Repair Agent'}
+                    </h2>
+                    <span className="status-pill ok" style={{ fontSize: '12px' }}>
+                      {watchdogData?.is_running
+                        ? (lang === 'ro' ? `ACTIV 24/7 · la ${watchdogData?.interval_minutes || 15} min` : `ACTIVE 24/7 · every ${watchdogData?.interval_minutes || 15}m`)
+                        : (lang === 'ro' ? 'GATA DE SCANARE' : 'READY')}
+                    </span>
+                  </div>
+                  <p style={{ margin: 0, color: '#a8a29e', fontSize: '13px' }}>
+                    {lang === 'ro'
+                      ? 'Caută continuu erori, produse fără poze/preț/culoare, probleme pe site, coduri lipsă și DNS anti-spam. Repară automat tot ce e sigur și îți listează exact restul.'
+                      : 'Continuously scans for store errors, missing product attributes, storefront uptime, brand discount codes, and DNS reputation — auto-fixing safe issues.'}
+                  </p>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: '28px', fontWeight: 800, color: (watchdogData?.health_score ?? 100) >= 85 ? '#34d399' : ((watchdogData?.health_score ?? 100) >= 60 ? '#fbbf24' : '#f87171') }}>
+                      {watchdogData?.health_score != null ? `${watchdogData.health_score}/100` : DASH}
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#a8a29e' }}>
+                      {watchdogData?.last_scan_at
+                        ? `${lang === 'ro' ? 'Ultima scanare' : 'Last scan'}: ${new Date(watchdogData.last_scan_at).toLocaleTimeString()}`
+                        : (lang === 'ro' ? 'Se încarcă...' : 'Loading...')}
+                    </div>
+                  </div>
+                  <button className="save-btn" onClick={handleWatchdogScanNow} disabled={scanningWatchdog}>
+                    {scanningWatchdog
+                      ? (lang === 'ro' ? 'Se scanează...' : 'Scanning...')
+                      : (lang === 'ro' ? '🔍 Scanează & Repară Acum' : '🔍 Scan & Repair Now')}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Auto-Reparate Automat */}
+            {asArray(watchdogData?.auto_fixed).length > 0 && (
+              <div className="hud-card" style={{ borderColor: 'rgba(52, 211, 153, 0.35)' }}>
+                <div className="card-header">
+                  <h3>⚡ {lang === 'ro' ? 'Reparate Automat de Gardian' : 'Auto-Fixed by Guardian'}</h3>
+                  <span className="status-pill ok">{asArray(watchdogData.auto_fixed).length}</span>
+                </div>
+                <div style={{ display: 'grid', gap: '8px', marginTop: '10px' }}>
+                  {asArray(watchdogData.auto_fixed).slice(0, 10).map((f, idx) => (
+                    <div key={idx} style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(52, 211, 153, 0.08)', border: '1px solid rgba(52, 211, 153, 0.2)', fontSize: '13px' }}>
+                      <strong style={{ color: '#34d399' }}>✅ [{f.area}]</strong> {f.detail}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Probleme Critice */}
+            {asArray(watchdogData?.critical_issues).length > 0 && (
+              <div className="hud-card" style={{ borderColor: 'rgba(248, 113, 113, 0.5)' }}>
+                <div className="card-header">
+                  <h3 style={{ color: '#f87171' }}>🚨 {lang === 'ro' ? 'Probleme Critice (Afectează Vânzările)' : 'Critical Issues'}</h3>
+                  <span className="status-pill err">{asArray(watchdogData.critical_issues).length}</span>
+                </div>
+                <div style={{ display: 'grid', gap: '10px', marginTop: '10px' }}>
+                  {asArray(watchdogData.critical_issues).map((iss, idx) => (
+                    <div key={idx} style={{ padding: '12px', borderRadius: '10px', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)' }}>
+                      <div style={{ fontWeight: 700, color: '#fca5a5', marginBottom: '4px' }}>[{iss.area}] {iss.title}</div>
+                      <div style={{ fontSize: '13px', color: '#e7e5e4', marginBottom: '6px' }}>{iss.detail}</div>
+                      {iss.action_ro && <div style={{ fontSize: '12px', color: '#fbbf24' }}>👉 {iss.action_ro}</div>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Avertismente cu Numele Exact al Produselor */}
+            <div className="hud-card">
+              <div className="card-header">
+                <h3>⚠️ {lang === 'ro' ? 'Avertismente & Produse de Îmbunătățit' : 'Warnings & Products to Improve'}</h3>
+                <span className="status-pill warn">{asArray(watchdogData?.warnings).length}</span>
+              </div>
+              {asArray(watchdogData?.warnings).length === 0 ? (
+                <p style={{ color: '#34d399', marginTop: '10px', fontSize: '13px' }}>
+                  ✅ {lang === 'ro' ? 'Zero avertismente — totul arată impecabil!' : 'Zero warnings — everything looks clean!'}
+                </p>
+              ) : (
+                <div style={{ display: 'grid', gap: '10px', marginTop: '10px' }}>
+                  {asArray(watchdogData.warnings).map((w, idx) => (
+                    <div key={idx} style={{ padding: '12px', borderRadius: '10px', background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.25)' }}>
+                      <div style={{ fontWeight: 700, color: '#fbbf24', marginBottom: '4px' }}>[{w.area}] {w.title}</div>
+                      <div style={{ fontSize: '13px', color: '#d6d3d1', marginBottom: '6px' }}>{w.detail}</div>
+                      {asArray(w.affected_items).length > 0 && (
+                        <ul style={{ margin: '6px 0 8px 18px', fontSize: '12px', color: '#fef3c7' }}>
+                          {asArray(w.affected_items).map((item, i2) => (
+                            <li key={i2}>{item}</li>
+                          ))}
+                        </ul>
+                      )}
+                      {w.action_ro && <div style={{ fontSize: '12px', color: '#a8a29e' }}>👉 {w.action_ro}</div>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Verificări Trecute (OK) */}
+            <div className="hud-card">
+              <div className="card-header">
+                <h3>✅ {lang === 'ro' ? 'Verificări Trecute (Sănătoase)' : 'Passed Health Checks'}</h3>
+                <span className="status-pill ok">{asArray(watchdogData?.passed_checks).length}</span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '10px', marginTop: '10px' }}>
+                {asArray(watchdogData?.passed_checks).map((okItem, idx) => (
+                  <div key={idx} style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(52, 211, 153, 0.22)' }}>
+                    <div style={{ fontSize: '11px', color: '#34d399', fontWeight: 700, textTransform: 'uppercase' }}>{okItem.area}</div>
+                    <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '2px' }}>{okItem.title}</div>
+                    <div style={{ fontSize: '12px', color: '#a8a29e', marginTop: '2px' }}>{okItem.detail}</div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         )}
