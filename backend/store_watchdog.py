@@ -26,6 +26,19 @@ try:
 except ImportError:
     from backend.seo_optimizer import contains_forbidden, _strip_html
 
+try:
+    from vision_color_detector import detect_color_from_image_url
+except ImportError:
+    from backend.vision_color_detector import detect_color_from_image_url
+
+try:
+    import database as db
+except ImportError:
+    try:
+        from backend import database as db
+    except ImportError:
+        db = None
+
 
 ALERT_COOLDOWN_SECONDS = 6 * 3600
 DNS_AUDIT_CACHE_SECONDS = 6 * 3600
@@ -160,6 +173,7 @@ class StoreWatchdogAgent:
         check_storefront: bool = True,
         check_dns: bool = True,
         auto_fix_discounts: bool = True,
+        auto_fix_colors: bool = True,
         currency: str = "EUR",
     ) -> Dict[str, Any]:
         """Run a full 7-point autonomous audit + safe auto-repair pass. Never raises."""
@@ -300,11 +314,61 @@ class StoreWatchdogAgent:
             feed_summary = None
             catalog_summary = None
             if loaded_products is not None:
+                visual_records = db.get_visual_colors(shop) if (db and hasattr(db, "get_visual_colors")) else {}
+                visual_map = {pid: rec["color"] for pid, rec in visual_records.items() if rec.get("color")}
+
                 items, skipped = build_feed_items(
-                    loaded_products, shop_domain=self.brand_domain, brand=self.brand_name, currency=currency
+                    loaded_products, shop_domain=self.brand_domain, brand=self.brand_name,
+                    currency=currency, visual_colors=visual_map,
                 )
+
+                # Auto-Fix missing <g:color> by visually analyzing the product's Shopify studio photo
+                if auto_fix_colors:
+                    missing_pids = set()
+                    for it in items:
+                        if not (it.get("color") or "").strip():
+                            raw_gid = str(it.get("item_group_id") or it.get("id") or "")
+                            parts = raw_gid.split("_")
+                            if len(parts) >= 2 and parts[0] == "shopify":
+                                missing_pids.add(parts[1])
+                    fixed_this_pass = 0
+                    for p in loaded_products:
+                        if fixed_this_pass >= 15:
+                            break
+                        if not isinstance(p, dict):
+                            continue
+                        pid = str(p.get("id") or "").strip()
+                        imgs = [i for i in (p.get("images") or []) if isinstance(i, dict) and i.get("src")]
+                        main_img = imgs[0]["src"] if imgs else ((p.get("image") or {}).get("src") if isinstance(p.get("image"), dict) else "")
+                        if not pid or not main_img:
+                            continue
+                        cached_rec = visual_records.get(pid)
+                        image_changed = bool(cached_rec and cached_rec.get("image_url") != main_img)
+                        if pid not in missing_pids and not image_changed:
+                            continue
+                        detected = await detect_color_from_image_url(main_img)
+                        if detected:
+                            visual_map[pid] = detected
+                            fixed_this_pass += 1
+                            if db and hasattr(db, "save_visual_color"):
+                                try:
+                                    db.save_visual_color(shop, pid, main_img, detected)
+                                except Exception:
+                                    pass
+                            auto_fixed.append({
+                                "time": now_iso,
+                                "area": "Google Shopping Feed",
+                                "detail": f"Detectat automat culoarea '{detected}' din fotografia produsului {p.get('title') or pid}",
+                            })
+                    if fixed_this_pass > 0:
+                        items, skipped = build_feed_items(
+                            loaded_products, shop_domain=self.brand_domain, brand=self.brand_name,
+                            currency=currency, visual_colors=visual_map,
+                        )
+
                 xml_feed = build_google_merchant_xml(
-                    loaded_products, shop_domain=self.brand_domain, store_name=self.brand_name, currency=currency
+                    loaded_products, shop_domain=self.brand_domain, store_name=self.brand_name,
+                    currency=currency, visual_colors=visual_map,
                 )
                 val = validate_google_merchant_feed(xml_feed)
                 # Map product groups still missing color/size to real human product titles

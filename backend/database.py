@@ -502,6 +502,15 @@ def init_db():
                     status TEXT DEFAULT 'applied'
                 );
 
+                CREATE TABLE IF NOT EXISTS product_visual_colors (
+                    shop_domain TEXT NOT NULL,
+                    product_id TEXT NOT NULL,
+                    image_url TEXT NOT NULL,
+                    detected_color TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT NOW(),
+                    PRIMARY KEY (shop_domain, product_id)
+                );
+
                 CREATE TABLE IF NOT EXISTS marketing_consents (
                     id SERIAL PRIMARY KEY,
                     shop_domain TEXT NOT NULL,
@@ -1496,6 +1505,55 @@ def get_seo_logs(shop_domain: str, limit: int = 50) -> List[Dict[str, Any]]:
             """, (shop_domain, limit))
             rows = cur.fetchall()
             return [dict(r) for r in rows]
+
+
+# ── Visual Product Colour Cache (Gardian 24/7 -> Google Merchant Feed) ───────
+
+def save_visual_color(shop_domain: str, product_id: Union[int, str], image_url: str, detected_color: str) -> bool:
+    """Persist a visually detected garment colour for a product image."""
+    clean_col = (detected_color or "").strip()
+    if not shop_domain or not product_id or not clean_col:
+        return False
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO product_visual_colors (shop_domain, product_id, image_url, detected_color, updated_at)
+                VALUES (%s, %s, %s, %s, NOW())
+                ON CONFLICT (shop_domain, product_id)
+                DO UPDATE SET
+                    image_url = EXCLUDED.image_url,
+                    detected_color = EXCLUDED.detected_color,
+                    updated_at = NOW()
+            """, (shop_domain, str(product_id), str(image_url or ""), clean_col))
+        conn.commit()
+    return True
+
+
+def get_visual_colors(shop_domain: str) -> Dict[str, Dict[str, str]]:
+    """Return {product_id: {'image_url': ..., 'color': ...}} for a shop."""
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT product_id, image_url, detected_color
+                    FROM product_visual_colors
+                    WHERE shop_domain = %s
+                """, (shop_domain,))
+                return {
+                    str(r["product_id"]): {
+                        "image_url": str(r["image_url"] or ""),
+                        "color": str(r["detected_color"] or ""),
+                    }
+                    for r in (cur.fetchall() or [])
+                    if r.get("detected_color")
+                }
+    except Exception:
+        return {}
+
+
+def get_visual_colors_map(shop_domain: str) -> Dict[str, str]:
+    """Return simple {product_id: color} map for google_merchant_feed."""
+    return {pid: rec["color"] for pid, rec in get_visual_colors(shop_domain).items() if rec.get("color")}
 
 
 # ── Marketing Consent, Suppression & Frequency Caps ──────────────────────────

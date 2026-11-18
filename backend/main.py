@@ -1809,8 +1809,10 @@ async def get_google_merchant_feed(shop: Optional[str] = Query(None)):
     if products is None:
         return Response(content=f"Feed temporarily unavailable: {error}", status_code=503,
                         media_type="text/plain; charset=utf-8", headers={"Retry-After": "3600"})
+    vcolors = db.get_visual_colors_map(clean) if hasattr(db, "get_visual_colors_map") else {}
     xml_content = build_google_merchant_xml(products=products, shop_domain=BRAND_DOMAIN,
-                                            store_name=BRAND_NAME, currency=FEED_CURRENCY)
+                                            store_name=BRAND_NAME, currency=FEED_CURRENCY,
+                                            visual_colors=vcolors)
     return Response(content=xml_content, media_type="application/xml; charset=utf-8")
 
 
@@ -1824,9 +1826,12 @@ async def validate_merchant_feed_endpoint(shop: Optional[str] = Query(None)):
         return {"valid": False, "connected": False, "items_count": 0, "product_groups": 0,
                 "errors": [error], "warnings": [], "warnings_count": 0, "skipped": [],
                 "feed_url": _feed_url(), "error": error}
-    _, skipped = build_feed_items(products, shop_domain=BRAND_DOMAIN, brand=BRAND_NAME, currency=FEED_CURRENCY)
+    vcolors = db.get_visual_colors_map(clean) if hasattr(db, "get_visual_colors_map") else {}
+    _, skipped = build_feed_items(products, shop_domain=BRAND_DOMAIN, brand=BRAND_NAME,
+                                  currency=FEED_CURRENCY, visual_colors=vcolors)
     xml_content = build_google_merchant_xml(products=products, shop_domain=BRAND_DOMAIN,
-                                            store_name=BRAND_NAME, currency=FEED_CURRENCY)
+                                            store_name=BRAND_NAME, currency=FEED_CURRENCY,
+                                            visual_colors=vcolors)
     validation = validate_google_merchant_feed(xml_content)
     validation.update({"connected": True, "skipped": skipped, "feed_url": _feed_url(),
                        "products_in_shopify": len(products)})

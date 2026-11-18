@@ -5,3 +5,4 @@ httpx==0.28.1
 psycopg2-binary==2.9.13
 pydantic==2.14.2
 tzdata==2026.6
+pillow==11.3.0

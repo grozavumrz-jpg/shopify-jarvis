@@ -283,10 +283,12 @@ def build_feed_items(
     shop_domain: str = FEED_DOMAIN,
     brand: str = FEED_BRAND,
     currency: str = "EUR",
+    visual_colors: Optional[Dict[str, str]] = None,
 ) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
     """Returns (items, skipped). Each item is a dict of g:attribute -> value."""
     items: List[Dict[str, str]] = []
     skipped: List[Dict[str, str]] = []
+    vcolors = visual_colors or {}
 
     for p in products or []:
         if not isinstance(p, dict):
@@ -313,7 +315,12 @@ def build_feed_items(
         category = _category_for(p)
         gender = _gender_for(p)
         age_group = _age_group_for(p)
-        title_colour = _colour_from_title(p) or _colour_from_description(p) or _colour_from_images([main_image] + extra_images)
+        title_colour = (
+            _colour_from_title(p)
+            or _colour_from_description(p)
+            or _colour_from_images([main_image] + extra_images)
+            or str(vcolors.get(pid) or "").strip()
+        )
         material = _material_for(p)
         positions = _option_positions(p)
         is_one_size_category = ("Hats" in category) or ("Handbags" in category)
@@ -395,9 +402,12 @@ def build_google_merchant_xml(
     shop_domain: str = FEED_DOMAIN,
     store_name: str = FEED_BRAND,
     currency: str = "EUR",
+    visual_colors: Optional[Dict[str, str]] = None,
 ) -> str:
     """Generate the RSS 2.0 Merchant feed from real Shopify products only."""
-    items, _ = build_feed_items(products, shop_domain=shop_domain, brand=store_name, currency=currency)
+    items, _ = build_feed_items(
+        products, shop_domain=shop_domain, brand=store_name, currency=currency, visual_colors=visual_colors
+    )
 
     root = ET.Element("rss", {"version": "2.0"})
     channel = ET.SubElement(root, "channel")

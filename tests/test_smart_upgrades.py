@@ -414,6 +414,63 @@ class TestWatchdogAgentAndImageColors(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(unauth.get("/api/watchdog/status").status_code, 401)
         self.assertEqual(unauth.post("/api/watchdog/scan-now", json={}).status_code, 401)
 
+    async def test_vision_color_detector_and_watchdog_auto_fix(self):
+        import io
+        from PIL import Image
+        from vision_color_detector import classify_image_bytes, is_trusted_product_image_url
+        from store_watchdog import StoreWatchdogAgent
+
+        # SSRF host validation
+        self.assertTrue(is_trusted_product_image_url("https://cdn.shopify.com/s/files/1/cap.jpg"))
+        self.assertFalse(is_trusted_product_image_url("http://169.254.169.254/latest/meta-data"))
+        self.assertFalse(is_trusted_product_image_url("https://evil.example/a.jpg"))
+
+        # Synthetic studio product images on white background
+        def make_studio_jpg(rgb):
+            im = Image.new("RGB", (120, 120), (255, 255, 255))
+            for y in range(25, 95):
+                for x in range(25, 95):
+                    im.putpixel((x, y), rgb)
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG")
+            return buf.getvalue()
+
+        self.assertEqual(classify_image_bytes(make_studio_jpg((20, 20, 20))), "Black")
+        self.assertEqual(classify_image_bytes(make_studio_jpg((235, 219, 193))), "Beige")
+        self.assertEqual(classify_image_bytes(make_studio_jpg((232, 229, 224))), "Off-White")
+
+        # Watchdog auto-detects missing color and eliminates feed_missing_color warning
+        db.init_db()
+        shop_v = f"vision-test-{int(time.time() * 1000)}.myshopify.com"
+        prod = {
+            "id": 999888,
+            "title": "Utility Crossbody — Rain Flap",
+            "handle": "utility-crossbody-rain-flap",
+            "product_type": "Bag",
+            "body_html": "<p>Recycled polyester rectangular crossbody bag with two-way zip and rain flap.</p>",
+            "status": "active",
+            "published_at": "2026-10-01T00:00:00Z",
+            "options": [{"name": "Title", "position": 1}],
+            "images": [{"id": 1, "src": "https://cdn.shopify.com/s/files/utility-crossbody.jpg", "alt": "Utility Crossbody"}],
+            "variants": [{"id": 10, "price": "45.00", "title": "Default Title"}],
+        }
+        agent = StoreWatchdogAgent(brand_domain="maisongrozavu.com", brand_name="Grozavu")
+        with patch("store_watchdog.detect_color_from_image_url", new_callable=AsyncMock, return_value="Black") as mock_det:
+            report = await agent.run_deep_scan(
+                shop=shop_v,
+                shopify_client=MagicMock(ensure_brand_discount_codes=AsyncMock(return_value={"ok": True, "created": [], "existing": ["MG10"], "renamed": [], "errors": [], "codes": {}})),
+                products=[prod],
+                check_storefront=False,
+                check_dns=False,
+                auto_fix_discounts=True,
+                auto_fix_colors=True,
+            )
+        mock_det.assert_awaited_once()
+        self.assertEqual(report["feed_summary"]["warnings_count"], 0)
+        self.assertEqual(report["feed_summary"]["missing_color_products"], [])
+        self.assertTrue(any("Black" in f["detail"] for f in report["auto_fixed"]))
+        self.assertEqual(db.get_visual_colors_map(shop_v).get("999888"), "Black")
+
 
 if __name__ == "__main__":
     unittest.main()
