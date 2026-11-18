@@ -388,6 +388,187 @@ function policyEntries(fp) {
   return Object.entries(fp)
 }
 
+// Clean raw markdown/symbols/emojis so Jarvis speaks naturally without robotic artifacts.
+function cleanTextForSpeech(rawText, currentLang = 'ro') {
+  if (!rawText || typeof rawText !== 'string') return ''
+  let s = rawText
+    .replace(/https?:\/\/\S+/gi, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/[*_`~#>]+/g, ' ')
+    .replace(/\/(web|boost|browser|goal|search)\b/gi, '')
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu, ' ')
+    .replace(/[•▪◦●◆▶►⚡🔥🎯📊🛒🛡️🔍📱💬🌙👑📦📧🌐🔗📋🔊⏹️✅❌⚠️ℹ️]/g, ' ')
+    .replace(/\s*[—–|]\s*/g, ', ')
+    .replace(/\n+/g, '. ')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/([.,!?]\s*){2,}/g, '$1 ')
+    .trim()
+
+  if (currentLang === 'ro') {
+    s = s.replace(/\bEUR\b/g, 'euro').replace(/(\d+)\s*%/g, '$1 la sută')
+  } else {
+    s = s.replace(/\bEUR\b/g, 'euros').replace(/(\d+)\s*%/g, '$1 percent')
+  }
+
+  if (s.length > 480) {
+    const cut = s.slice(0, 480)
+    const lastEnd = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '))
+    s = lastEnd > 140 ? cut.slice(0, lastEnd + 1) : cut.rsplit ? cut : cut.replace(/\s+\S*$/, '') + '.'
+  }
+  return s.trim()
+}
+
+// Pick the most natural / neural browser voice available (Microsoft Natural Online, Google, etc.)
+function pickNaturalVoice(voices, currentLang = 'ro') {
+  if (!Array.isArray(voices) || voices.length === 0) return null
+  const prefix = currentLang === 'ro' ? 'ro' : 'en'
+  const langVoices = voices.filter(v => String(v.lang || '').toLowerCase().startsWith(prefix))
+  if (langVoices.length === 0) return null
+
+  const scoreVoice = (v) => {
+    const name = String(v.name || '').toLowerCase()
+    let sc = 0
+    if (name.includes('natural')) sc += 100
+    if (name.includes('neural')) sc += 90
+    if (name.includes('online')) sc += 60
+    if (name.includes('google')) sc += 55
+    if (name.includes('emil') || name.includes('alina') || name.includes('radu') || name.includes('jenny') || name.includes('aria') || name.includes('guy')) sc += 40
+    if (!v.localService) sc += 25
+    if (name.includes('espeak') || name.includes('mobile') || name.includes('compact')) sc -= 50
+    return sc
+  }
+  return [...langVoices].sort((a, b) => scoreVoice(b) - scoreVoice(a))[0] || langVoices[0]
+}
+
+// Render inline bold, italic, code, and clickable URLs cleanly without raw ** or _ symbols.
+function renderInlineFormatted(text, keyPrefix = 'in') {
+  if (!text) return null
+  const tokens = String(text).split(/(\*\*[^*]+\*\*|https?:\/\/[^\s)]+|`[^`]+`|\b_[^_]+_\b)/g)
+  return tokens.map((tok, idx) => {
+    if (!tok) return null
+    if (tok.startsWith('**') && tok.endsWith('**') && tok.length > 4) {
+      return <strong key={`${keyPrefix}-${idx}`} style={{ color: '#fef3c7', fontWeight: 700 }}>{tok.slice(2, -2)}</strong>
+    }
+    if (tok.startsWith('`') && tok.endsWith('`') && tok.length > 2) {
+      return (
+        <code
+          key={`${keyPrefix}-${idx}`}
+          style={{ background: '#292524', color: '#fde68a', padding: '1px 6px', borderRadius: '4px', fontSize: '0.92em' }}
+        >
+          {tok.slice(1, -1)}
+        </code>
+      )
+    }
+    if (tok.startsWith('_') && tok.endsWith('_') && tok.length > 2) {
+      return <em key={`${keyPrefix}-${idx}`} style={{ color: '#a8a29e', fontStyle: 'italic' }}>{tok.slice(1, -1)}</em>
+    }
+    if (/^https?:\/\//i.test(tok)) {
+      const cleanUrl = tok.replace(/[.,;:!?]+$/, '')
+      const trailing = tok.slice(cleanUrl.length)
+      return (
+        <React.Fragment key={`${keyPrefix}-${idx}`}>
+          <a href={cleanUrl} target="_blank" rel="noopener noreferrer" style={{ color: '#fbbf24', textDecoration: 'underline', wordBreak: 'break-all' }}>
+            {cleanUrl}
+          </a>
+          {trailing}
+        </React.Fragment>
+      )
+    }
+    return <React.Fragment key={`${keyPrefix}-${idx}`}>{tok.replace(/\*\*/g, '')}</React.Fragment>
+  })
+}
+
+// Clean, high-contrast formatter for Jarvis messages (zero raw ### / ** clutter).
+function renderCleanMessage(content) {
+  if (!content || typeof content !== 'string') return null
+  const lines = content.split('\n')
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '14.5px', lineHeight: 1.65, color: '#f5f5f4' }}>
+      {lines.map((rawLine, idx) => {
+        const line = rawLine.trim()
+        if (!line) return <div key={idx} style={{ height: '4px' }} />
+
+        const hMatch = line.match(/^#{1,6}\s+(.*)$/)
+        if (hMatch) {
+          return (
+            <div
+              key={idx}
+              style={{
+                fontSize: '15.5px',
+                fontWeight: 700,
+                color: '#fbbf24',
+                marginTop: idx === 0 ? '0px' : '8px',
+                paddingBottom: '4px',
+                borderBottom: '1px solid rgba(251, 191, 36, 0.2)',
+              }}
+            >
+              {renderInlineFormatted(hMatch[1], `h-${idx}`)}
+            </div>
+          )
+        }
+
+        const numMatch = line.match(/^(\d+)\.\s+(.*)$/)
+        if (numMatch) {
+          return (
+            <div key={idx} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', paddingLeft: '2px' }}>
+              <span
+                style={{
+                  minWidth: '22px',
+                  height: '22px',
+                  borderRadius: '999px',
+                  background: 'rgba(245, 158, 11, 0.16)',
+                  color: '#fbbf24',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  marginTop: '2px',
+                }}
+              >
+                {numMatch[1]}
+              </span>
+              <div style={{ flex: 1 }}>{renderInlineFormatted(numMatch[2], `n-${idx}`)}</div>
+            </div>
+          )
+        }
+
+        const bulletMatch = line.match(/^(?:[-•*])\s+(.*)$/)
+        if (bulletMatch) {
+          return (
+            <div key={idx} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', paddingLeft: '6px' }}>
+              <span style={{ color: '#f59e0b', fontWeight: 700, marginTop: '1px' }}>•</span>
+              <div style={{ flex: 1 }}>{renderInlineFormatted(bulletMatch[1], `b-${idx}`)}</div>
+            </div>
+          )
+        }
+
+        const quoteMatch = line.match(/^>\s*(.*)$/)
+        if (quoteMatch) {
+          return (
+            <div
+              key={idx}
+              style={{
+                borderLeft: '3px solid #f59e0b',
+                paddingLeft: '10px',
+                color: '#e7e5e4',
+                background: 'rgba(255,255,255,0.03)',
+                padding: '6px 10px',
+                borderRadius: '0 6px 6px 0',
+              }}
+            >
+              {renderInlineFormatted(quoteMatch[1], `q-${idx}`)}
+            </div>
+          )
+        }
+
+        return <div key={idx}>{renderInlineFormatted(line, `p-${idx}`)}</div>
+      })}
+    </div>
+  )
+}
+
 export default function App() {
   const params = new URLSearchParams(window.location.search)
   const shop = params.get('shop') || 'grozavushop.myshopify.com'
@@ -470,6 +651,12 @@ export default function App() {
   // Google Search Console & GA4 Real Traffic State
   const [googleAnalyticsData, setGoogleAnalyticsData] = useState(null)
   const [refreshingGoogleAnalytics, setRefreshingGoogleAnalytics] = useState(false)
+
+  // Upgrade 3: Competitor Radar & Campaign Studio State
+  const [competitorRadar, setCompetitorRadar] = useState(null)
+  const [campaignKeyword, setCampaignKeyword] = useState('')
+  const [campaignResult, setCampaignResult] = useState(null)
+  const [generatingCampaign, setGeneratingCampaign] = useState(false)
 
   // Delivery & Email Gateway State
   const [deliverySettings, setDeliverySettings] = useState({
@@ -604,16 +791,32 @@ export default function App() {
       : '⚠️ Could not copy automatically — select the text and copy it manually.'))
   }
 
-  // Audio TTS Function
-  const speakText = (text) => {
-    if (!voiceEnabled || !text) return
+  // Preload browser speech voices for natural human voice selection
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.getVoices()
+      const handleVoicesChanged = () => { window.speechSynthesis.getVoices() }
+      window.speechSynthesis.onvoiceschanged = handleVoicesChanged
+      return () => { window.speechSynthesis.onvoiceschanged = null }
+    }
+  }, [])
+
+  // Natural Audio TTS Function (cleans symbols/emojis & selects neural/Google voice)
+  const speakText = (text, forceSpeak = false) => {
+    if ((!voiceEnabled && !forceSpeak) || !text) return
     try {
-      if (window.speechSynthesis) {
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
         window.speechSynthesis.cancel()
-        const utterance = new SpeechSynthesisUtterance(text.slice(0, 300))
+        const cleanSpoken = cleanTextForSpeech(text, lang)
+        if (!cleanSpoken) return
+        const utterance = new SpeechSynthesisUtterance(cleanSpoken)
         utterance.lang = lang === 'ro' ? 'ro-RO' : 'en-US'
-        utterance.rate = 1.05
+        const voices = window.speechSynthesis.getVoices() || []
+        const bestVoice = pickNaturalVoice(voices, lang)
+        if (bestVoice) utterance.voice = bestVoice
+        utterance.rate = 0.96
         utterance.pitch = 1.0
+        utterance.volume = 1.0
         utterance.onstart = () => setIsSpeaking(true)
         utterance.onend = () => setIsSpeaking(false)
         utterance.onerror = () => setIsSpeaking(false)
@@ -870,11 +1073,51 @@ export default function App() {
     }
   }
 
+  const loadCompetitorRadar = async () => {
+    try {
+      const res = await api(`/api/growth/competitor-radar?${qShop}&lang=${lang}`)
+      if (res.ok) {
+        const data = await readJson(res)
+        setCompetitorRadar(data)
+        const firstKw = asArray(data.campaign_keywords)[0]?.keyword
+        if (firstKw && !campaignKeyword) setCampaignKeyword(firstKw)
+        return true
+      }
+      return false
+    } catch (e) {
+      console.error('Competitor radar load failed', e)
+      return false
+    }
+  }
+
+  const handleGenerateCampaign = async (customKw = null) => {
+    const kw = (typeof customKw === 'string' && customKw.trim()) ? customKw.trim() : campaignKeyword.trim()
+    if (!kw || generatingCampaign) return
+    setCampaignKeyword(kw)
+    setGeneratingCampaign(true)
+    try {
+      const res = await apiPost('/api/growth/campaign-studio', { shop, keyword: kw, lang })
+      const data = await readJson(res)
+      if (res.ok) {
+        setCampaignResult(data)
+        showToast(lang === 'ro' ? `✅ Campanie generată pentru „${kw}”!` : `✅ Campaign kit ready for "${kw}"!`)
+      } else {
+        showToast((lang === 'ro' ? '⚠️ Eroare campanie: ' : '⚠️ Campaign error: ') + errorText(data, res))
+      }
+    } catch (e) {
+      showToast('⚠️ ' + e.message)
+    } finally {
+      setGeneratingCampaign(false)
+    }
+  }
+
   // Load only what the visible tab / subtab needs
   useEffect(() => {
     if (activeTab === 'radar') {
       if (activeRadarSubtab === 'google-analytics') {
         ensureLoaded('googleAnalytics', loadGoogleAnalytics)
+      } else if (activeRadarSubtab === 'campaign-studio') {
+        ensureLoaded('competitorRadar', loadCompetitorRadar)
       } else if (activeRadarSubtab === 'google-merchant') {
         ensureLoaded('feed', loadFeedValidation)
         ensureLoaded('seoAudit', loadSeoAudit)
@@ -1194,7 +1437,7 @@ export default function App() {
         }
       ])
       if (voiceEnabled) {
-        speakText(reply.slice(0, 260))
+        speakText(reply)
       }
     } catch (err) {
       console.warn('Chat error:', err)
@@ -1714,6 +1957,12 @@ export default function App() {
                 📊 Trafic Real (GSC & GA4)
               </button>
               <button 
+                className={`subnav-pill ${activeRadarSubtab === 'campaign-studio' ? 'active' : ''}`}
+                onClick={() => setActiveRadarSubtab('campaign-studio')}
+              >
+                🎯 Studio Campanii & Concurență
+              </button>
+              <button 
                 className={`subnav-pill ${activeRadarSubtab === 'google-merchant' ? 'active' : ''}`}
                 onClick={() => setActiveRadarSubtab('google-merchant')}
               >
@@ -1786,6 +2035,45 @@ export default function App() {
 
                   {!googleAnalyticsData && (
                     <div style={{ padding: '16px', color: '#a8a29e' }}>⏳ Se încarcă datele Google Search Console & GA4...</div>
+                  )}
+
+                  {googleAnalyticsData?.traffic_quality && (
+                    <div
+                      style={{
+                        marginTop: '14px',
+                        marginBottom: '16px',
+                        padding: '14px 16px',
+                        borderRadius: '10px',
+                        background: googleAnalyticsData.traffic_quality.bot_alert ? 'rgba(245, 158, 11, 0.10)' : 'rgba(16, 185, 129, 0.08)',
+                        border: `1px solid ${googleAnalyticsData.traffic_quality.bot_alert ? '#b45309' : '#059669'}`,
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', marginBottom: '8px' }}>
+                        <strong style={{ color: googleAnalyticsData.traffic_quality.bot_alert ? '#fbbf24' : '#34d399', fontSize: '14px' }}>
+                          🛡️ Filtru Trafic Uman Real vs Boți (Gardian 24/7)
+                        </strong>
+                        <span style={{ fontSize: '12px', color: '#e7e5e4' }}>
+                          Calificat uman: <strong>{fmtNum(googleAnalyticsData.traffic_quality.qualified_human_sessions)}</strong> sesiuni
+                          {' · '}
+                          Direct/Neasignat: <strong>{googleAnalyticsData.traffic_quality.direct_unassigned_pct}%</strong>
+                          {googleAnalyticsData.traffic_quality.eu_priority_sessions > 0
+                            ? ` · Piețe UE: ${fmtNum(googleAnalyticsData.traffic_quality.eu_priority_sessions)}`
+                            : ''}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '13.5px', color: '#f5f5f4', lineHeight: 1.55 }}>
+                        {googleAnalyticsData.traffic_quality.bot_summary_ro}
+                      </div>
+                      {asArray(googleAnalyticsData.traffic_quality.eu_breakdown).length > 0 && (
+                        <div style={{ marginTop: '8px', display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                          {asArray(googleAnalyticsData.traffic_quality.eu_breakdown).map((c, idx) => (
+                            <span key={idx} style={{ fontSize: '12px', padding: '3px 8px', borderRadius: '6px', background: '#1c1917', border: '1px solid #44403c', color: '#fef3c7' }}>
+                              🇪🇺 {c.country}: {c.sessions}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   )}
 
                   {googleAnalyticsData?.search_console?.connected && googleAnalyticsData?.search_console?.summary && (
@@ -1931,6 +2219,199 @@ export default function App() {
                           <span style={{ color: '#d6d3d1' }}>{s.detail}</span>
                         </div>
                       ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Subtab 0B: Upgrade 3 — Competitor Price Radar & Real-Query Campaign Studio */}
+            {activeRadarSubtab === 'campaign-studio' && (
+              <div className="radar-content-grid">
+                <div className="hud-card">
+                  <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                    <span>🎯 Studio Campanii din Căutări Reale Google (1-Click)</span>
+                    <span className="tag-live" style={{ background: '#065f46', color: '#6ee7b7' }}>
+                      {competitorRadar?.gsc_connected ? '✅ Alimentat din GSC Live' : '📦 Catalog Shopify'}
+                    </span>
+                  </div>
+                  <p className="card-desc">
+                    Alege una dintre căutările reale pe care oamenii le fac deja pe Google pentru <strong>maisongrozavu.com</strong> (sau scrie orice produs/temă) și Jarvis generează instant hook TikTok/Reels, script video pe secunde, caption și texte Google Ads legate direct de produsele tale reale.
+                  </p>
+
+                  {asArray(competitorRadar?.campaign_keywords).length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '14px' }}>
+                      {asArray(competitorRadar.campaign_keywords).map((item, idx) => (
+                        <button
+                          key={idx}
+                          className="chip-tag"
+                          disabled={generatingCampaign}
+                          onClick={() => handleGenerateCampaign(item.keyword)}
+                          style={{
+                            borderColor: campaignKeyword === item.keyword ? '#f59e0b' : undefined,
+                            background: campaignKeyword === item.keyword ? 'rgba(245,158,11,0.18)' : undefined,
+                          }}
+                        >
+                          {item.source === 'gsc_real' ? '🔍 ' : '💡 '}
+                          {item.keyword}
+                          {item.position ? ` (#${item.position})` : ''}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
+                    <input
+                      type="text"
+                      value={campaignKeyword}
+                      onChange={(e) => setCampaignKeyword(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleGenerateCampaign()}
+                      placeholder="Ex: shorts de pernera ancha para mujeres, heavyweight hoodie..."
+                      style={{
+                        flex: 1,
+                        minWidth: '240px',
+                        padding: '10px 14px',
+                        background: '#0c0a09',
+                        border: '1px solid #57534e',
+                        color: '#fef3c7',
+                        borderRadius: '8px',
+                        fontSize: '14px',
+                      }}
+                    />
+                    <button
+                      className="calculate-btn"
+                      disabled={generatingCampaign || !campaignKeyword.trim()}
+                      onClick={() => handleGenerateCampaign()}
+                    >
+                      {generatingCampaign ? '⏳ Se generează campania...' : '🚀 Generează Kit Campanie'}
+                    </button>
+                  </div>
+
+                  {campaignResult && (
+                    <div style={{ background: '#1c1917', border: '1px solid #78350f', borderRadius: '10px', padding: '16px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                        <div>
+                          <div style={{ fontSize: '16px', fontWeight: 700, color: '#fbbf24' }}>{campaignResult.campaign_title}</div>
+                          <div style={{ fontSize: '12.5px', color: '#a8a29e' }}>
+                            Audiență: {campaignResult.target_audience}
+                            {campaignResult.gsc_metrics
+                              ? ` · Google Real: ${campaignResult.gsc_metrics.clicks} click-uri, ${campaignResult.gsc_metrics.impressions} afișări, poziția #${campaignResult.gsc_metrics.position}`
+                              : ''}
+                          </div>
+                        </div>
+                        <a
+                          href={campaignResult.cta_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{ fontSize: '12px', color: '#fbbf24', textDecoration: 'underline' }}
+                        >
+                          🔗 Pagina țintă produs
+                        </a>
+                      </div>
+
+                      {asArray(campaignResult.matched_products).length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                          {asArray(campaignResult.matched_products).map((p, idx) => (
+                            <a
+                              key={idx}
+                              href={p.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{ fontSize: '12.5px', padding: '5px 10px', borderRadius: '6px', background: '#0c0a09', border: '1px solid #44403c', color: '#fef3c7', textDecoration: 'none' }}
+                            >
+                              🛍️ {p.title}{p.price ? ` — ${p.price} EUR` : ''}
+                            </a>
+                          ))}
+                        </div>
+                      )}
+
+                      <div style={{ background: 'rgba(245,158,11,0.08)', borderLeft: '3px solid #f59e0b', padding: '10px 12px', borderRadius: '0 8px 8px 0' }}>
+                        <div style={{ fontSize: '12px', fontWeight: 700, color: '#fbbf24', marginBottom: '4px' }}>🎬 HOOK TIKTOK / REELS (0–3 secunde)</div>
+                        <div style={{ fontSize: '14px', color: '#f5f5f4', lineHeight: 1.55 }}>{campaignResult.tiktok_reels_hook}</div>
+                      </div>
+
+                      <div>
+                        <div style={{ fontSize: '12px', fontWeight: 700, color: '#38bdf8', marginBottom: '8px' }}>🎥 SCRIPT VIDEO SCENĂ CU SCENĂ</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {asArray(campaignResult.video_script_steps).map((st, idx) => (
+                            <div key={idx} style={{ padding: '10px 12px', background: '#0c0a09', borderRadius: '8px', border: '1px solid #292524', fontSize: '13.5px', lineHeight: 1.55 }}>
+                              <strong style={{ color: '#fbbf24' }}>{st.time}:</strong>{' '}
+                              <span style={{ color: '#d6d3d1' }}>{st.visual}</span>
+                              <div style={{ marginTop: '4px', color: '#fef3c7' }}>Voce / Text: „{st.voiceover}”</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '12px' }}>
+                        <div style={{ padding: '12px', background: '#0c0a09', borderRadius: '8px', border: '1px solid #292524' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                            <span style={{ fontSize: '12px', fontWeight: 700, color: '#10b981' }}>📱 CAPTION SOCIAL GATA DE COPIAT</span>
+                            <button
+                              className="chip-tag"
+                              style={{ padding: '3px 8px', fontSize: '11px' }}
+                              onClick={() => handleCopy(campaignResult.social_caption, 'Caption copiat!')}
+                            >
+                              📋 Copiază
+                            </button>
+                          </div>
+                          <div style={{ fontSize: '13px', color: '#e7e5e4', whiteSpace: 'pre-wrap', lineHeight: 1.55 }}>
+                            {campaignResult.social_caption}
+                          </div>
+                        </div>
+
+                        <div style={{ padding: '12px', background: '#0c0a09', borderRadius: '8px', border: '1px solid #292524' }}>
+                          <div style={{ fontSize: '12px', fontWeight: 700, color: '#fbbf24', marginBottom: '6px' }}>🔎 TEXTE ANUNȚ GOOGLE ADS (Search)</div>
+                          <div style={{ fontSize: '12.5px', color: '#a8a29e', marginBottom: '4px' }}>Titluri (max 30 caractere):</div>
+                          {asArray(campaignResult.google_ads_pack?.headlines).map((h, idx) => (
+                            <div key={idx} style={{ fontSize: '13px', color: '#fef3c7', marginBottom: '3px' }}>• {h}</div>
+                          ))}
+                          <div style={{ fontSize: '12.5px', color: '#a8a29e', marginTop: '8px', marginBottom: '4px' }}>Descrieri (max 90 caractere):</div>
+                          {asArray(campaignResult.google_ads_pack?.descriptions).map((d, idx) => (
+                            <div key={idx} style={{ fontSize: '13px', color: '#e7e5e4', marginBottom: '3px' }}>• {d}</div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="hud-card" style={{ marginTop: '14px' }}>
+                  <div className="card-title">
+                    <span>🏷️ Radar Poziționare Prețuri Streetwear Europa (Catalogul tău real vs Piața UE)</span>
+                  </div>
+                  <p className="card-desc">
+                    {competitorRadar?.note_ro || 'Se încarcă analiza prețurilor din catalogul Shopify...'}
+                  </p>
+
+                  {asArray(competitorRadar?.categories).length > 0 && (
+                    <div style={{ overflowX: 'auto', marginTop: '10px' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13.5px' }}>
+                        <thead>
+                          <tr style={{ borderBottom: '1px solid #44403c', color: '#a8a29e', textAlign: 'left' }}>
+                            <th style={{ padding: '8px' }}>Categorie</th>
+                            <th style={{ padding: '8px' }}>Produse Grozavu</th>
+                            <th style={{ padding: '8px' }}>Preț Mediu / Interval Tău</th>
+                            <th style={{ padding: '8px' }}>Repere Indie Streetwear UE</th>
+                            <th style={{ padding: '8px' }}>Poziționare</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {asArray(competitorRadar.categories).map((cat, idx) => (
+                            <tr key={idx} style={{ borderBottom: '1px solid #292524' }}>
+                              <td style={{ padding: '8px', color: '#fef3c7', fontWeight: 600 }}>{cat.label}</td>
+                              <td style={{ padding: '8px' }}>{cat.store_products_count}</td>
+                              <td style={{ padding: '8px', color: '#fbbf24', fontWeight: 600 }}>
+                                {cat.store_avg_price != null
+                                  ? `${cat.store_avg_price} ${cat.currency} (${cat.store_min_price}–${cat.store_max_price})`
+                                  : '—'}
+                              </td>
+                              <td style={{ padding: '8px', color: '#d6d3d1' }}>{cat.market_reference?.indie_streetwear_eur}</td>
+                              <td style={{ padding: '8px', color: '#34d399' }}>{cat.positioning_label}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
                   )}
                 </div>
@@ -2705,8 +3186,13 @@ export default function App() {
                     <span>CIORNĂ GENERATĂ DE AI: {generatedOutput.title}</span>
                     <button className="close-btn" onClick={() => setGeneratedOutput(null)}>✕</button>
                   </div>
-                  <pre className="output-content">{generatedOutput.content}</pre>
+                  <div className="output-content" style={{ whiteSpace: 'normal', fontFamily: 'inherit' }}>
+                    {renderCleanMessage(generatedOutput.content)}
+                  </div>
                   <div className="output-modal-footer">
+                    <button className="copy-btn" onClick={() => speakText(generatedOutput.content, true)}>
+                      🔊 Ascultă
+                    </button>
                     <button className="copy-btn" onClick={() => handleCopy(generatedOutput.content, 'Conținutul a fost copiat!')}>
                       📋 Copiază în Clipboard
                     </button>
@@ -2761,16 +3247,38 @@ export default function App() {
                         )}
                       </span>
                       {msg.role !== 'user' && (
-                        <button 
-                          className="copy-btn-bubble" 
-                          onClick={() => handleCopy(msg.content, 'Răspunsul a fost copiat!')}
-                          title="Copiază răspunsul"
-                        >
-                          📋
-                        </button>
+                        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                          <button
+                            className="copy-btn-bubble"
+                            onClick={() => {
+                              if (isSpeaking && window.speechSynthesis) {
+                                window.speechSynthesis.cancel()
+                                setIsSpeaking(false)
+                              } else {
+                                speakText(msg.content, true)
+                              }
+                            }}
+                            title={isSpeaking ? 'Oprește vocea' : 'Ascultă răspunsul'}
+                          >
+                            {isSpeaking ? '⏹️' : '🔊'}
+                          </button>
+                          <button 
+                            className="copy-btn-bubble" 
+                            onClick={() => handleCopy(msg.content, 'Răspunsul a fost copiat!')}
+                            title="Copiază răspunsul"
+                          >
+                            📋
+                          </button>
+                        </div>
                       )}
                     </div>
-                    <div className="bubble-body" style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+                    <div className="bubble-body">
+                      {msg.role === 'user' ? (
+                        <div style={{ whiteSpace: 'pre-wrap', fontSize: '14.5px', lineHeight: 1.6 }}>{msg.content}</div>
+                      ) : (
+                        renderCleanMessage(msg.content)
+                      )}
+                    </div>
                     {msg.role !== 'user' && asArray(msg.sources).length > 0 && (
                       <div style={{ marginTop: '10px', display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                         {asArray(msg.sources).map((src, sIdx) => (

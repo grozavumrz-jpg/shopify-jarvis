@@ -32,6 +32,7 @@ from seo_optimizer import ProductSEOOptimizer
 from deliverability_checker import DeliverabilityChecker
 from store_watchdog import StoreWatchdogAgent
 from google_analytics_service import GoogleTrafficService
+from growth_studio import build_competitor_radar, generate_campaign_studio
 import compliance_guard
 from compliance_guard import (is_quiet_hours, can_dispatch_to_customer, log_customer_dispatch,
                               ephemeral_db_blocks_marketing)
@@ -234,6 +235,8 @@ async def health():
         if ephemeral_db_blocks_marketing() else None,
         "autopilot_last_cycle_at": AUTOPILOT_STATUS.get("last_cycle_at"),
         "web_search_grounding_enabled": True,
+        "gemini_configured": bool(len(ai._get_api_key()) >= 10),
+        "gemini_last_error": ai.last_gemini_error,
         "google_search_console_configured": google_traffic.is_gsc_configured(),
         "google_analytics_configured": google_traffic.is_ga4_configured(),
     }
@@ -587,6 +590,60 @@ async def refresh_google_analytics(req: Optional[GoogleAnalyticsRefreshRequest] 
     days = max(1, min(int((req.days if req else 28) or 28), 90))
     google_traffic.clear_cache()
     return await google_traffic.get_combined_report(days=days, force_refresh=True)
+
+
+@app.get("/api/growth/competitor-radar")
+async def get_competitor_radar(shop: Optional[str] = Query(None), lang: str = Query("ro"),
+                               auth: AuthContext = Depends(require_auth)):
+    """Upgrade 3: Real catalog pricing vs European streetwear positioning tiers + GSC keyword triggers."""
+    shop = resolve_shop(auth, shop)
+    products, _ = await load_feed_products(shop)
+    gsc_report = None
+    if google_traffic.is_gsc_configured():
+        try:
+            combined = await google_traffic.get_combined_report(days=28, force_refresh=False)
+            gsc_report = combined.get("search_console")
+        except Exception as e:
+            print(f"[CompetitorRadar GSC Warning]: {e}")
+    return build_competitor_radar(
+        products=products or [],
+        gsc_report=gsc_report,
+        currency=FEED_CURRENCY,
+        domain=BRAND_DOMAIN,
+        lang=lang,
+    )
+
+
+class CampaignStudioRequest(BaseModel):
+    shop: Optional[str] = None
+    keyword: str
+    lang: Optional[str] = "ro"
+
+
+@app.post("/api/growth/campaign-studio")
+async def create_campaign_studio(req: CampaignStudioRequest, auth: AuthContext = Depends(require_auth)):
+    """Upgrade 3: 1-click TikTok/Reels + Social + Google Ads campaign kit from a real GSC keyword & catalog."""
+    shop = resolve_shop(auth, req.shop)
+    kw = (req.keyword or "").strip()[:120]
+    if not kw:
+        raise HTTPException(400, "empty_keyword")
+    products, _ = await load_feed_products(shop)
+    gsc_report = None
+    if google_traffic.is_gsc_configured():
+        try:
+            combined = await google_traffic.get_combined_report(days=28, force_refresh=False)
+            gsc_report = combined.get("search_console")
+        except Exception as e:
+            print(f"[CampaignStudio GSC Warning]: {e}")
+    return await generate_campaign_studio(
+        keyword=kw,
+        products=products or [],
+        gsc_report=gsc_report,
+        ai_advisor=ai,
+        currency=FEED_CURRENCY,
+        domain=BRAND_DOMAIN,
+        lang=req.lang or "ro",
+    )
 
 
 # ── Growth ideas (AI suggestions, not data) ───────────────────────────────────
@@ -1162,6 +1219,12 @@ async def run_watchdog_pass(shop: Optional[str] = None, check_storefront: bool =
         settings = db.get_shop_settings(target_shop)
     except Exception:
         settings = None
+    traffic_report = None
+    if google_traffic.is_configured():
+        try:
+            traffic_report = await google_traffic.get_combined_report(days=28, force_refresh=False)
+        except Exception as e:
+            print(f"[Watchdog Google Traffic Warning]: {e}")
     report = await store_watchdog.run_deep_scan(
         shop=target_shop,
         shopify_client=client,
@@ -1175,6 +1238,7 @@ async def run_watchdog_pass(shop: Optional[str] = None, check_storefront: bool =
         check_dns=check_dns,
         auto_fix_discounts=True,
         currency=FEED_CURRENCY,
+        google_traffic_report=traffic_report,
     )
     report["is_running"] = watchdog_running()
     return report

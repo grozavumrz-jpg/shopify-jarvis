@@ -73,6 +73,7 @@ class StoreWatchdogAgent:
             "feed_summary": None,
             "catalog_summary": None,
             "discounts_summary": None,
+            "traffic_summary": None,
         }
 
     def _get_lock(self) -> asyncio.Lock:
@@ -175,8 +176,9 @@ class StoreWatchdogAgent:
         auto_fix_discounts: bool = True,
         auto_fix_colors: bool = True,
         currency: str = "EUR",
+        google_traffic_report: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Run a full 7-point autonomous audit + safe auto-repair pass. Never raises."""
+        """Run a full 8-point autonomous audit + safe auto-repair pass. Never raises."""
         async with self._get_lock():
             t0 = time.perf_counter()
             now_iso = datetime.now(timezone.utc).isoformat()
@@ -506,6 +508,68 @@ class StoreWatchdogAgent:
                             "detail": "SPF, DKIM și DMARC valide — reputație protejată.",
                         })
 
+            # 8. Google Search Console & GA4 Traffic / Bot Inflation Watch (Upgrade 1)
+            traffic_summary = None
+            if isinstance(google_traffic_report, dict) and google_traffic_report.get("connected"):
+                gsc_d = google_traffic_report.get("search_console") or {}
+                ga4_d = google_traffic_report.get("ga4") or {}
+                tq = google_traffic_report.get("traffic_quality") or {}
+                traffic_summary = {
+                    "gsc_connected": bool(gsc_d.get("connected")),
+                    "ga4_connected": bool(ga4_d.get("connected")),
+                    "gsc_clicks": (gsc_d.get("summary") or {}).get("clicks") if gsc_d.get("connected") else None,
+                    "gsc_impressions": (gsc_d.get("summary") or {}).get("impressions") if gsc_d.get("connected") else None,
+                    "gsc_ctr": (gsc_d.get("summary") or {}).get("ctr") if gsc_d.get("connected") else None,
+                    "gsc_avg_position": (gsc_d.get("summary") or {}).get("avg_position") if gsc_d.get("connected") else None,
+                    "ga4_total_sessions": tq.get("total_ga4_sessions"),
+                    "ga4_qualified_sessions": tq.get("qualified_human_sessions"),
+                    "ga4_bot_alert": bool(tq.get("bot_alert")),
+                    "ga4_direct_pct": tq.get("direct_unassigned_pct"),
+                    "eu_priority_sessions": tq.get("eu_priority_sessions"),
+                    "top10_queries_count": tq.get("top10_queries_count", 0),
+                    "opportunity_queries_count": tq.get("opportunity_queries_count", 0),
+                }
+
+                if tq.get("bot_alert"):
+                    warnings.append({
+                        "code": "ga4_bot_traffic_inflation",
+                        "area": "Trafic & Boți (GA4)",
+                        "title": f"Trafic GA4 umflat de boți ({tq.get('direct_unassigned_pct')}% Direct/Unassigned)",
+                        "detail": str(tq.get("bot_summary_ro") or ""),
+                        "action_ro": "Urmărește traficul calificat (Organic Search + Social) și filtrează traficul bot din rapoartele GA4.",
+                    })
+                elif ga4_d.get("connected"):
+                    passed.append({
+                        "area": "Trafic GA4",
+                        "title": f"GA4 sănătos ({tq.get('qualified_human_sessions', 0)} sesiuni calificate)",
+                        "detail": str(tq.get("bot_summary_ro") or "Date GA4 verificate."),
+                    })
+
+                if gsc_d.get("connected"):
+                    gsc_sum = gsc_d.get("summary") or {}
+                    opp_list = gsc_d.get("opportunity_queries") or []
+                    if int(gsc_sum.get("impressions") or 0) >= 500 and float(gsc_sum.get("ctr") or 0) < 1.5:
+                        warnings.append({
+                            "code": "gsc_low_ctr",
+                            "area": "SEO Google (GSC)",
+                            "title": f"CTR Google scăzut: {gsc_sum.get('ctr')}% la {gsc_sum.get('impressions')} afișări",
+                            "detail": "Produsele apar în Google, dar titlurile/descrierile pot atrage mai multe click-uri.",
+                            "action_ro": "Deschide Radar → Studio Campanii & Concurență pentru cuvintele-cheie din Top 15.",
+                            "affected_items": [
+                                f"{q['query']} (poziția #{q['position']}, {q['impressions']} afișări)"
+                                for q in opp_list[:6]
+                            ],
+                        })
+                    else:
+                        passed.append({
+                            "area": "SEO Google (GSC)",
+                            "title": f"GSC live: {gsc_sum.get('clicks', 0)} click-uri, poziție medie #{gsc_sum.get('avg_position', 0)}",
+                            "detail": (
+                                f"{len(opp_list)} oportunități aproape de Top 5 Google."
+                                if opp_list else "Monitorizare zilnică activă."
+                            ),
+                        })
+
             # Compute honest health score from verified checks only
             score = 100
             score -= len(critical) * 20
@@ -568,5 +632,6 @@ class StoreWatchdogAgent:
                 "feed_summary": feed_summary,
                 "catalog_summary": catalog_summary,
                 "discounts_summary": discounts_summary,
+                "traffic_summary": traffic_summary,
             })
             return dict(self.state)

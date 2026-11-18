@@ -530,7 +530,7 @@ class GoogleTrafficService:
                     "dateRanges": date_ranges,
                     "dimensions": [{"name": "country"}],
                     "metrics": [{"name": "sessions"}, {"name": "totalUsers"}],
-                    "limit": 8,
+                    "limit": 15,
                 },
             )
 
@@ -601,6 +601,125 @@ class GoogleTrafficService:
         })
         return base
 
+    # ── Traffic Quality & Bot Filter (Upgrade 1) ─────────────────────────────
+
+    EU_PRIORITY_COUNTRIES = {
+        "Spain", "Romania", "France", "Germany", "Italy", "Portugal", "Netherlands",
+        "Belgium", "Austria", "United Kingdom", "Ireland", "Poland", "Sweden", "Denmark",
+        "Greece", "Czechia", "Hungary", "Bulgaria", "Croatia", "Switzerland",
+    }
+
+    @classmethod
+    def analyze_traffic_quality(cls, gsc: Dict[str, Any], ga4: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Deterministic analysis of real GA4 + GSC traffic to separate qualified human sessions
+        from suspected Direct/Unassigned bot inflation and surface actionable SEO alerts.
+        Returns None when neither GSC nor GA4 is connected.
+        """
+        gsc_ok = bool(isinstance(gsc, dict) and gsc.get("connected"))
+        ga4_ok = bool(isinstance(ga4, dict) and ga4.get("connected"))
+        if not gsc_ok and not ga4_ok:
+            return None
+
+        ga4_sum = (ga4.get("summary") or {}) if ga4_ok else {}
+        total_sessions = _safe_int(ga4_sum.get("sessions"))
+        engagement_rate = _safe_float(ga4_sum.get("engagement_rate"))
+        channels = (ga4.get("channels") or []) if ga4_ok else []
+        countries = (ga4.get("countries") or []) if ga4_ok else []
+
+        direct_unassigned = 0
+        qualified_sessions = 0
+        organic_search_sessions = 0
+        organic_social_sessions = 0
+        for ch in channels:
+            name = str(ch.get("channel") or "").strip().lower()
+            sess = _safe_int(ch.get("sessions"))
+            if name in ("direct", "unassigned", "(other)", ""):
+                direct_unassigned += sess
+            else:
+                qualified_sessions += sess
+                if "organic search" in name:
+                    organic_search_sessions += sess
+                elif "social" in name:
+                    organic_social_sessions += sess
+
+        direct_pct = round((direct_unassigned / total_sessions) * 100.0, 1) if total_sessions > 0 else 0.0
+        eu_sessions = sum(_safe_int(c.get("sessions")) for c in countries if str(c.get("country") or "") in cls.EU_PRIORITY_COUNTRIES)
+        eu_breakdown = [
+            {"country": c.get("country"), "sessions": _safe_int(c.get("sessions"))}
+            for c in countries
+            if str(c.get("country") or "") in cls.EU_PRIORITY_COUNTRIES
+        ][:6]
+
+        # Classic bot/crawler inflation signature: >=65% Direct/Unassigned AND engagement < 38% with >=100 sessions
+        bot_alert = bool(ga4_ok and total_sessions >= 100 and direct_pct >= 65.0 and engagement_rate < 38.0)
+        suspected_bot_sessions = direct_unassigned if bot_alert else 0
+
+        if not ga4_ok:
+            bot_summary_ro = "GA4 nu este conectat încă — filtrul de boți așteaptă date GA4."
+        elif bot_alert:
+            bot_summary_ro = (
+                f"Atenție: {direct_pct}% din sesiunile GA4 ({direct_unassigned:,} din {total_sessions:,}) sunt Direct/Unassigned "
+                f"cu angajament mic ({engagement_rate}%) — semn tipic de trafic automat/boți. "
+                f"Traficul uman calificat (Organic Search, Social, Referral) este de {qualified_sessions:,} sesiuni."
+            )
+        else:
+            bot_summary_ro = (
+                f"Traficul GA4 pare sănătos: {qualified_sessions:,} sesiuni din canale identificate "
+                f"și rată de angajament {engagement_rate}%."
+            )
+
+        top_queries = (gsc.get("top_queries") or []) if gsc_ok else []
+        opp_queries = (gsc.get("opportunity_queries") or []) if gsc_ok else []
+        top10_queries = [q for q in top_queries if _safe_float(q.get("position"), 99.0) <= 10.0][:8]
+
+        alerts: List[Dict[str, str]] = []
+        if bot_alert:
+            alerts.append({
+                "severity": "warning",
+                "code": "ga4_bot_traffic_inflation",
+                "title": f"Trafic umflat de boți în GA4 ({direct_pct}% Direct/Unassigned)",
+                "detail": bot_summary_ro,
+            })
+        if gsc_ok and opp_queries:
+            best = opp_queries[0]
+            alerts.append({
+                "severity": "opportunity",
+                "code": "gsc_page1_opportunity",
+                "title": f"{len(opp_queries)} cuvinte-cheie aproape de Top 5 Google",
+                "detail": (
+                    f"Cea mai bună oportunitate: „{best['query']}” (poziția #{best['position']}, "
+                    f"{best['impressions']} afișări, {best['clicks']} click-uri)."
+                ),
+            })
+        if gsc_ok:
+            gsc_sum = gsc.get("summary") or {}
+            if _safe_int(gsc_sum.get("impressions")) >= 500 and _safe_float(gsc_sum.get("ctr")) < 1.5:
+                alerts.append({
+                    "severity": "warning",
+                    "code": "gsc_low_ctr",
+                    "title": f"CTR Google scăzut ({gsc_sum.get('ctr')}% la {gsc_sum.get('impressions'):,} afișări)",
+                    "detail": "Oamenii văd produsele în Google, dar dau rar click. Îmbunătățește titlurile/meta-descrierile pe paginile din Top 10.",
+                })
+
+        return {
+            "total_ga4_sessions": total_sessions,
+            "qualified_human_sessions": qualified_sessions,
+            "organic_search_sessions": organic_search_sessions,
+            "organic_social_sessions": organic_social_sessions,
+            "direct_unassigned_sessions": direct_unassigned,
+            "direct_unassigned_pct": direct_pct,
+            "suspected_bot_sessions": suspected_bot_sessions,
+            "bot_alert": bot_alert,
+            "bot_summary_ro": bot_summary_ro,
+            "eu_priority_sessions": eu_sessions,
+            "eu_breakdown": eu_breakdown,
+            "top10_queries_count": len(top10_queries),
+            "top10_queries": top10_queries,
+            "opportunity_queries_count": len(opp_queries),
+            "alerts": alerts,
+        }
+
     # ── Combined Report & AI Prompt Context ───────────────────────────────────
 
     async def get_combined_report(self, days: int = 28, force_refresh: bool = False) -> Dict[str, Any]:
@@ -613,6 +732,7 @@ class GoogleTrafficService:
         cfg = self.get_config_status()
         gsc = await self.fetch_search_console_report(days=days)
         ga4 = await self.fetch_ga4_report(days=days)
+        quality = self.analyze_traffic_quality(gsc, ga4)
 
         report: Dict[str, Any] = {
             "configured": bool(cfg["gsc_configured"] or cfg["ga4_configured"]),
@@ -623,6 +743,7 @@ class GoogleTrafficService:
             "config": cfg,
             "search_console": gsc,
             "ga4": ga4,
+            "traffic_quality": quality,
             "setup_guide_ro": build_setup_guide_ro(
                 brand_domain=self.brand_domain,
                 service_account_email=cfg.get("service_account_email"),
@@ -699,5 +820,14 @@ class GoogleTrafficService:
                     "- Top visitor countries (GA4): "
                     + ", ".join(f"{c['country']} ({c['sessions']} sessions)" for c in countries[:5])
                 )
+
+        tq = report.get("traffic_quality")
+        if isinstance(tq, dict):
+            lines.append(
+                f"- Traffic Quality Filter: {tq.get('qualified_human_sessions', 0)} qualified sessions "
+                f"(Organic Search: {tq.get('organic_search_sessions', 0)}), "
+                f"Direct/Unassigned: {tq.get('direct_unassigned_pct', 0)}% "
+                f"({'BOT INFLATION DETECTED' if tq.get('bot_alert') else 'normal'})"
+            )
 
         return "\n".join(lines) if len(lines) > 1 else ""

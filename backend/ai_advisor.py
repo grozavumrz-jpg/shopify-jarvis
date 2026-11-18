@@ -207,6 +207,7 @@ def validate_recovery_copy(copy: Dict[str, str], url: str, code: Optional[str]) 
 class AIAdvisor:
     def __init__(self):
         self.api_key = GEMINI_API_KEY
+        self.last_gemini_error: Optional[str] = None
 
     def _get_api_key(self) -> str:
         return (os.getenv("GEMINI_API_KEY") or self.api_key or "").strip()
@@ -304,10 +305,12 @@ class AIAdvisor:
         """
         key = self._get_api_key()
         if len(key) < 10:
+            self.last_gemini_error = "GEMINI_API_KEY not configured"
             raise GeminiUnavailable("GEMINI_API_KEY not configured")
         headers = {"x-goog-api-key": key, "Content-Type": "application/json"}
         last_error = ""
         enable_search = bool(use_web_search and not json_mode)
+        req_timeout = 30.0 if enable_search else GEMINI_TIMEOUT
         for model in get_gemini_models():
             gen_cfg: Dict[str, Any] = {"temperature": temperature, "maxOutputTokens": max_tokens}
             if json_mode:
@@ -318,12 +321,12 @@ class AIAdvisor:
                 gen_cfg["maxOutputTokens"] = max(max_tokens, 4096)
             payload: Dict[str, Any] = {"contents": [{"role": "user", "parts": [{"text": prompt}]}], "generationConfig": gen_cfg}
             if enable_search:
-                payload["tools"] = [{"google_search": {}}]
+                payload["tools"] = [{"googleSearch": {}}]
             url = f"{GEMINI_BASE_URL}/models/{model}:generateContent"
-            retried_without_tools = False
-            for attempt in range(2):
+            tool_variant_idx = 0  # 0: googleSearch, 1: google_search, 2: no tools
+            for attempt in range(3):
                 try:
-                    async with httpx.AsyncClient(timeout=GEMINI_TIMEOUT) as client:
+                    async with httpx.AsyncClient(timeout=req_timeout) as client:
                         res = await client.post(url, json=payload, headers=headers)
                 except httpx.HTTPError as e:
                     last_error = f"{model}: {type(e).__name__}"
@@ -336,6 +339,7 @@ class AIAdvisor:
                         break
                     text = self._extract_gemini_text(data)
                     if text:
+                        self.last_gemini_error = None
                         if isinstance(grounding_out, dict):
                             meta = self._extract_grounding_metadata(data)
                             grounding_out.clear()
@@ -343,12 +347,17 @@ class AIAdvisor:
                         return text
                     last_error = f"{model}: empty response"
                     break
-                if res.status_code == 400 and "tools" in payload and not retried_without_tools:
-                    # Graceful fallback if a specific model rejects google_search tool
-                    payload = {k: v for k, v in payload.items() if k != "tools"}
-                    retried_without_tools = True
-                    continue
+                if res.status_code == 400 and "tools" in payload:
+                    if tool_variant_idx == 0:
+                        payload["tools"] = [{"google_search": {}}]
+                        tool_variant_idx = 1
+                        continue
+                    elif tool_variant_idx == 1:
+                        payload = {k: v for k, v in payload.items() if k != "tools"}
+                        tool_variant_idx = 2
+                        continue
                 if res.status_code in (401, 403):
+                    self.last_gemini_error = f"Gemini rejected API key ({res.status_code})"
                     raise GeminiUnavailable(f"Gemini rejected the API key ({res.status_code})")
                 if res.status_code in (429, 500, 503) and attempt == 0:
                     last_error = f"{model} ({res.status_code})"
@@ -356,6 +365,7 @@ class AIAdvisor:
                     continue
                 last_error = f"{model} ({res.status_code})"
                 break
+        self.last_gemini_error = last_error or "unknown"
         raise GeminiUnavailable(f"Gemini unavailable ({last_error})")
 
     @staticmethod
@@ -926,7 +936,7 @@ STORE DATA:
 
 RULES: Use only store numbers that appear in STORE DATA or GOOGLE TRAFFIC & SEARCH DATA (earlier Jarvis messages may contain outdated or wrong numbers — ignore them). Present ideas as ideas, not as results. When STORE DATA shows 'Shopify connection status: CONNECTED', the store IS connected and active — never claim you lack access to Shopify data or that Shopify is disconnected.
 No made-up store statistics, reviews, ratings, delivery times or return policies.
-Reply in {LANG_NAMES[eff_lang]}, concise and structured (bullets, concrete steps, copy-ready texts when useful).
+Reply in {LANG_NAMES[eff_lang]}, concise, clear and easy to read (use simple paragraphs and short bullet points with "•", never raw markdown hash headers like "###").
 
 CONVERSATION:
 {history_str}Owner: {owner_msg[:4000]}
@@ -1002,6 +1012,43 @@ Jarvis:"""
 
         def has(*keys):
             return any(k in msg_l for k in keys)
+
+        # 0. Explicit /web or market/trends/competitor query when AI model is offline (NEVER hijack into /boost)
+        if (msg_l.startswith("/web") or msg_l.startswith("/search")
+                or has("trend", "tendin", "concuren", "competit", "streetwear")):
+            q_seed = re.sub(r"^/?(web|search)\s*", "", msg_l).strip()
+            suggest_query = "heavyweight hoodie streetwear" if (not q_seed or len(q_seed) > 60) else q_seed
+            sug = await self.fetch_google_suggest(suggest_query, "en")
+            sug_list = sug.get("results") or []
+            sug_block = (
+                "\n\nSugestii reale din Google Autocomplete acum:\n"
+                + "\n".join(f"• {s}" for s in sug_list[:6])
+                if sug_list else ""
+            )
+            reason = self.last_gemini_error or "GEMINI_API_KEY nu este activă"
+            return _pick({
+                "ro": (
+                    f"Căutare Web Live (mod de rezervă)\n"
+                    f"Căutarea web completă cu Gemini Google Search necesită o cheie GEMINI_API_KEY validă în Render → Environment (status curent: {reason}).\n\n"
+                    f"Ce poți face imediat:\n"
+                    f"• Adaugă sau verifică GEMINI_API_KEY în Render → shopify-jarvis → Environment și dă Save.\n"
+                    f"• Deschide tabul Radar → Studio Campanii & Concurență pentru analiza catalogului tău și generarea de campanii din căutările reale Google Search Console."
+                    f"{sug_block}"
+                ),
+                "en": (
+                    f"Live Web Search (fallback mode)\n"
+                    f"Full Gemini Google Search grounding requires a valid GEMINI_API_KEY in Render → Environment (current status: {reason}).\n\n"
+                    f"Next steps:\n"
+                    f"• Set or verify GEMINI_API_KEY in Render → shopify-jarvis → Environment and save.\n"
+                    f"• Open Radar → Campaign & Competitor Studio for real catalog positioning and GSC-driven campaign kits."
+                    f"{sug_block}"
+                ),
+                "es": (
+                    f"Búsqueda Web en Vivo (modo de reserva)\n"
+                    f"La búsqueda con Gemini Google Search requiere una clave GEMINI_API_KEY válida en Render → Environment (estado actual: {reason})."
+                    f"{sug_block}"
+                ),
+            }, lang)
 
         # 1. No sales / how to sell
         if has("de ce nu am vanzari", "de ce nu am vânzări", "fara vanzari", "fără vânzări", "nu vând", "nu vand",

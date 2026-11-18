@@ -92,7 +92,7 @@ class TestGeminiWebSearchGrounding(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("450-500 GSM", text)
         self.assertEqual(len(seen_payloads), 1)
-        self.assertEqual(seen_payloads[0].get("tools"), [{"google_search": {}}])
+        self.assertEqual(seen_payloads[0].get("tools"), [{"googleSearch": {}}])
         self.assertTrue(grounding_out["web_grounded"])
         self.assertEqual(grounding_out["search_queries"], ["streetwear trends Europe 2026"])
         self.assertEqual(len(grounding_out["sources"]), 2)
@@ -120,9 +120,26 @@ class TestGeminiWebSearchGrounding(unittest.IsolatedAsyncioTestCase):
             text = await advisor._call_gemini("Trenduri streetwear", use_web_search=True)
 
         self.assertIn("fallback automat", text)
-        self.assertEqual(len(seen_payloads), 2)
-        self.assertIn("tools", seen_payloads[0])
-        self.assertNotIn("tools", seen_payloads[1])
+        self.assertEqual(len(seen_payloads), 3)
+        self.assertEqual(seen_payloads[0].get("tools"), [{"googleSearch": {}}])
+        self.assertEqual(seen_payloads[1].get("tools"), [{"google_search": {}}])
+        self.assertNotIn("tools", seen_payloads[2])
+
+    async def test_web_offline_fallback_never_hijacks_into_boost(self):
+        advisor = ai_advisor.AIAdvisor()
+        snap = {"connected": True, "shop_name": "Grozavu", "orders_30d": 2, "revenue_30d": 167.9, "currency": "EUR"}
+        with patch.dict(os.environ, {}, clear=True), \
+             patch.object(advisor, "fetch_google_suggest", return_value={"results": ["heavyweight boxy hoodie"], "source": "google_suggest"}):
+            reply = await advisor.chat(
+                "Grozavu",
+                snap,
+                [],
+                "/web Care sunt trendurile actuale streetwear premium și prețurile concurenței în Europa acum?",
+                lang="ro",
+            )
+        self.assertNotIn("/boost", reply)
+        self.assertIn("GEMINI_API_KEY", reply)
+        self.assertIn("heavyweight boxy hoodie", reply)
 
     async def test_chat_detailed_appends_live_sources_and_injects_google_traffic(self):
         captured_prompts = []
@@ -312,8 +329,111 @@ class TestGoogleAnalyticsEndpointsAuth(unittest.TestCase):
             self.assertEqual(h.status_code, 200)
             hb = h.json()
             self.assertTrue(hb.get("web_search_grounding_enabled"))
+            self.assertIn("gemini_configured", hb)
             self.assertIn("google_search_console_configured", hb)
             self.assertIn("google_analytics_configured", hb)
+
+            # Upgrade 3 endpoints must also enforce auth
+            r_cr = client.get("/api/growth/competitor-radar")
+            r_cs = client.post("/api/growth/campaign-studio", json={"keyword": "heavyweight hoodie"})
+            self.assertEqual(r_cr.status_code, 401)
+            self.assertEqual(r_cs.status_code, 401)
+
+
+class TestUpgrades1And3(unittest.IsolatedAsyncioTestCase):
+    async def test_upgrade1_traffic_quality_bot_filter_and_watchdog_alert(self):
+        import store_watchdog as sw
+
+        gsc = {
+            "connected": True,
+            "summary": {"clicks": 173, "impressions": 16823, "ctr": 1.03, "avg_position": 13.8},
+            "top_queries": [{"query": "grozavu", "clicks": 23, "impressions": 72, "ctr": 31.94, "position": 2.3}],
+            "opportunity_queries": [{"query": "short de pernera ancha para mujer", "clicks": 5, "impressions": 36, "ctr": 13.89, "position": 9.9}],
+        }
+        ga4 = {
+            "connected": True,
+            "summary": {"sessions": 11382, "total_users": 11257, "engagement_rate": 27.6},
+            "channels": [
+                {"channel": "Direct", "sessions": 8584, "users": 8586},
+                {"channel": "Unassigned", "sessions": 2306, "users": 2295},
+                {"channel": "Organic Search", "sessions": 199, "users": 130},
+            ],
+            "countries": [
+                {"country": "United States", "sessions": 3511, "users": 3387},
+                {"country": "Spain", "sessions": 140, "users": 120},
+                {"country": "Romania", "sessions": 65, "users": 55},
+            ],
+        }
+        tq = gas.GoogleTrafficService.analyze_traffic_quality(gsc, ga4)
+        self.assertTrue(tq["bot_alert"])
+        self.assertEqual(tq["qualified_human_sessions"], 199)
+        self.assertEqual(tq["eu_priority_sessions"], 205)
+        self.assertGreater(tq["direct_unassigned_pct"], 90.0)
+
+        agent = sw.StoreWatchdogAgent(brand_domain="maisongrozavu.com", brand_name="Grozavu")
+        report = await agent.run_deep_scan(
+            shop="grozavushop.myshopify.com",
+            products=[],
+            check_storefront=False,
+            check_dns=False,
+            auto_fix_discounts=False,
+            google_traffic_report={"connected": True, "search_console": gsc, "ga4": ga4, "traffic_quality": tq},
+        )
+        warn_codes = {w["code"] for w in report["warnings"]}
+        self.assertIn("ga4_bot_traffic_inflation", warn_codes)
+        self.assertIn("gsc_low_ctr", warn_codes)
+        self.assertTrue(report["traffic_summary"]["ga4_bot_alert"])
+
+    async def test_upgrade3_competitor_radar_and_campaign_studio(self):
+        import growth_studio as gs
+
+        prods = [
+            {
+                "id": "101",
+                "title": "Grozavu Wide Leg Streetwear Shorts",
+                "handle": "grozavu-wide-leg-shorts",
+                "product_type": "Shorts",
+                "status": "active",
+                "variants": [{"price": "65.00"}],
+            },
+            {
+                "id": "102",
+                "title": "Grozavu Boxy Heavyweight Hoodie",
+                "handle": "grozavu-boxy-hoodie",
+                "product_type": "Hoodie",
+                "status": "active",
+                "variants": [{"price": "115.00"}],
+            },
+        ]
+        gsc = {
+            "connected": True,
+            "top_queries": [{"query": "grozavu", "clicks": 23, "impressions": 72, "ctr": 31.9, "position": 2.3}],
+            "opportunity_queries": [{"query": "shorts de pernera ancha para mujeres", "clicks": 6, "impressions": 51, "ctr": 11.7, "position": 12.0}],
+        }
+        radar = gs.build_competitor_radar(products=prods, gsc_report=gsc, currency="EUR")
+        self.assertTrue(radar["connected_catalog"])
+        self.assertTrue(radar["gsc_connected"])
+        hoodie_cat = next(c for c in radar["categories"] if c["key"] == "hoodies")
+        self.assertEqual(hoodie_cat["store_avg_price"], 115.0)
+        self.assertEqual(radar["campaign_keywords"][0]["keyword"], "shorts de pernera ancha para mujeres")
+
+        kit = await gs.generate_campaign_studio(
+            keyword="shorts de pernera ancha para mujeres",
+            products=prods,
+            gsc_report=gsc,
+            ai_advisor=None,
+            currency="EUR",
+        )
+        self.assertEqual(kit["matched_products"][0]["title"], "Grozavu Wide Leg Streetwear Shorts")
+        self.assertEqual(kit["cta_url"], "https://maisongrozavu.com/products/grozavu-wide-leg-shorts")
+        self.assertEqual(kit["gsc_metrics"]["position"], 12.0)
+        for h in kit["google_ads_pack"]["headlines"]:
+            self.assertLessEqual(len(h), 30)
+        for d in kit["google_ads_pack"]["descriptions"]:
+            self.assertLessEqual(len(d), 90)
+        serialized = json.dumps(kit).lower()
+        for forbidden in ("unisex", "atelier", "bucharest", "made in spain"):
+            self.assertNotIn(forbidden, serialized)
 
 
 if __name__ == "__main__":
