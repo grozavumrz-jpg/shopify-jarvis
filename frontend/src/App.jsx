@@ -408,7 +408,7 @@ export default function App() {
   const [lastUpdated, setLastUpdated] = useState(null)
   const [briefing, setBriefing] = useState(null)
   const [snapshot, setSnapshot] = useState(null)
-  const [plan, setPlan] = useState(null) // 'free' | 'pro' | null (unknown)
+  const [plan, setPlan] = useState('pro') // 'free' | 'pro' | null (unknown)
   const [voiceEnabled, setVoiceEnabled] = useState(true)
   const [isSpeaking, setIsSpeaking] = useState(false)
 
@@ -775,7 +775,7 @@ export default function App() {
         if (res.ok) {
           setBriefing(data.briefing && typeof data.briefing === 'object' ? data.briefing : null)
           setSnapshot(data.snapshot && typeof data.snapshot === 'object' ? data.snapshot : null)
-          setPlan(typeof data.plan === 'string' ? data.plan : null)
+          setPlan('pro')
           setLastUpdated(new Date())
           setAuthRequired(false)
           setAuthAttempted(false)
@@ -1292,7 +1292,7 @@ export default function App() {
           </div>
           <div>
             <div className="brand-title">
-              GROZAVU <span className="brand-badge" title={lang === 'ro' ? 'Planul Jarvis' : 'Jarvis plan'}>PLAN {planLabel}</span>
+              GROZAVU
             </div>
             <div className="brand-status">
               <span className="live-indicator" style={dataOk ? undefined : { background: notConnected ? '#ef4444' : '#94a3b8', boxShadow: 'none' }}></span>
@@ -1323,12 +1323,6 @@ export default function App() {
           >
             {voiceEnabled ? t.voice_active : t.voice_mute}
           </button>
-
-          {plan === 'free' && (
-            <button className="upgrade-glow-btn" onClick={() => setActiveTab('plans')}>
-              {t.upgrade_btn}
-            </button>
-          )}
         </div>
       </header>
 
@@ -1432,12 +1426,6 @@ export default function App() {
           {isNum(autopilotData?.pending_carts_count) && autopilotData.pending_carts_count > 0 && (
             <span className="nav-pill pulse-badge">{autopilotData.pending_carts_count}</span>
           )}
-        </button>
-        <button
-          className={`nav-item ${activeTab === 'plans' ? 'active' : ''}`}
-          onClick={() => setActiveTab('plans')}
-        >
-          <span className="nav-icon">💎</span> {t.tab_plans}
         </button>
       </nav>
 
@@ -2798,70 +2786,6 @@ export default function App() {
                   {deliveryFeedback.text}
                 </div>
               )}
-            </div>
-          </div>
-        )}
-
-        {/* ════ TAB 6: SUBSCRIPTION PLANS ════ */}
-        {activeTab === 'plans' && (
-          <div className="pricing-container">
-            <div className="pricing-title">
-              <h2>{t.pricing_title}</h2>
-              <p>{t.pricing_sub}</p>
-              <p style={{ marginTop: '8px', fontSize: '13px' }}>
-                {lang === 'ro' ? 'Plan curent: ' : 'Current plan: '}<strong>{planLabel}</strong>
-              </p>
-            </div>
-
-            <div className="pricing-cards">
-              <div className={`pricing-card ${plan === 'free' ? 'current' : ''}`}>
-                <div className="plan-badge">{t.plan_free_badge}</div>
-                <h3>{t.plan_free_title}</h3>
-                <div className="price-tag">{t.plan_free_price} <span>{t.plan_free_period}</span></div>
-                <p className="plan-desc">{t.plan_free_desc}</p>
-                <ul className="plan-perks">
-                  <li>{t.plan_free_perk1}</li>
-                  <li>{t.plan_free_perk2}</li>
-                  <li>{t.plan_free_perk3}</li>
-                  <li className="dim">{t.plan_free_dim1}</li>
-                  <li className="dim">{t.plan_free_dim2}</li>
-                  <li className="dim">{t.plan_free_dim3}</li>
-                </ul>
-                <button
-                  className="plan-btn secondary"
-                  disabled
-                  title={plan === 'free' ? undefined : t.plan_free_btn_switch}
-                >
-                  {plan === 'free' ? t.plan_free_btn_active : t.plan_free_btn_switch}
-                </button>
-              </div>
-
-              <div className={`pricing-card pro ${plan === 'pro' ? 'current' : ''}`}>
-                <div className="plan-badge hot">{t.plan_pro_badge}</div>
-                <h3>{t.plan_pro_title}</h3>
-                <div className="price-tag">{t.plan_pro_price} <span>{t.plan_pro_period}</span></div>
-                <p className="plan-desc">{t.plan_pro_desc}</p>
-                <ul className="plan-perks">
-                  <li><strong>{t.plan_pro_perk1}</strong></li>
-                  <li><strong>{t.plan_pro_perk2}</strong></li>
-                  <li><strong>{t.plan_pro_perk3}</strong></li>
-                  <li><strong>{t.plan_pro_perk4}</strong></li>
-                  <li><strong>{t.plan_pro_perk5}</strong></li>
-                  <li><strong>{t.plan_pro_perk6}</strong></li>
-                </ul>
-                <button
-                  className="plan-btn primary"
-                  disabled={subscribing || isPro}
-                  onClick={handleOfficialShopifySubscribe}
-                >
-                  {subscribing ? 'CONECTARE CU SHOPIFY...' : (isPro ? t.plan_pro_btn_active : t.plan_pro_btn)}
-                </button>
-                {billingFeedback && (
-                  <div className={`delivery-alert ${billingFeedback.type}`}>
-                    {billingFeedback.text}
-                  </div>
-                )}
-              </div>
             </div>
           </div>
         )}

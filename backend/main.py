@@ -209,6 +209,8 @@ async def health():
     return {
         "status": "ok",
         "app": "Jarvis for Shopify",
+        # Render supplies this at runtime; null locally or on non-Git deployments.
+        "deploy_commit": os.getenv("RENDER_GIT_COMMIT") or None,
         "db": "sqlite" if getattr(db, "USING_SQLITE", False) else "postgres",
         "autopilot_running": daemon_running(),
         "shopify_shop": default_shop(),
@@ -263,6 +265,24 @@ async def root(request: Request):
         api_key = os.getenv("SHOPIFY_API_KEY", "").strip()
         if api_key and re.fullmatch(r"[A-Za-z0-9_-]+", api_key):
             content = re.sub(r'(<meta name="shopify-api-key" content=")[^"]*(")', rf"\g<1>{api_key}\g<2>", content)
+        if request.client and request.client.host in ("127.0.0.1", "::1", "localhost") and request.url.hostname in ("127.0.0.1", "localhost", "::1"):
+            admin_key = os.getenv("JARVIS_ADMIN_KEY", "").strip()
+            if admin_key:
+                default_s = default_shop()
+                inject = (
+                    f'<script>try{{'
+                    f'localStorage.setItem("jarvis_admin_key", {json.dumps(admin_key)});'
+                    f'var _u=new URL(location.href);'
+                    f'if(!_u.searchParams.get("shop")){{_u.searchParams.set("shop",{json.dumps(default_s)});history.replaceState(null,"",_u.toString());}}'
+                    f'}}catch(e){{}}</script>'
+                )
+                if '<script type="module"' in content:
+                    content = content.replace('<script type="module"', inject + '<script type="module"', 1)
+                elif "</head>" in content:
+                    content = content.replace("</head>", inject + "</head>", 1)
+                else:
+                    content = inject + content
+                return HTMLResponse(content, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
         return HTMLResponse(content)
     return HTMLResponse("<h1>Jarvis for Shopify — backend running ✅</h1>")
 

@@ -326,6 +326,39 @@ class TestPostDeliveryServiceDispatchChannels(unittest.TestCase):
             count = self.service.sync_fulfilled_orders("luxury.myshopify.com")
             self.assertEqual(count, 0)
 
+    def test_sync_skips_in_transit_shopify_fulfillments_and_schedules_delivered_plus_2_days(self):
+        """Orders in transit / pre-delivery must NEVER be queued; delivered orders wait +2 days after delivery."""
+        now = datetime.now(timezone.utc)
+        for pending_status in ("in_transit", "confirmed", "ready_for_pickup", None):
+            order_in_transit = make_sample_order(order_id=f"ord_transit_{pending_status}", fulfilled_at_dt=now - timedelta(days=6))
+            order_in_transit["fulfillments"][0]["shipment_status"] = pending_status
+            with patch.object(pds, "ShopifyClient") as mock_client_cls:
+                mock_client = MagicMock()
+                mock_client.get_recent_orders = AsyncMock(return_value=[order_in_transit])
+                mock_client_cls.return_value = mock_client
+                with patch.object(pds.db, "get_shop", return_value={"shop": "luxury.myshopify.com", "access_token": "shpat_123"}):
+                    with patch.object(pds.db, "enqueue_post_delivery_automation") as mock_enqueue:
+                        count = self.service.sync_fulfilled_orders("luxury.myshopify.com")
+                        self.assertEqual(count, 0, f"Must skip shipment_status={pending_status!r}")
+                        self.assertFalse(mock_enqueue.called)
+
+        ship_dt = now - timedelta(days=7)
+        delivery_dt = now - timedelta(days=1)
+        order_delivered = make_sample_order(order_id="ord_delivered_1", fulfilled_at_dt=ship_dt)
+        order_delivered["fulfillments"][0]["shipment_status"] = "delivered"
+        order_delivered["fulfillments"][0]["updated_at"] = delivery_dt.isoformat()
+        with patch.object(pds, "ShopifyClient") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.get_recent_orders = AsyncMock(return_value=[order_delivered])
+            mock_client_cls.return_value = mock_client
+            with patch.object(pds.db, "get_shop", return_value={"shop": "luxury.myshopify.com", "access_token": "shpat_123"}):
+                with patch.object(pds.db, "enqueue_post_delivery_automation", return_value=True) as mock_enqueue:
+                    count = self.service.sync_fulfilled_orders("luxury.myshopify.com")
+                    self.assertEqual(count, 1)
+                    call_kwargs = mock_enqueue.call_args[1]
+                    self.assertAlmostEqual(call_kwargs["fulfilled_at"].timestamp(), delivery_dt.timestamp(), delta=2)
+                    self.assertAlmostEqual((call_kwargs["scheduled_for"] - delivery_dt).total_seconds(), 2 * 86400, delta=10)
+
 
 if __name__ == "__main__":
     unittest.main()

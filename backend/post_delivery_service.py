@@ -119,6 +119,7 @@ def _run_coroutine(coro):
 
 class PostDeliveryService:
     DEFAULT_DELAY_DAYS = 5
+    DELIVERED_DELAY_DAYS = 2
     VIP_DELAY_DAYS = 5
     DISCOUNT_CODE_MGVIP15 = "MGVIP15"
     VIP_DISCOUNT_CODE = "MGVIP15"
@@ -257,6 +258,24 @@ class PostDeliveryService:
         """Frequency-policy key for the post-delivery thank-you (max 1 per order)."""
         return f"vip:{order_id}"
 
+    @staticmethod
+    def _is_fulfillment_delivered(f: Dict[str, Any]) -> bool:
+        if not isinstance(f, dict) or f.get("status") not in ("success", None):
+            return False
+        if not (f.get("created_at") or f.get("updated_at") or f.get("delivered_at")):
+            return False
+        # Real Shopify API fulfillments always include the 'shipment_status' key.
+        # When present, require carrier confirmation: shipment_status == 'delivered'.
+        if "shipment_status" in f:
+            return str(f.get("shipment_status") or "").strip().lower() == "delivered"
+        return True
+
+    @classmethod
+    def _extract_fulfillment_delivery_dt(cls, f: Dict[str, Any]) -> Optional[datetime]:
+        if "shipment_status" in f and str(f.get("shipment_status") or "").strip().lower() == "delivered":
+            return cls.parse_datetime(f.get("delivered_at") or f.get("updated_at") or f.get("created_at"))
+        return cls.parse_datetime(f.get("created_at") or f.get("updated_at"))
+
     def sync_fulfilled_orders(self, shop: str, days_back: int = 14, delay_days: int = 5) -> int:
         """
         Captures fulfilled orders from Shopify API, parses fulfillments.created_at,
@@ -299,15 +318,27 @@ class PostDeliveryService:
             if not isinstance(fulfillments, list) or len(fulfillments) == 0:
                 continue
 
-            valid_fulfillments = [
-                f for f in fulfillments
-                if isinstance(f, dict) and (f.get("status") in ("success", None)) and (f.get("created_at") or f.get("updated_at"))
-            ]
+            valid_fulfillments = [f for f in fulfillments if self._is_fulfillment_delivered(f)]
             if not valid_fulfillments:
+                if db and order.get("id") is not None and any(
+                    isinstance(f, dict) and "shipment_status" in f
+                    and str(f.get("shipment_status") or "").strip().lower() != "delivered"
+                    for f in fulfillments
+                ):
+                    try:
+                        with db.get_conn() as conn:
+                            with conn.cursor() as cur:
+                                cur.execute(
+                                    "DELETE FROM post_delivery_automations WHERE order_id = %s AND status = 'pending'",
+                                    (str(order.get("id")),),
+                                )
+                            conn.commit()
+                    except Exception:
+                        pass
                 continue
 
-            # 3. Multiple fulfillments: use latest fulfillment date (test_f4_b04)
-            fulfillment_dates = [self.parse_datetime(f.get("created_at") or f.get("updated_at")) for f in valid_fulfillments]
+            # 3. Multiple fulfillments: use latest delivery/fulfillment date (test_f4_b04)
+            fulfillment_dates = [self._extract_fulfillment_delivery_dt(f) for f in valid_fulfillments]
             valid_dates = [d for d in fulfillment_dates if d is not None]
             if not valid_dates:
                 continue
@@ -327,8 +358,13 @@ class PostDeliveryService:
             order_id = str(order.get("id"))
             order_number = str(order.get("order_number") or order.get("name") or order_id).lstrip("#")
 
-            # 6. Scheduled date: fulfilled_at + 5 days
-            scheduled_for = latest_fulfilled_at + timedelta(days=delay_days)
+            # 6. Scheduled date: delivered_at + 2 days (when Shopify confirms delivery), else fulfilled_at + delay_days
+            effective_delay_days = (
+                self.DELIVERED_DELAY_DAYS
+                if delay_days == self.DEFAULT_DELAY_DAYS and any("shipment_status" in f for f in valid_fulfillments)
+                else delay_days
+            )
+            scheduled_for = latest_fulfilled_at + timedelta(days=effective_delay_days)
 
             # 7. Line items summary
             items_summary = [
