@@ -121,11 +121,65 @@ class PostDeliveryService:
     DEFAULT_DELAY_DAYS = 5
     DELIVERED_DELAY_DAYS = 2
     VIP_DELAY_DAYS = 5
+    WINBACK_DELAY_DAYS = 30
+    WINBACK_MAX_DAYS = 90
     DISCOUNT_CODE_MGVIP15 = "MGVIP15"
+    DISCOUNT_CODE_GROZAVU15 = "GROZAVU15"
     VIP_DISCOUNT_CODE = "MGVIP15"
 
     # Max days after scheduled_for a pending thank-you may still go out (then 'expired').
     VIP_MAX_LATE_DAYS = 14
+
+    WINBACK_TEMPLATES: Dict[str, Dict[str, str]] = {
+        "ro": {
+            "greeting": "Salut {customer_name}!",
+            "greeting_generic": "Salut!",
+            "msg": "{greeting} A trecut o lună de când ți-a ajuns comanda {brand} ({purchased_item}). Dacă vrei să-ți completezi ținuta{upsell_clause}, ți-am pregătit codul personal {discount_code} pentru 15% reducere la următoarea comandă pe maisongrozavu.com.",
+            "upsell": " cu {upsell_item}",
+            "subject": "{name_prefix}15% reducere la următoarea ta piesă {brand} ({discount_code})",
+            "item_default": "piesa ta Grozavu",
+        },
+        "es": {
+            "greeting": "¡Hola {customer_name}!",
+            "greeting_generic": "¡Hola!",
+            "msg": "{greeting} Ha pasado un mes desde que recibiste tu pedido de {brand} ({purchased_item}). Si quieres completar tu conjunto{upsell_clause}, tienes un 15% de descuento en tu próximo pedido con el código {discount_code} en maisongrozavu.com.",
+            "upsell": " con {upsell_item}",
+            "subject": "{name_prefix}15% de descuento en tu próxima prenda {brand} ({discount_code})",
+            "item_default": "tu prenda Grozavu",
+        },
+        "en": {
+            "greeting": "Hi {customer_name}!",
+            "greeting_generic": "Hi!",
+            "msg": "{greeting} It's been a month since your {brand} order ({purchased_item}) arrived. Whenever you're ready for your next piece{upsell_clause}, enjoy 15% off with code {discount_code} at maisongrozavu.com.",
+            "upsell": " — such as {upsell_item} —",
+            "subject": "{name_prefix}15% off your next {brand} piece ({discount_code})",
+            "item_default": "your Grozavu piece",
+        },
+        "it": {
+            "greeting": "Ciao {customer_name}!",
+            "greeting_generic": "Ciao!",
+            "msg": "{greeting} È passato un mese dal tuo ordine su {brand} ({purchased_item}). Per il tuo prossimo capo{upsell_clause}, usa il codice {discount_code} per il 15% di sconto su maisongrozavu.com.",
+            "upsell": " (come {upsell_item})",
+            "subject": "{name_prefix}15% di sconto sul tuo prossimo capo {brand} ({discount_code})",
+            "item_default": "il tuo capo Grozavu",
+        },
+        "de": {
+            "greeting": "Hallo {customer_name}!",
+            "greeting_generic": "Hallo!",
+            "msg": "{greeting} Deine {brand}-Bestellung ({purchased_item}) liegt nun einen Monat zurück. Für dein nächstes Teil{upsell_clause} erhältst du 15% Rabatt mit dem Code {discount_code} auf maisongrozavu.com.",
+            "upsell": " (z. B. {upsell_item})",
+            "subject": "{name_prefix}15% Rabatt auf dein nächstes {brand}-Teil ({discount_code})",
+            "item_default": "dein Grozavu-Teil",
+        },
+        "fr": {
+            "greeting": "Bonjour {customer_name} !",
+            "greeting_generic": "Bonjour !",
+            "msg": "{greeting} Cela fait un mois que votre commande {brand} ({purchased_item}) a été livrée. Pour votre prochaine pièce{upsell_clause}, profitez de 15% de réduction avec le code {discount_code} sur maisongrozavu.com.",
+            "upsell": " (comme {upsell_item})",
+            "subject": "{name_prefix}15% de réduction sur votre prochaine pièce {brand} ({discount_code})",
+            "item_default": "votre pièce Grozavu",
+        },
+    }
 
     # Thank-you + code for the NEXT order + separate, optional review request.
     # Never "review for a discount", never "5 stars".
@@ -257,6 +311,128 @@ class PostDeliveryService:
     def sequence_key(order_id: Any) -> str:
         """Frequency-policy key for the post-delivery thank-you (max 1 per order)."""
         return f"vip:{order_id}"
+
+    @staticmethod
+    def winback_sequence_key(order_id: Any) -> str:
+        """Frequency-policy key for the 30-day win-back check-in (max 1 per order)."""
+        return f"winback:{order_id}"
+
+    @classmethod
+    def _winback_template(cls, lang: Optional[str]) -> Tuple[str, Dict[str, str]]:
+        clean_lang = (lang or "en").strip().lower().replace("_", "-").split("-")[0]
+        if clean_lang not in cls.WINBACK_TEMPLATES:
+            clean_lang = "en"
+        return clean_lang, cls.WINBACK_TEMPLATES[clean_lang]
+
+    @classmethod
+    def build_winback_message(
+        cls,
+        customer_name: str,
+        purchased_item: str = "",
+        upsell_item: Optional[str] = None,
+        discount_code: str = "GROZAVU15",
+        lang: str = "en",
+        shop_name: Optional[str] = None,
+    ) -> str:
+        _, tmpl = cls._winback_template(lang)
+        name = (customer_name or "").strip()
+        if name.lower() in ("client", "valued client", "customer", "cliente"):
+            name = ""
+        greeting = tmpl["greeting"].format(customer_name=name) if name else tmpl["greeting_generic"]
+        upsell = (upsell_item or "").strip()
+        upsell_clause = tmpl["upsell"].format(upsell_item=upsell) if upsell else ""
+        return tmpl["msg"].format(
+            greeting=greeting,
+            brand=(shop_name or "").strip() or cls.DEFAULT_BRAND,
+            purchased_item=(purchased_item or "").strip() or tmpl["item_default"],
+            upsell_clause=upsell_clause,
+            discount_code=(discount_code or "").strip() or cls.DISCOUNT_CODE_GROZAVU15,
+        )
+
+    @classmethod
+    def build_winback_subject(
+        cls,
+        customer_name: str,
+        discount_code: str = "GROZAVU15",
+        lang: str = "en",
+        shop_name: Optional[str] = None,
+    ) -> str:
+        _, tmpl = cls._winback_template(lang)
+        name = (customer_name or "").strip()
+        if name.lower() in ("client", "valued client", "customer", "cliente"):
+            name = ""
+        brand = (shop_name or "").strip() or cls.DEFAULT_BRAND
+        subject = tmpl["subject"].format(
+            name_prefix=f"{name}, " if name else "",
+            brand=brand,
+            discount_code=(discount_code or "").strip() or cls.DISCOUNT_CODE_GROZAVU15,
+        )
+        return subject[:1].upper() + subject[1:] if subject else subject
+
+    @staticmethod
+    def pick_complementary_product(
+        purchased_title: str,
+        catalog_products: Optional[List[Dict[str, Any]]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Match a customer's purchased item against the real active catalog to recommend
+        a complementary piece (e.g. hoodie -> wide-leg pants/joggers; pants -> hoodie/crewneck;
+        tee -> hoodie/bag; cap/bag -> hoodie/tee). Never invents products.
+        """
+        if not catalog_products or not isinstance(catalog_products, list):
+            return None
+        p_low = (purchased_title or "").strip().lower()
+        # Determine complementary keywords in priority order
+        if any(k in p_low for k in ("hoodie", "crewneck", "sweatshirt", "pullover", "half-zip", "quarter-zip", "jacket")):
+            target_keywords = ("pants", "jogger", "shorts", "cap", "hat", "beanie", "tote", "bag")
+        elif any(k in p_low for k in ("pants", "jogger", "shorts", "trousers")):
+            target_keywords = ("hoodie", "crewneck", "sweatshirt", "tee", "t-shirt", "half-zip", "jacket")
+        elif any(k in p_low for k in ("tee", "t-shirt", "tank", "shirt")):
+            target_keywords = ("hoodie", "crewneck", "pants", "jogger", "cap", "bag", "tote")
+        else:
+            target_keywords = ("hoodie", "crewneck", "wide-leg pants", "tee")
+
+        candidates = []
+        for prod in catalog_products:
+            if not isinstance(prod, dict):
+                continue
+            if str(prod.get("status") or "active").lower() != "active":
+                continue
+            title = str(prod.get("title") or "").strip()
+            if not title or title.lower() == p_low or (p_low and p_low in title.lower()):
+                continue
+            variants = [v for v in (prod.get("variants") or []) if isinstance(v, dict)]
+            price = None
+            for v in variants:
+                try:
+                    val = float(v.get("price") or 0)
+                    if val > 0:
+                        price = f"{val:.2f}"
+                        break
+                except (TypeError, ValueError):
+                    continue
+            if not price:
+                continue
+            images = prod.get("images") or []
+            img_url = None
+            if images and isinstance(images[0], dict):
+                img_url = images[0].get("src")
+            elif isinstance(prod.get("image"), dict):
+                img_url = prod["image"].get("src")
+            candidates.append({
+                "title": title,
+                "price": price,
+                "handle": prod.get("handle") or "",
+                "image_url": img_url,
+            })
+
+        if not candidates:
+            return None
+        for kw in target_keywords:
+            for c in candidates:
+                if kw in c["title"].lower():
+                    return c
+        return candidates[0]
 
     @staticmethod
     def _is_fulfillment_delivered(f: Dict[str, Any]) -> bool:
@@ -427,6 +603,7 @@ class PostDeliveryService:
         settings: Optional[Dict] = None,
         now_dt: Optional[datetime] = None,
         shop_name: Optional[str] = None,
+        catalog_products: Optional[List[Dict[str, Any]]] = None,
     ) -> int:
         """
         Sends due post-delivery thank-you messages (MGVIP15 for the next order) per channel,
@@ -442,7 +619,7 @@ class PostDeliveryService:
             print(f"[PostDelivery] VIP processing already running; skipping concurrent run for {shop}")
             return 0
         try:
-            return self._process_due_vip_automations_locked(shop, settings, now_dt, shop_name)
+            return self._process_due_vip_automations_locked(shop, settings, now_dt, shop_name, catalog_products)
         finally:
             _VIP_PROCESS_LOCK.release()
 
@@ -452,6 +629,7 @@ class PostDeliveryService:
         settings: Optional[Dict],
         now_dt: Optional[datetime],
         shop_name: Optional[str],
+        catalog_products: Optional[List[Dict[str, Any]]] = None,
     ) -> int:
         now = self.parse_datetime(now_dt) or datetime.now(timezone.utc)
         resolved_settings = dict(settings or {})
@@ -477,7 +655,9 @@ class PostDeliveryService:
         dispatched_count = 0
         for record in due_records:
             try:
-                dispatched_count += self._process_vip_record(shop, record, now, resolved_settings, brand)
+                dispatched_count += self._process_vip_record(
+                    shop, record, now, resolved_settings, brand, catalog_products=catalog_products
+                )
             except Exception as rec_err:
                 # One malformed record must never abort the batch (it stays pending).
                 print(f"[VIP Record Error {record.get('order_id') if isinstance(record, dict) else '?'}]: {rec_err}")
@@ -485,7 +665,8 @@ class PostDeliveryService:
         return dispatched_count
 
     def _process_vip_record(self, shop: str, record: Dict[str, Any], now: datetime,
-                            resolved_settings: Dict[str, Any], brand: str) -> int:
+                            resolved_settings: Dict[str, Any], brand: str,
+                            catalog_products: Optional[List[Dict[str, Any]]] = None) -> int:
         """Compliance-gated send of one due thank-you. Returns 1 if delivered on >= 1 channel."""
         order_id = record["order_id"]
         order_number = record.get("order_number") or order_id
@@ -515,12 +696,15 @@ class PostDeliveryService:
         first_item = ""
         if items_summary and isinstance(items_summary[0], dict):
             first_item = str(items_summary[0].get("title") or "").strip()
+        comp = self.pick_complementary_product(first_item, catalog_products)
+        upsell_title = comp.get("title") if isinstance(comp, dict) else None
         geo = detect_customer_language_and_country(c_name, c_email or "", c_phone or "", "", "")
         lang = (geo or {}).get("lang", "en") or "en"
 
         vip_message = self.build_vip_message(
             customer_name=c_name,
             purchased_item=first_item,
+            upsell_item=upsell_title,
             discount_code=discount_code,
             lang=lang,
             shop_name=brand,
@@ -688,3 +872,170 @@ class PostDeliveryService:
             )
         except Exception as log_err:
             print(f"[VIP Autopilot Log Error {order_id}]: {log_err}")
+
+    def process_winback_automations(
+        self,
+        shop: str,
+        settings: Optional[Dict] = None,
+        now_dt: Optional[datetime] = None,
+        shop_name: Optional[str] = None,
+        catalog_products: Optional[List[Dict[str, Any]]] = None,
+        recent_customer_emails: Optional[set] = None,
+    ) -> int:
+        """
+        Autonomous 30-day Win-Back sequence:
+        Finds customers whose post-delivery thank-you was sent 30–90 days ago, who have not ordered
+        again in the last 30 days, and who have explicit marketing consent.
+        Sends at most 1 win-back check-in per order (sequence_key 'winback:<order_id>') with
+        discount code GROZAVU15 and a real complementary product suggestion from the active catalog.
+        """
+        if not db or not hasattr(db, "get_due_winback_candidates"):
+            return 0
+        now = self.parse_datetime(now_dt) or datetime.now(timezone.utc)
+        resolved_settings = dict(settings or {})
+        if not resolved_settings:
+            try:
+                resolved_settings = db.get_shop_settings(shop) or {}
+            except Exception:
+                resolved_settings = {}
+        resolved_settings.setdefault("shop", shop)
+
+        try:
+            candidates = db.get_due_winback_candidates(
+                shop, now_dt=now, min_days=self.WINBACK_DELAY_DAYS, max_days=self.WINBACK_MAX_DAYS
+            ) or []
+        except Exception as e:
+            print(f"[WinBack Fetch Error {shop}]: {e}")
+            return 0
+
+        if not candidates:
+            return 0
+
+        recent_emails = {str(em).strip().lower() for em in (recent_customer_emails or set()) if em}
+        brand = self._resolve_brand(shop, resolved_settings, shop_name)
+        discount_code = self.DISCOUNT_CODE_GROZAVU15
+        sent_count = 0
+
+        for record in candidates:
+            if not isinstance(record, dict):
+                continue
+            order_id = str(record.get("order_id") or "").strip()
+            if not order_id:
+                continue
+            c_email = (record.get("customer_email") or "").strip() or None
+            c_phone = (record.get("customer_phone") or "").strip() or None
+            if c_email and c_email.lower() in recent_emails:
+                continue  # customer already placed a new order recently
+            c_name = (record.get("customer_name") or "").strip()
+            if c_name.lower() in ("client", "valued client", "customer", "cliente"):
+                c_name = ""
+
+            seq_key = self.winback_sequence_key(order_id)
+            email_ok, _ = (False, "no email")
+            if c_email and "@" in c_email:
+                email_ok, _ = can_dispatch_to_customer(
+                    shop, email=c_email, phone=c_phone, channel="email", now_dt=now,
+                    message_type="winback_30d", sequence_key=seq_key,
+                )
+            wa_ok, _ = (False, "no phone")
+            if c_phone:
+                wa_ok, _ = can_dispatch_to_customer(
+                    shop, email=c_email, phone=c_phone, channel="whatsapp", now_dt=now,
+                    message_type="winback_30d", sequence_key=seq_key,
+                )
+            if not email_ok and not wa_ok:
+                continue
+
+            items_summary = record.get("items_summary") or []
+            if isinstance(items_summary, str):
+                try:
+                    items_summary = json.loads(items_summary)
+                except Exception:
+                    items_summary = []
+            if isinstance(items_summary, dict):
+                items_summary = [items_summary]
+            if not isinstance(items_summary, list):
+                items_summary = []
+            items_summary = [
+                it if isinstance(it, dict) else {"title": str(it)}
+                for it in items_summary if it is not None and (isinstance(it, dict) or str(it).strip())
+            ]
+            first_item = str(items_summary[0].get("title") or "").strip() if items_summary else ""
+            comp = self.pick_complementary_product(first_item, catalog_products)
+            upsell_title = comp.get("title") if isinstance(comp, dict) else None
+            display_items = [
+                {
+                    "title": comp["title"],
+                    "quantity": 1,
+                    "price": comp["price"],
+                    "variant_title": "",
+                    "image_url": comp.get("image_url"),
+                }
+            ] if isinstance(comp, dict) else items_summary
+
+            geo = detect_customer_language_and_country(c_name, c_email or "", c_phone or "", "", "")
+            lang = (geo or {}).get("lang", "en") or "en"
+            msg = self.build_winback_message(
+                customer_name=c_name,
+                purchased_item=first_item,
+                upsell_item=upsell_title,
+                discount_code=discount_code,
+                lang=lang,
+                shop_name=brand,
+            )
+
+            delivered_channels: List[str] = []
+            if email_ok:
+                subj = self.build_winback_subject(c_name, discount_code=discount_code, lang=lang, shop_name=brand)
+                html_body = self.email_dispatcher.build_html_email(
+                    shop_name=brand,
+                    customer_name=c_name,
+                    text_body=msg,
+                    discount_code=discount_code,
+                    line_items=display_items,
+                    lang=lang,
+                    customer_email=c_email,
+                    shop_domain=shop,
+                    email_kind="vip",
+                )
+                try:
+                    m_res = _run_coroutine(self.email_dispatcher.send_email(
+                        to_email=c_email, subject=subj, body_text=msg, body_html=html_body,
+                        settings=resolved_settings, shop_domain=shop,
+                    ))
+                    if self._send_succeeded(m_res):
+                        delivered_channels.append("email")
+                        log_customer_dispatch(shop, c_email, "email", "winback_30d", sequence_key=seq_key)
+                except Exception as err:
+                    print(f"[WinBack Email Error {order_id}]: {err}")
+
+            if wa_ok:
+                try:
+                    w_res = _run_coroutine(self.wa_dispatcher.send_message(
+                        phone=c_phone, message=msg, settings=resolved_settings, customer_name=c_name,
+                        shop_domain=shop, message_type="marketing", lang=lang,
+                    ))
+                    if self._send_succeeded(w_res):
+                        delivered_channels.append("whatsapp")
+                        log_customer_dispatch(shop, c_phone, "whatsapp", "winback_30d", sequence_key=seq_key)
+                except Exception as err:
+                    print(f"[WinBack WhatsApp Error {order_id}]: {err}")
+
+            if delivered_channels:
+                sent_count += 1
+                try:
+                    db.save_autopilot_log(
+                        shop=shop,
+                        action_type="winback_30d",
+                        target_name=c_name,
+                        target_email=c_email or c_phone or "",
+                        subject=f"Win-Back 30d ({discount_code}) via {', '.join(delivered_channels)}",
+                        message=msg,
+                        revenue=0.0,
+                        status="winback_sent_" + "_".join(delivered_channels),
+                        lang=lang,
+                    )
+                except Exception as log_err:
+                    print(f"[WinBack Log Error {order_id}]: {log_err}")
+
+        return sent_count

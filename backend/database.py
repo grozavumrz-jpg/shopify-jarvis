@@ -1338,6 +1338,36 @@ def get_due_post_delivery_automations(
             return [dict(r) for r in rows]
 
 
+def get_due_winback_candidates(
+    shop: str,
+    now_dt: Optional[datetime] = None,
+    min_days: int = 30,
+    max_days: int = 90,
+) -> List[Dict[str, Any]]:
+    """
+    Retrieve completed ('sent') post-delivery records eligible for a 30-day win-back check-in
+    (delivered/sent between min_days and max_days ago).
+    """
+    now = now_dt or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    cutoff_latest = now - timedelta(days=max(1, int(min_days)))
+    cutoff_oldest = now - timedelta(days=max(int(min_days) + 1, int(max_days)))
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT * FROM post_delivery_automations
+                WHERE shop_domain = %s
+                  AND status = 'sent'
+                  AND COALESCE(sent_at, fulfilled_at) <= %s
+                  AND COALESCE(sent_at, fulfilled_at) >= %s
+                ORDER BY COALESCE(sent_at, fulfilled_at) ASC
+            """, (shop, cutoff_latest, cutoff_oldest))
+            rows = cur.fetchall()
+            return [dict(r) for r in rows]
+
+
 def mark_post_delivery_sent(
     order_id: Union[int, str],
     sent_at: Optional[datetime] = None
@@ -1742,8 +1772,8 @@ def normalize_recipient(recipient: Optional[str], channel: Optional[str] = "emai
     return normalize_phone(raw)
 
 
-# Per-sequence maximums by sequence_key prefix ("cart:<checkout_id>", "vip:<order_id>").
-SEQUENCE_LIMITS: Dict[str, int] = {"cart": 3, "vip": 1}
+# Per-sequence maximums by sequence_key prefix ("cart:<checkout_id>", "vip:<order_id>", "winback:<order_id>").
+SEQUENCE_LIMITS: Dict[str, int] = {"cart": 3, "vip": 1, "winback": 1}
 DEFAULT_SEQUENCE_LIMIT = 1
 MAX_MARKETING_PER_30D = 4
 NEW_SEQUENCE_COOLDOWN_HOURS = 72

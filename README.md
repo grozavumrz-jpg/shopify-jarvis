@@ -52,3 +52,8 @@ Vezi `backend/.env.example` și `render.yaml`. Cele mai importante:
 python -m unittest discover -s tests -p "test_*.py"
 ```
 Testele nu fac apeluri reale la rețea și trec pe Python 3.11 (Render) și 3.14 (local).
+
+## Ollama local pentru recomandări
+Pentru o instanță Jarvis rulată pe același calculator cu Ollama, setează `JARVIS_ADVISOR_PROVIDER=ollama`. Conversația și briefing-ul vor folosi modelul local `grozavu-brain:latest`, pe `127.0.0.1:11434`. Cu variabila absentă, funcționarea existentă cu Gemini rămâne implicită. Dacă Ollama nu este disponibil, Jarvis folosește răspunsul de rezervă; nu trimite automat date către un alt furnizor.
+
+Integrarea este numai pentru recomandări și nu adaugă instrumente de modificare a magazinului sau trimitere de mesaje. Nu configura această opțiune pe Render: `127.0.0.1` de acolo este serverul Render, nu calculatorul tău, iar aplicația o dezactivează pe Render. Pentru date Shopify reale în instanța locală este necesară configurarea separată a accesului. Nu pune chei în fișiere urmărite de Git.

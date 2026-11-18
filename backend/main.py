@@ -888,6 +888,85 @@ async def _notify_conversion(shop: str, order: dict) -> None:
         print(f"[Mobile Conv Notify Error {shop}]: {e}")
 
 
+_DISCOUNT_ENSURE_CACHE: Dict[str, tuple] = {}
+DISCOUNT_ENSURE_TTL_SECONDS = 6 * 3600
+SELF_HEAL_STATUS: Dict[str, Any] = {
+    "last_healed_at": None,
+    "actions_taken": [],
+    "discount_codes": {},
+}
+
+
+async def run_self_heal(shop: Optional[str] = None, force_discounts: bool = False) -> Dict[str, Any]:
+    """
+    Autonomous self-healing routine:
+    1. Evicts expired _FAILED_UNTIL retry cooldowns so transient failures recover automatically.
+    2. Re-initializes DB schema if a previous cycle recorded a DB error.
+    3. Re-establishes Shopify connection when token is missing, expired or in error state.
+    4. Verifies/creates brand discount codes (MG10, GROZAVU10, MGVIP15, GROZAVU15, GROZAVU5) when due or requested.
+    """
+    actions: List[str] = []
+    now_ts = time.time()
+
+    # 1. Clear expired checkout retry cooldowns
+    expired_cids = [cid for cid, until_ts in list(_FAILED_UNTIL.items()) if now_ts >= until_ts]
+    for cid in expired_cids:
+        _FAILED_UNTIL.pop(cid, None)
+    if expired_cids:
+        actions.append(f"cleared_{len(expired_cids)}_expired_retry_locks")
+
+    # 2. Heal DB schema if last cycle had a DB error
+    if AUTOPILOT_STATUS.get("last_error") and "DB:" in str(AUTOPILOT_STATUS.get("last_error")):
+        try:
+            db.init_db()
+            actions.append("reinitialized_db_connection")
+        except Exception as db_e:
+            actions.append(f"db_heal_warning:{str(db_e)[:80]}")
+
+    # 3. Heal Shopify connection if needed
+    try:
+        force_conn = bool(SHOPIFY_CONNECTION.get("error"))
+        await ensure_shop_connection(force=force_conn)
+        if force_conn and not SHOPIFY_CONNECTION.get("error"):
+            actions.append("restored_shopify_connection")
+    except Exception:
+        pass
+
+    # 4. Ensure brand discount codes if requested
+    target_shop = normalize_shop(shop) or default_shop()
+    discounts_report = (_DISCOUNT_ENSURE_CACHE.get(target_shop) or (0, None))[1]
+    cached_ts = (_DISCOUNT_ENSURE_CACHE.get(target_shop) or (0, None))[0]
+    if force_discounts and target_shop:
+        try:
+            rec = db.get_shop(target_shop)
+            tok = (rec or {}).get("access_token", "")
+            if has_real_token(tok):
+                client = ShopifyClient(target_shop, tok)
+                ensure_fn = getattr(client, "ensure_brand_discount_codes", None)
+                if callable(ensure_fn):
+                    res = await ensure_fn()
+                    if isinstance(res, dict):
+                        _DISCOUNT_ENSURE_CACHE[target_shop] = (now_ts, res)
+                        discounts_report = res
+                        SELF_HEAL_STATUS["discount_codes"] = res.get("codes", {})
+                        if res.get("created"):
+                            actions.append("created_discounts:" + ",".join(res["created"]))
+        except Exception as disc_e:
+            actions.append(f"discount_check_warning:{str(disc_e)[:80]}")
+    elif cached_ts and (now_ts - cached_ts < DISCOUNT_ENSURE_TTL_SECONDS):
+        pass
+
+    SELF_HEAL_STATUS["last_healed_at"] = datetime.now(timezone.utc).isoformat()
+    SELF_HEAL_STATUS["actions_taken"] = actions[-20:]
+    return {
+        "ok": True,
+        "shop": target_shop,
+        "healed_at": SELF_HEAL_STATUS["last_healed_at"],
+        "actions": actions,
+        "discounts": discounts_report,
+    }
+
+
 async def run_shop_cycle(s: dict, skip_log: Optional[List[dict]] = None) -> Dict[str, Any]:
     """One autopilot pass for one shop. Never raises."""
     result: Dict[str, Any] = {"sent": 0, "items": [], "errors": []}
@@ -899,8 +978,13 @@ async def run_shop_cycle(s: dict, skip_log: Optional[List[dict]] = None) -> Dict
         return result
     client = ShopifyClient(shop, token)
 
+    recent_customer_emails = set()
     try:
         for order in await client.get_recent_orders(days=2):
+            if isinstance(order, dict):
+                em = (order.get("email") or ((order.get("customer") or {}).get("email") if isinstance(order.get("customer"), dict) else "") or "").strip().lower()
+                if em:
+                    recent_customer_emails.add(em)
             if _reconcile(shop, order):
                 await _notify_conversion(shop, order)
     except Exception as e:
@@ -922,15 +1006,29 @@ async def run_shop_cycle(s: dict, skip_log: Optional[List[dict]] = None) -> Dict
         await asyncio.to_thread(post_delivery_service.sync_fulfilled_orders, shop, 14)
     except Exception as e:
         result["errors"].append(f"VIP sync: {e}")
+    settings = {}
     try:
         settings = db.get_shop_settings(shop)
         await asyncio.to_thread(post_delivery_service.process_due_vip_automations, shop, settings)
     except Exception as e:
         result["errors"].append(f"VIP trimitere: {e}")
+
+    try:
+        winback_fn = getattr(post_delivery_service, "process_winback_automations", None)
+        if callable(winback_fn):
+            cached_prods = (_FEED_CACHE.get(shop) or (0, None))[1]
+            wb_sent = await asyncio.to_thread(
+                winback_fn, shop, settings, None, shop_name, cached_prods, recent_customer_emails
+            )
+            if isinstance(wb_sent, int) and wb_sent > 0:
+                result["sent"] += wb_sent
+    except Exception as e:
+        result["errors"].append(f"Win-Back: {e}")
     return result
 
 
 async def run_autopilot_cycle(only_shop: Optional[str] = None, skip_log: Optional[List[dict]] = None) -> Dict[str, Any]:
+    await run_self_heal(shop=only_shop, force_discounts=False)
     await ensure_shop_connection()
     async with _get_cycle_lock():
         totals: Dict[str, Any] = {"sent": 0, "items": [], "errors": []}
@@ -958,9 +1056,13 @@ async def run_autopilot_cycle(only_shop: Optional[str] = None, skip_log: Optiona
 
 async def autopilot_daemon_loop():
     await asyncio.sleep(15)
-    print(f"[AUTOPILOT] Starting autonomous follow-up engine (every {AUTOPILOT_INTERVAL_SECONDS // 60} minutes)...")
+    print(f"[AUTOPILOT] Starting autonomous follow-up & self-healing engine (every {AUTOPILOT_INTERVAL_SECONDS // 60} minutes)...")
     while True:
         try:
+            shop_d = default_shop()
+            last_disc_ts = (_DISCOUNT_ENSURE_CACHE.get(shop_d) or (0, None))[0]
+            if time.time() - last_disc_ts >= DISCOUNT_ENSURE_TTL_SECONDS:
+                await run_self_heal(shop=shop_d, force_discounts=True)
             await run_autopilot_cycle()
         except Exception as e:
             AUTOPILOT_STATUS["last_error"] = str(e)[:500]
@@ -1428,10 +1530,46 @@ async def get_autopilot_status(shop: Optional[str] = Query(None), auth: AuthCont
         "connected": connected,
         "fetch_error": fetch_error,
         "daemon": autopilot_status_payload(),
+        "self_heal": dict(SELF_HEAL_STATUS),
         "pending_carts_count": len(checkouts),
         "potential_revenue": round(sum(float(c.get("total_price") or 0) for c in checkouts), 2),
         "queue": checkouts,
         "logs": logs,
+    }
+
+
+@app.post("/api/autopilot/self-heal")
+async def trigger_self_heal(req: Optional[AutopilotDispatchRequest] = None, auth: AuthContext = Depends(require_auth)):
+    """Trigger immediate self-healing (retry locks, DB check, Shopify connection, and brand discount codes)."""
+    shop = resolve_shop(auth, req.shop if req else None)
+    return await run_self_heal(shop=shop, force_discounts=True)
+
+
+@app.post("/api/discounts/ensure")
+async def ensure_discounts_endpoint(req: Optional[AutopilotDispatchRequest] = None, auth: AuthContext = Depends(require_auth)):
+    """Ensure owner/brand discount codes (MG10, GROZAVU10, MGVIP15, GROZAVU15, GROZAVU5) exist in Shopify."""
+    shop = resolve_shop(auth, req.shop if req else None)
+    record = get_shop_or_404(shop)
+    token = record.get("access_token", "")
+    if not has_real_token(token):
+        return {"ok": False, "error": "Shopify nu este conectat (token lipsă).", "created": [], "existing": [], "codes": {}}
+    client = ShopifyClient(shop, token)
+    res = await client.ensure_brand_discount_codes()
+    _DISCOUNT_ENSURE_CACHE[shop] = (time.time(), res)
+    SELF_HEAL_STATUS["discount_codes"] = res.get("codes", {})
+    return res
+
+
+@app.get("/api/discounts/status")
+async def get_discounts_status(shop: Optional[str] = Query(None), auth: AuthContext = Depends(require_auth)):
+    """Return status of owner/brand discount codes (MG10, GROZAVU10, MGVIP15, GROZAVU15, GROZAVU5)."""
+    shop = resolve_shop(auth, shop)
+    cached = (_DISCOUNT_ENSURE_CACHE.get(shop) or (0, None))[1]
+    return {
+        "shop": shop,
+        "configured_codes": [s["code"] for s in ShopifyClient.BRAND_DISCOUNT_SPECS],
+        "specs": ShopifyClient.BRAND_DISCOUNT_SPECS,
+        "last_verified": cached,
     }
 
 

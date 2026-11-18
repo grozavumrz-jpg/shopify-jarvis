@@ -888,3 +888,158 @@ class ShopifyClient:
         if errors:
             raise Exception(f"Billing Error: {errors[0].get('message')}")
         return data.get("confirmationUrl")
+
+    # ── Brand Discount Codes (Owner / Brand Name Only — never 'JARVIS') ──────
+
+    BRAND_DISCOUNT_SPECS: List[Dict[str, Any]] = [
+        {"code": "MG10", "percent": 10, "title": "Grozavu MG10 — 10% Cart Recovery"},
+        {"code": "GROZAVU10", "percent": 10, "title": "Grozavu GROZAVU10 — 10% Recovery"},
+        {"code": "MGVIP15", "percent": 15, "title": "Grozavu MGVIP15 — 15% VIP & Win-Back"},
+        {"code": "GROZAVU15", "percent": 15, "title": "Grozavu GROZAVU15 — 15% VIP & Win-Back"},
+        {"code": "GROZAVU5", "percent": 5, "title": "Grozavu GROZAVU5 — 5% Welcome"},
+    ]
+
+    async def ensure_brand_discount_codes(
+        self,
+        specs: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Verify and automatically create brand discount codes (MG10, GROZAVU10, MGVIP15, GROZAVU15, GROZAVU5)
+        in Shopify using GraphQL discountCodeBasicCreate with REST price_rules fallback.
+        Strictly rejects any code containing 'jarvis'. Never raises.
+        """
+        target_specs = specs if specs is not None else self.BRAND_DISCOUNT_SPECS
+        results: Dict[str, Dict[str, Any]] = {}
+        created: List[str] = []
+        existing: List[str] = []
+        errors: List[str] = []
+
+        check_query = """
+        query CheckDiscountCode($code: String!) {
+          codeDiscountNodeByCode(code: $code) {
+            id
+          }
+        }
+        """
+        create_mutation = """
+        mutation CreateBrandDiscount($basicCodeDiscount: DiscountCodeBasicInput!) {
+          discountCodeBasicCreate(basicCodeDiscount: $basicCodeDiscount) {
+            codeDiscountNode {
+              id
+            }
+            userErrors {
+              field
+              message
+            }
+          }
+        }
+        """
+        starts_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        for spec in target_specs:
+            code = str(spec.get("code") or "").strip().upper()
+            pct = int(spec.get("percent") or 0)
+            title = str(spec.get("title") or f"Grozavu {code} — {pct}% Off")
+            if not code or pct <= 0 or pct > 50:
+                continue
+            if "jarvis" in code.lower():
+                errors.append(f"{code}: rejected (discount codes must use Grozavu / MG, never Jarvis)")
+                results[code] = {"status": "rejected", "percent": pct, "reason": "forbidden_code_prefix"}
+                continue
+
+            # 1. Check if code already exists via GraphQL
+            try:
+                chk = await self._graphql(check_query, {"code": code})
+                node = ((chk or {}).get("data") or {}).get("codeDiscountNodeByCode")
+                if isinstance(node, dict) and node.get("id"):
+                    existing.append(code)
+                    results[code] = {"status": "existing", "percent": pct, "id": node["id"]}
+                    continue
+            except Exception:
+                pass
+
+            # 2. Try creating via GraphQL discountCodeBasicCreate
+            gql_err_msg = None
+            try:
+                variables = {
+                    "basicCodeDiscount": {
+                        "title": title,
+                        "code": code,
+                        "startsAt": starts_at,
+                        "customerSelection": {"all": True},
+                        "customerGets": {
+                            "value": {"percentage": round(pct / 100.0, 4)},
+                            "items": {"all": True},
+                        },
+                        "appliesOncePerCustomer": True,
+                    }
+                }
+                res = await self._graphql(create_mutation, variables)
+                if isinstance(res, dict) and res.get("errors"):
+                    first_e = res["errors"][0] if isinstance(res["errors"], list) and res["errors"] else res["errors"]
+                    gql_err_msg = first_e.get("message") if isinstance(first_e, dict) else str(first_e)
+                else:
+                    payload = ((res or {}).get("data") or {}).get("discountCodeBasicCreate") or {}
+                    u_errs = payload.get("userErrors") or []
+                    node = payload.get("codeDiscountNode")
+                    if isinstance(node, dict) and node.get("id"):
+                        created.append(code)
+                        results[code] = {"status": "created", "percent": pct, "id": node["id"]}
+                        continue
+                    if u_errs:
+                        msg_joined = "; ".join(str(u.get("message") or "") for u in u_errs if isinstance(u, dict))
+                        if "already" in msg_joined.lower() or "taken" in msg_joined.lower() or "unique" in msg_joined.lower():
+                            existing.append(code)
+                            results[code] = {"status": "existing", "percent": pct}
+                            continue
+                        gql_err_msg = msg_joined
+            except Exception as e:
+                gql_err_msg = str(e)[:180]
+
+            # 3. Fallback: REST PriceRule + DiscountCode
+            try:
+                pr_body = {
+                    "price_rule": {
+                        "title": title,
+                        "target_type": "line_item",
+                        "target_selection": "all",
+                        "allocation_method": "across",
+                        "value_type": "percentage",
+                        "value": f"-{float(pct):.1f}",
+                        "customer_selection": "all",
+                        "once_per_customer": True,
+                        "starts_at": starts_at,
+                    }
+                }
+                r_pr = await self._request("POST", "/price_rules.json", json_body=pr_body)
+                if r_pr.status_code in (200, 201):
+                    pr_id = ((r_pr.json() or {}).get("price_rule") or {}).get("id")
+                    if pr_id:
+                        r_dc = await self._request(
+                            "POST",
+                            f"/price_rules/{pr_id}/discount_codes.json",
+                            json_body={"discount_code": {"code": code}},
+                        )
+                        if r_dc.status_code in (200, 201):
+                            created.append(code)
+                            results[code] = {"status": "created", "percent": pct, "price_rule_id": pr_id}
+                            continue
+                        if r_dc.status_code == 422 and "taken" in (r_dc.text or "").lower():
+                            existing.append(code)
+                            results[code] = {"status": "existing", "percent": pct}
+                            continue
+                rest_err = f"HTTP {r_pr.status_code}: {(r_pr.text or '')[:120]}"
+            except Exception as e:
+                rest_err = str(e)[:120]
+
+            err_summary = gql_err_msg or rest_err or "unavailable"
+            errors.append(f"{code}: {err_summary}")
+            results[code] = {"status": "error", "percent": pct, "reason": err_summary}
+
+        return {
+            "ok": len(errors) == 0,
+            "created": created,
+            "existing": existing,
+            "errors": errors,
+            "codes": results,
+        }

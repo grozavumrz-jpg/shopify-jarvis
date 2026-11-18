@@ -80,7 +80,12 @@ class ProductSEOOptimizer:
     def _strip_brand_suffix(self, text: str) -> str:
         out = (text or "").strip()
         brand_alt = "|".join(re.escape(b) for b in self._brand_variants())
-        legacy = r"Atelier Luxury|Luxury Atelier|Premium Streetwear"
+        legacy = (
+            r"Atelier Luxury|Luxury Atelier|Premium Streetwear|"
+            r"\d{3}\s*g/m²(?:\s+[A-Za-z-]+){0,3}|"
+            r"100%\s+(?:Organic\s+|Recycled\s+|Lightweight\s+)?(?:Cotton(?:\s+Twill)?|Nylon(?:\s+Taslan)?)|"
+            r"Recycled\s+Polyester|Cotton-Elastane|Combed\s+Cotton|Brushed\s+Fleece"
+        )
         pattern = re.compile(rf"\s*{_SEPARATORS}\s*(?:{brand_alt}|{legacy})\s*$", re.I)
         prev = None
         while prev != out:
@@ -98,6 +103,48 @@ class ProductSEOOptimizer:
         return f"{m.group(1)} g/m²" if m else None
 
     @staticmethod
+    def _extract_material_label(text: str) -> Optional[str]:
+        clean = _strip_html(text or "")
+        if not clean:
+            return None
+        patterns = [
+            (r"\b100%\s+organic\s+cotton\s+twill\b", "100% Organic Cotton Twill"),
+            (r"\b100%\s+organic\s+(?:ring-spun\s+)?(?:combed\s+)?cotton\b", "100% Organic Cotton"),
+            (r"\b100%\s+cotton\s+twill\b", "100% Cotton Twill"),
+            (r"\bcotton\s+twill\b", "Cotton Twill"),
+            (r"\bcotton[- ]elastane\b", "Cotton-Elastane"),
+            (r"\b100%\s+recycled\s+nylon\b", "100% Recycled Nylon"),
+            (r"\b100%\s+nylon\s+taslan\b", "100% Nylon Taslan"),
+            (r"\brecycled\s+polyester\b", "Recycled Polyester"),
+            (r"\bcombed\s+ring-spun\s+cotton\b", "Combed Cotton"),
+            (r"\bbrushed\s+fleece\b", "Brushed Fleece"),
+            (r"\b100%\s+lightweight\s+cotton\b", "100% Cotton"),
+            (r"\b100%\s+cotton\b", "100% Cotton"),
+        ]
+        for pat, label in patterns:
+            if re.search(pat, clean, flags=re.I):
+                return label
+        return None
+
+    @classmethod
+    def _extract_spec_phrase(cls, title: str, body_html: Optional[str]) -> Optional[str]:
+        """Build a concise buyer-intent specification from real body_html facts (weight + material)."""
+        if not body_html:
+            return None
+        weight = cls._fabric_weight(body_html)
+        mat = cls._extract_material_label(body_html)
+        t_low = (title or "").lower()
+        if weight and mat:
+            short_mat = re.sub(r"^100%\s+", "", mat)
+            if short_mat.lower() not in t_low and weight.lower() not in t_low:
+                return f"{weight} {short_mat}"
+        if weight and weight.lower() not in t_low:
+            return weight
+        if mat and mat.lower() not in t_low:
+            return mat
+        return None
+
+    @staticmethod
     def _product_type_label(product_type: Optional[str]) -> Optional[str]:
         pt = (product_type or "").strip()
         if not pt:
@@ -107,41 +154,79 @@ class ProductSEOOptimizer:
 
     # ── generators (deterministic + idempotent) ───────────────────────────────
 
-    def generate_seo_title(self, current_title: str, product_type: Optional[str] = None) -> str:
+    def generate_seo_title(
+        self,
+        current_title: str,
+        product_type: Optional[str] = None,
+        body_html: Optional[str] = None,
+    ) -> str:
         """
         SEO title (Search engine listing title), 25–70 chars, ends with the brand exactly once.
-        Idempotent: generate_seo_title(generate_seo_title(x)) == generate_seo_title(x).
+        Prioritizes real buyer-intent specs (fabric weight, material, garment type) over generic filler.
+        Idempotent: generate_seo_title(generate_seo_title(x, pt, body), pt, body) == generate_seo_title(x, pt, body).
         """
         base = _remove_forbidden(self._strip_brand_suffix(current_title or ""))
         if not base:
             base = "Product"
         brand_inside = self._has_brand(base)
+        suffix = "" if brand_inside else f" | {self.brand_name}"
+        room = TITLE_MAX - len(suffix)
+
+        spec = self._extract_spec_phrase(base, body_html)
+        if spec and spec.lower() not in base.lower():
+            with_spec = f"{base} – {spec}"
+            if len(with_spec) <= room:
+                base = with_spec
+
         if len(base) < 35:
             pt = self._product_type_label(product_type)
             stem = (pt or "").lower().rstrip("s")
-            if pt and stem and stem not in base.lower():
+            if pt and stem and stem not in base.lower() and len(f"{base} | {pt}") <= room:
                 base = f"{base} | {pt}"
             if len(base) < 35 and "streetwear" not in base.lower():
                 base = f"{base} | Premium Streetwear"
+
         candidate = base if brand_inside else f"{base} | {self.brand_name}"
         if len(candidate) > TITLE_MAX:
-            suffix = "" if brand_inside else f" | {self.brand_name}"
-            room = TITLE_MAX - len(suffix)
             candidate = _truncate_words(base, room) + suffix
         return candidate
 
     def generate_meta_description(self, title: str, current_desc: str, product_type: Optional[str] = None) -> str:
         """
-        Meta description 70–160 chars, English, factual. Uses the real description when it is long
-        enough; otherwise a neutral template with only verified brand facts.
+        Meta description 70–160 chars, English, factual. Prefers complete sentences from real
+        product copy (plus 'Designed in Spain by Grozavu.' when space allows) instead of
+        chopping mid-sentence with an ellipsis.
         """
         clean = _remove_forbidden(_strip_html(current_desc or ""))
         if len(clean) >= 120 and not contains_forbidden(clean):
+            if len(clean) <= META_MAX:
+                return clean
+            sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", clean) if s.strip()]
+            acc = ""
+            for s in sentences:
+                nxt = f"{acc} {s}".strip() if acc else s
+                if len(nxt) <= META_MAX:
+                    acc = nxt
+                else:
+                    break
+            if len(acc) >= 75:
+                tail = f" Designed in Spain by {self.brand_name}."
+                if "grozavu" not in acc.lower() and len(acc) + len(tail) <= META_MAX:
+                    acc = acc + tail
+                return acc
             return _truncate_words(clean, META_MAX)
 
         name = _remove_forbidden(self._strip_brand_suffix(title or "")) or "This piece"
         weight = self._fabric_weight(current_desc or "")
-        detail = f" in {weight} fabric" if weight else ""
+        mat = self._extract_material_label(current_desc or "")
+        if weight and mat:
+            detail = f" in {weight} {mat.lower()}"
+        elif weight:
+            detail = f" in {weight} fabric"
+        elif mat:
+            detail = f" in {mat.lower()}"
+        else:
+            detail = ""
         pt = self._product_type_label(product_type)
         shop_what = f"{pt.lower()}" if pt else "the collection"
         snippet = (
@@ -317,7 +402,7 @@ class ProductSEOOptimizer:
             score -= 10
             issues.append("Produsul nu are imagini.")
 
-        optimized_title = self.generate_seo_title(seo_title_current or title, product.get("product_type"))
+        optimized_title = self.generate_seo_title(seo_title_current or title, product.get("product_type"), body_html=body_html)
         optimized_desc = self.generate_meta_description(title, body_html, product.get("product_type"))
         first_img = next((i for i in images if isinstance(i, dict)), {}) if isinstance(images, list) else {}
         optimized_alt = self.generate_image_alt(product, first_img or {}, 0, 1)
@@ -369,7 +454,7 @@ class ProductSEOOptimizer:
             or not self._has_brand(effective) or bool(contains_forbidden(effective))
         )
         if needs_title:
-            proposed = self.generate_seo_title(effective, product_type)
+            proposed = self.generate_seo_title(effective, product_type, body_html=body_html)
             if proposed != effective:
                 proposals.append({
                     "field": "seo_title",

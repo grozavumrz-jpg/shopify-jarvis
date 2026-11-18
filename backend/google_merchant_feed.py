@@ -86,9 +86,46 @@ _COLOUR_WORDS = {
     "black", "white", "off-white", "navy", "french navy", "grey", "gray", "heather grey", "charcoal",
     "beige", "cream", "ecru", "sand", "stone", "khaki", "olive", "green", "forest green", "sage",
     "blue", "sky blue", "red", "bordeaux", "burgundy", "maroon", "wine", "cocoa", "brown", "chocolate",
-    "tan", "camel", "pink", "blush", "magenta", "purple", "lilac", "lavender", "yellow", "mustard",
-    "orange", "rust", "natural", "bone", "vintage black", "washed black",
+    "tan", "camel", "pink", "blush", "blush pink", "soft pink", "magenta", "purple", "lilac", "lavender",
+    "yellow", "mustard", "orange", "rust", "natural", "bone", "vintage black", "washed black",
+    "desert dust", "dust", "sandshell", "ivory",
 }
+
+_DESC_IN_COLOUR_RE = re.compile(
+    r"\b(?:garment-dyed\s+|dyed\s+|knit\s+|woven\s+|cut\s+|finished\s+)?"
+    r"in\s+(blush pink|soft pink|french navy|heather grey|vintage black|washed black|forest green|"
+    r"desert dust|sandshell|off-white|bordeaux|burgundy|charcoal|black|white|ivory|cream|beige|ecru|"
+    r"sand|dust|stone|khaki|olive|sage|navy|grey|gray|blue|red|brown|cocoa|tan|camel|blush|pink|bone)\b",
+    re.I,
+)
+_DESC_ARTICLE_COLOUR_RE = re.compile(
+    r"\b(?:a|an)\s+(?:[a-z-]+,\s*[a-z-]+\s+)?"
+    r"(blush pink|soft pink|french navy|heather grey|vintage black|washed black|forest green|"
+    r"desert dust|sandshell|off-white|bordeaux|burgundy|charcoal|black|white|ivory|cream|beige|ecru|"
+    r"sand|dust|olive|navy|grey|gray|blue|red|brown|cocoa|tan|camel|blush|pink|bone)\s+"
+    r"(?:bucket hat|hat|cap|beanie|tote|bag|crossbody|half-zip|quarter-zip|pullover|hoodie|crewneck|"
+    r"sweatshirt|tee|t-shirt|shirt|tank|top|jacket|windbreaker|pants|trousers|joggers|shorts)\b",
+    re.I,
+)
+_MATERIAL_PATTERNS: List[Tuple[re.Pattern, str]] = [
+    (re.compile(r"\b100%\s+organic\s+cotton\s+twill\b", re.I), "100% Organic Cotton Twill"),
+    (re.compile(r"\b100%\s+organic\s+(?:ring-spun\s+)?(?:combed\s+)?cotton\b", re.I), "100% Organic Cotton"),
+    (re.compile(r"\b100%\s+(?:bio-washed\s+)?(?:chino\s+)?cotton\s+twill\b", re.I), "100% Cotton Twill"),
+    (re.compile(r"\bcotton\s+twill\b", re.I), "Cotton Twill"),
+    (re.compile(r"\bcotton[- ]elastane\b", re.I), "Cotton-Elastane"),
+    (re.compile(r"\b100%\s+recycled\s+nylon\b", re.I), "100% Recycled Nylon"),
+    (re.compile(r"\b100%\s+nylon\s+taslan\b", re.I), "100% Nylon Taslan"),
+    (re.compile(r"\bsmooth\s+matte\s+nylon\b", re.I), "Nylon"),
+    (re.compile(r"\brecycled\s+polyester\b", re.I), "Recycled Polyester"),
+    (re.compile(r"\bwater-resistant\s+polyester\b", re.I), "Polyester"),
+    (re.compile(r"\bpolyamide\b", re.I), "Polyamide"),
+    (re.compile(r"\bairlume\s+combed\s+ring-spun\s+cotton\b", re.I), "Combed Ring-Spun Cotton"),
+    (re.compile(r"\bcombed\s+ring-spun\s+cotton\b", re.I), "Combed Ring-Spun Cotton"),
+    (re.compile(r"\bring-spun\s+(?:combed\s+)?cotton\b", re.I), "Ring-Spun Cotton"),
+    (re.compile(r"\b(?:three-end|3-end)\s+fleece\b", re.I), "Three-End Cotton Fleece"),
+    (re.compile(r"\bbrushed\s+fleece\b", re.I), "Brushed Fleece"),
+    (re.compile(r"\b100%\s+(?:lightweight\s+)?cotton\b", re.I), "100% Cotton"),
+]
 
 
 def _gender_for(product: Dict[str, Any]) -> str:
@@ -122,6 +159,38 @@ def _colour_from_title(product: Dict[str, Any]) -> str:
             suffix = title.rsplit(sep, 1)[1].strip()
             if suffix.lower() in _COLOUR_WORDS:
                 return suffix
+    return ""
+
+
+def _colour_from_description(product: Dict[str, Any]) -> str:
+    """
+    Extract explicit garment colour stated in body_html when the product has no colour option or suffix
+    (e.g. '300 g/m² cotton-elastane in blush pink', 'A black bucket hat in 100% cotton twill',
+    'split down the middle in black and soft pink', 'black on black').
+    Never guesses from graphic print names.
+    """
+    raw_body = _plain_text(product.get("body_html"))
+    if not raw_body:
+        return ""
+    if re.search(r"\bsplit down the middle in black and soft pink\b", raw_body, re.I):
+        return "Black / Soft Pink"
+    m_art = _DESC_ARTICLE_COLOUR_RE.search(raw_body)
+    if m_art:
+        return m_art.group(1).title()
+    m_in = _DESC_IN_COLOUR_RE.search(raw_body)
+    if m_in:
+        return m_in.group(1).title()
+    if re.search(r"\bblack on black\b", raw_body, re.I):
+        return "Black"
+    return ""
+
+
+def _material_for(product: Dict[str, Any]) -> str:
+    """Extract factual fabric/material from body_html or title for <g:material>."""
+    hay = " ".join([_plain_text(product.get("body_html")), str(product.get("title") or "")])
+    for pattern, label in _MATERIAL_PATTERNS:
+        if pattern.search(hay):
+            return label
     return ""
 
 
@@ -194,7 +263,8 @@ def build_feed_items(
         category = _category_for(p)
         gender = _gender_for(p)
         age_group = _age_group_for(p)
-        title_colour = _colour_from_title(p)
+        title_colour = _colour_from_title(p) or _colour_from_description(p)
+        material = _material_for(p)
         positions = _option_positions(p)
         handle = p["handle"]
         variants = [v for v in (p.get("variants") or []) if isinstance(v, dict)]
@@ -214,8 +284,10 @@ def build_feed_items(
             color = str(v.get(f"option{positions['color']}") or "").strip() if "color" in positions else title_colour
             size = str(v.get(f"option{positions['size']}") or "").strip() if "size" in positions else ""
             v_title = str(v.get("title") or "").strip()
+            if not size and not multi and v_title.lower() in ("", "default title", "one size", "os"):
+                size = "One Size"
             variant_colour = color if "color" in positions else ""
-            label = " / ".join(x for x in (variant_colour, size) if x) or ("" if v_title.lower() == "default title" else v_title)
+            label = " / ".join(x for x in (variant_colour, size if "size" in positions else "") if x) or ("" if v_title.lower() == "default title" else v_title)
             item_title = f"{title} - {label}" if (multi and label) else title
 
             tracked = str(v.get("inventory_management") or "").lower() == "shopify"
@@ -253,6 +325,8 @@ def build_feed_items(
                 item["color"] = color[:100]
             if size:
                 item["size"] = size[:100]
+            if material:
+                item["material"] = material[:200]
             barcode = str(v.get("barcode") or "").strip()
             if GTIN_RE.match(barcode):
                 item["gtin"] = barcode
@@ -282,7 +356,7 @@ def build_google_merchant_xml(
 
     order = ["id", "item_group_id", "title", "description", "link", "image_link", "additional_image_link",
              "availability", "price", "sale_price", "brand", "condition", "gtin", "identifier_exists",
-             "google_product_category", "product_type", "gender", "age_group", "color", "size"]
+             "google_product_category", "product_type", "gender", "age_group", "color", "size", "material"]
     for data in items:
         node = ET.SubElement(channel, "item")
         for key in order:
