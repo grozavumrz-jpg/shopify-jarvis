@@ -656,6 +656,12 @@ export default function App() {
   const [competitorRadar, setCompetitorRadar] = useState(null)
   const [campaignKeyword, setCampaignKeyword] = useState('')
   const [campaignResult, setCampaignResult] = useState(null)
+  const [visibility, setVisibility] = useState(null)
+  const [aeoKeyword, setAeoKeyword] = useState('')
+  const [aeoPack, setAeoPack] = useState(null)
+  const [generatingAeo, setGeneratingAeo] = useState(false)
+  const [geoResult, setGeoResult] = useState(null)
+  const [runningGeo, setRunningGeo] = useState(false)
   const [generatingCampaign, setGeneratingCampaign] = useState(false)
 
   // Delivery & Email Gateway State
@@ -1111,11 +1117,71 @@ export default function App() {
     }
   }
 
+  const loadVisibility = async () => {
+    try {
+      const res = await api(`/api/visibility/score?${qShop}`)
+      if (res.ok) {
+        const data = await readJson(res)
+        setVisibility(data)
+        const firstKw = asArray(data.aeo_keywords)[0]?.keyword
+        if (firstKw && !aeoKeyword) setAeoKeyword(firstKw)
+        return true
+      }
+      return false
+    } catch (e) {
+      console.error('Visibility load failed', e)
+      return false
+    }
+  }
+
+  const handleGenerateAeo = async (customKw = null) => {
+    const kw = (typeof customKw === 'string' && customKw.trim()) ? customKw.trim() : aeoKeyword.trim()
+    if (!kw || generatingAeo) return
+    setAeoKeyword(kw)
+    setGeneratingAeo(true)
+    try {
+      const res = await apiPost('/api/visibility/aeo-pack', { shop, keyword: kw, lang })
+      const data = await readJson(res)
+      if (res.ok) {
+        setAeoPack(data)
+        showToast(`✅ Pachet AEO generat pentru „${kw}”`)
+      } else {
+        showToast('⚠️ Eroare AEO: ' + errorText(data, res))
+      }
+    } catch (e) {
+      showToast('⚠️ ' + e.message)
+    } finally {
+      setGeneratingAeo(false)
+    }
+  }
+
+  const handleRunGeo = async (force = false) => {
+    if (runningGeo) return
+    setRunningGeo(true)
+    try {
+      const res = await apiPost('/api/visibility/geo-test', { shop, force })
+      const data = await readJson(res)
+      if (res.ok) {
+        setGeoResult(data)
+        loadVisibility()
+        showToast(`✅ Test GEO: Grozavu menționat în ${data.brand_mentioned_count}/${data.prompts_tested} răspunsuri AI`)
+      } else {
+        showToast('⚠️ Test GEO: ' + errorText(data, res))
+      }
+    } catch (e) {
+      showToast('⚠️ ' + e.message)
+    } finally {
+      setRunningGeo(false)
+    }
+  }
+
   // Load only what the visible tab / subtab needs
   useEffect(() => {
     if (activeTab === 'radar') {
       if (activeRadarSubtab === 'google-analytics') {
         ensureLoaded('googleAnalytics', loadGoogleAnalytics)
+      } else if (activeRadarSubtab === 'visibility') {
+        ensureLoaded('visibility', loadVisibility)
       } else if (activeRadarSubtab === 'campaign-studio') {
         ensureLoaded('competitorRadar', loadCompetitorRadar)
       } else if (activeRadarSubtab === 'google-merchant') {
@@ -1957,6 +2023,12 @@ export default function App() {
                 📊 Trafic Real (GSC & GA4)
               </button>
               <button 
+                className={`subnav-pill ${activeRadarSubtab === 'visibility' ? 'active' : ''}`}
+                onClick={() => setActiveRadarSubtab('visibility')}
+              >
+                🌐 Vizibilitate SEO · AEO · GEO
+              </button>
+              <button 
                 className={`subnav-pill ${activeRadarSubtab === 'campaign-studio' ? 'active' : ''}`}
                 onClick={() => setActiveRadarSubtab('campaign-studio')}
               >
@@ -2217,6 +2289,156 @@ export default function App() {
                         <div key={idx} style={{ marginBottom: '10px', fontSize: '13px', lineHeight: 1.5 }}>
                           <strong style={{ color: '#fef3c7' }}>{s.step}. {s.title}:</strong>{' '}
                           <span style={{ color: '#d6d3d1' }}>{s.detail}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Subtab 0A: SEO · AEO · GEO visibility */}
+            {activeRadarSubtab === 'visibility' && (
+              <div className="radar-content-grid">
+                <div className="hud-card">
+                  <div className="card-title">🌐 Vizibilitate: Google, răspunsuri AI și recomandări AI</div>
+                  <p className="card-desc">
+                    SEO = apari în Google. AEO = ești în căsuța de răspuns. GEO = AI-ul te recomandă pe nume.
+                    Scorurile vin doar din date reale (Search Console, catalogul tău, testul GEO). Fără sursă de date nu afișez număr.
+                  </p>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px', marginBottom: '14px' }}>
+                    {[
+                      ['SEO', visibility?.seo, 'Rank pe pagina 1'],
+                      ['AEO', visibility?.aeo, 'Ești în răspuns'],
+                      ['GEO', visibility?.geo, 'Ești recomandat'],
+                    ].map(([label, item, sub]) => (
+                      <div key={label} style={{ background: '#0c0a09', border: '1px solid #44403c', borderRadius: '10px', padding: '14px', textAlign: 'center' }}>
+                        <div style={{ fontSize: '12px', color: '#a8a29e', fontWeight: 700, letterSpacing: '1px' }}>{label}</div>
+                        <div style={{ fontSize: '34px', fontWeight: 800, color: item?.score == null ? '#78716c' : item.score >= 60 ? '#34d399' : item.score >= 30 ? '#fbbf24' : '#f87171' }}>
+                          {item?.score == null ? '—' : item.score}
+                        </div>
+                        <div style={{ fontSize: '12px', color: '#d6d3d1' }}>{sub}</div>
+                        {item?.score == null && item?.reason && <div style={{ fontSize: '11px', color: '#a8a29e', marginTop: '4px' }}>{item.reason}</div>}
+                      </div>
+                    ))}
+                  </div>
+                  {asArray(visibility?.next_actions).length > 0 && (
+                    <div style={{ background: 'rgba(245,158,11,0.08)', borderLeft: '3px solid #f59e0b', padding: '10px 12px', borderRadius: '0 8px 8px 0', marginBottom: '16px' }}>
+                      <div style={{ fontSize: '12px', fontWeight: 700, color: '#fbbf24', marginBottom: '6px' }}>PRIMII PAȘI RECOMANDAȚI</div>
+                      {asArray(visibility.next_actions).map((a, i) => (
+                        <div key={i} style={{ fontSize: '13.5px', color: '#f5f5f4', lineHeight: 1.5, marginBottom: '3px' }}>{i + 1}. {a}</div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="card-title" style={{ marginTop: '8px' }}>🧩 AEO: pachet de răspuns pentru Google AI Overviews</div>
+                  <p className="card-desc">
+                    Alege o căutare reală (sau scrie una) și primești paragraf-răspuns, FAQ, schemă JSON-LD și structură de articol. Doar previzualizare: nu se scrie nimic în Shopify.
+                  </p>
+                  {asArray(visibility?.aeo_keywords).length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '12px' }}>
+                      {asArray(visibility.aeo_keywords).map((k, i) => (
+                        <button key={i} className="chip-tag" disabled={generatingAeo} onClick={() => handleGenerateAeo(k.keyword)}
+                          style={{ borderColor: aeoKeyword === k.keyword ? '#f59e0b' : undefined }}>
+                          🔍 {k.keyword}{k.position ? ` (#${k.position})` : ''}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '14px' }}>
+                    <input type="text" value={aeoKeyword} onChange={(e) => setAeoKeyword(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleGenerateAeo()}
+                      placeholder="Ex: shorts de pernera ancha para mujer"
+                      style={{ flex: 1, minWidth: '240px', padding: '10px 14px', background: '#0c0a09', border: '1px solid #57534e', color: '#fef3c7', borderRadius: '8px', fontSize: '14px' }} />
+                    <button className="calculate-btn" disabled={generatingAeo || !aeoKeyword.trim()} onClick={() => handleGenerateAeo()}>
+                      {generatingAeo ? '⏳ Se generează...' : '🚀 Generează pachet AEO'}
+                    </button>
+                  </div>
+                  {aeoPack && (
+                    <div style={{ background: '#1c1917', border: '1px solid #78350f', borderRadius: '10px', padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '18px' }}>
+                      <div style={{ background: 'rgba(245,158,11,0.08)', borderLeft: '3px solid #f59e0b', padding: '10px 12px', borderRadius: '0 8px 8px 0' }}>
+                        <div style={{ fontSize: '12px', fontWeight: 700, color: '#fbbf24', marginBottom: '4px' }}>PARAGRAF-RĂSPUNS (pune-l la începutul paginii)</div>
+                        <div style={{ fontSize: '14px', color: '#f5f5f4', lineHeight: 1.55 }}>{aeoPack.answer_first_paragraph}</div>
+                        {aeoPack.answer_first_es && <div style={{ fontSize: '13px', color: '#d6d3d1', marginTop: '6px' }}>ES: {aeoPack.answer_first_es}</div>}
+                        <button className="test-btn" style={{ marginTop: '8px' }} onClick={() => handleCopy(aeoPack.answer_first_paragraph)}>📋 Copiază</button>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '12px', fontWeight: 700, color: '#fbbf24', marginBottom: '6px' }}>FAQ</div>
+                        {asArray(aeoPack.faq).map((f, i) => (
+                          <div key={i} style={{ marginBottom: '8px' }}>
+                            <div style={{ fontSize: '13.5px', fontWeight: 700, color: '#fef3c7' }}>{f.question}</div>
+                            <div style={{ fontSize: '13.5px', color: '#e7e5e4', lineHeight: 1.5 }}>{f.answer}</div>
+                          </div>
+                        ))}
+                        {aeoPack.has_placeholders && (
+                          <div style={{ fontSize: '12px', color: '#fbbf24' }}>⚠️ Completează manual răspunsurile din paranteze drepte înainte de publicare.</div>
+                        )}
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '12px', fontWeight: 700, color: '#fbbf24', marginBottom: '6px' }}>STRUCTURĂ ARTICOL „BEST X FOR Y”</div>
+                        {asArray(aeoPack.article_outline).map((l, i) => (
+                          <div key={i} style={{ fontSize: '13.5px', color: '#e7e5e4', lineHeight: 1.5 }}>{i + 1}. {l}</div>
+                        ))}
+                      </div>
+                      <div>
+                        <button className="test-btn" onClick={() => handleCopy(aeoPack.faq_jsonld, 'JSON-LD copiat!')}>📋 Copiază schema FAQ (JSON-LD)</button>
+                        <div style={{ fontSize: '12px', color: '#a8a29e', marginTop: '6px' }}>
+                          {asArray(aeoPack.implementation_ro).join(' ')}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                    <span>🤖 GEO: te recomandă AI-ul?</span>
+                    <button className="calculate-btn" disabled={runningGeo} onClick={() => handleRunGeo(true)}>
+                      {runningGeo ? '⏳ Se testează (30–60s)...' : '🔬 Rulează testul GEO'}
+                    </button>
+                  </div>
+                  <p className="card-desc">
+                    Jarvis pune întrebări reale de cumpărător lui Gemini cu Google Search și verifică dacă Grozavu e menționat. Este un indicator: nu măsoară ChatGPT.
+                  </p>
+                  {geoResult && (
+                    <div style={{ background: '#1c1917', border: '1px solid #78350f', borderRadius: '10px', padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '18px' }}>
+                      <div style={{ fontSize: '15px', fontWeight: 700, color: geoResult.brand_mentioned_count > 0 ? '#34d399' : '#f87171' }}>
+                        Grozavu menționat în {geoResult.brand_mentioned_count} din {geoResult.prompts_tested} răspunsuri ({geoResult.mention_rate_pct}%)
+                      </div>
+                      {asArray(geoResult.competitors_recommended_instead).length > 0 && (
+                        <div style={{ fontSize: '13px', color: '#e7e5e4' }}>
+                          Recomandați în locul tău: {asArray(geoResult.competitors_recommended_instead).map((c) => `${c.brand} (${c.times}x)`).join(', ')}
+                        </div>
+                      )}
+                      {asArray(geoResult.results).map((r, i) => (
+                        <div key={i} style={{ borderTop: '1px solid #44403c', paddingTop: '8px' }}>
+                          <div style={{ fontSize: '13px', fontWeight: 700, color: '#fef3c7' }}>{r.mentioned ? '✅' : '❌'} {r.prompt}</div>
+                          {r.error
+                            ? <div style={{ fontSize: '12.5px', color: '#f87171' }}>Eroare: {r.error}</div>
+                            : <div style={{ fontSize: '12.5px', color: '#d6d3d1', lineHeight: 1.5 }}>{r.answer_excerpt}</div>}
+                          {asArray(r.sources).length > 0 && (
+                            <div style={{ fontSize: '11.5px', marginTop: '4px' }}>
+                              {asArray(r.sources).map((s, j) => (
+                                <a key={j} href={s.url} target="_blank" rel="noopener noreferrer" style={{ color: '#fbbf24', marginRight: '10px' }}>{s.title}</a>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {visibility?.mentions_plan && (
+                    <div>
+                      <div className="card-title">📣 Plan de mențiuni (unde învață AI-ul despre tine)</div>
+                      <p className="card-desc">{visibility.mentions_plan.principle}</p>
+                      <div style={{ fontSize: '12.5px', color: '#fca5a5', marginBottom: '10px' }}>
+                        {asArray(visibility.mentions_plan.do_not).map((d, i) => <div key={i}>🚫 {d}</div>)}
+                      </div>
+                      {asArray(visibility.mentions_plan.channels).map((c, i) => (
+                        <div key={i} style={{ background: '#1c1917', border: '1px solid #44403c', borderRadius: '10px', padding: '12px', marginBottom: '10px' }}>
+                          <div style={{ fontSize: '14px', fontWeight: 700, color: '#fbbf24' }}>{c.channel}</div>
+                          <div style={{ fontSize: '13px', color: '#e7e5e4', margin: '4px 0' }}>{c.action}</div>
+                          <div style={{ fontSize: '13px', color: '#d6d3d1', fontStyle: 'italic', lineHeight: 1.5 }}>{c.draft}</div>
+                          <button className="test-btn" style={{ marginTop: '6px' }} onClick={() => handleCopy(c.draft)}>📋 Copiază draftul</button>
                         </div>
                       ))}
                     </div>

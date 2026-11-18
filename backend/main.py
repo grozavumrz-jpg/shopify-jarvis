@@ -33,6 +33,7 @@ from deliverability_checker import DeliverabilityChecker
 from store_watchdog import StoreWatchdogAgent
 from google_analytics_service import GoogleTrafficService
 from growth_studio import build_competitor_radar, generate_campaign_studio
+import visibility_engine as vis
 import compliance_guard
 from compliance_guard import (is_quiet_hours, can_dispatch_to_customer, log_customer_dispatch,
                               ephemeral_db_blocks_marketing)
@@ -644,6 +645,68 @@ async def create_campaign_studio(req: CampaignStudioRequest, auth: AuthContext =
         domain=BRAND_DOMAIN,
         lang=req.lang or "ro",
     )
+
+
+async def _gsc_for_visibility() -> Optional[Dict[str, Any]]:
+    if not google_traffic.is_gsc_configured():
+        return None
+    try:
+        combined = await google_traffic.get_combined_report(days=28, force_refresh=False)
+        return combined.get("search_console")
+    except Exception as e:
+        print(f"[Visibility GSC Warning]: {e}")
+        return None
+
+
+@app.get("/api/visibility/score")
+async def get_visibility_score(shop: Optional[str] = Query(None), auth: AuthContext = Depends(require_auth)):
+    """SEO / AEO / GEO scores computed only from real GSC, catalog and GEO-test data."""
+    shop = resolve_shop(auth, shop)
+    products, _ = await load_feed_products(shop)
+    gsc = await _gsc_for_visibility()
+    out = vis.build_visibility_score(shop, products, gsc)
+    out["mentions_plan"] = vis.build_mentions_plan(products, gsc)
+    out["aeo_keywords"] = [
+        {"keyword": q.get("query"), "position": q.get("position"), "impressions": q.get("impressions")}
+        for q in vis._gsc_queries(gsc)[:8]
+    ]
+    return out
+
+
+class AeoPackRequest(BaseModel):
+    shop: Optional[str] = None
+    keyword: str
+    lang: Optional[str] = "ro"
+
+
+@app.post("/api/visibility/aeo-pack")
+async def create_aeo_pack(req: AeoPackRequest, auth: AuthContext = Depends(require_auth)):
+    """Preview-only answer-first FAQ / outline / FAQ JSON-LD. Nothing is written to Shopify."""
+    shop = resolve_shop(auth, req.shop)
+    kw = (req.keyword or "").strip()[:120]
+    if not kw:
+        raise HTTPException(400, "empty_keyword")
+    products, _ = await load_feed_products(shop)
+    gsc = await _gsc_for_visibility()
+    return await vis.generate_aeo_pack(kw, products or [], gsc, ai_advisor=ai, currency=FEED_CURRENCY,
+                                       lang=req.lang or "ro")
+
+
+class GeoTestRequest(BaseModel):
+    shop: Optional[str] = None
+    force: Optional[bool] = False
+
+
+@app.post("/api/visibility/geo-test")
+async def run_geo_visibility_test(req: GeoTestRequest, auth: AuthContext = Depends(require_auth)):
+    """Asks Gemini (with Google Search) real buyer questions and checks whether Grozavu is recommended."""
+    shop = resolve_shop(auth, req.shop)
+    products, _ = await load_feed_products(shop)
+    gsc = await _gsc_for_visibility()
+    res = await vis.run_geo_test(shop, ai, products or [], gsc, force=bool(req.force))
+    if not res.get("ok", True):
+        raise HTTPException(503, res.get("message") or "geo_test_failed")
+    return res
 
 
 # ── Growth ideas (AI suggestions, not data) ───────────────────────────────────
