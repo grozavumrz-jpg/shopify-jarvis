@@ -170,6 +170,41 @@ class TestBrandDiscountCodesNoJarvis(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("JARVIS10", res["created"])
         self.assertEqual(res["codes"]["JARVIS10"]["status"], "rejected")
 
+    async def test_ensure_brand_discount_codes_renames_legacy_jarvis_title(self):
+        client = ShopifyClient(SHOP, "shpat_0123456789abcdef")
+        renamed_payloads = []
+
+        async def fake_graphql(query, variables=None):
+            if "codeDiscountNodeByCode" in query:
+                return {
+                    "data": {
+                        "codeDiscountNodeByCode": {
+                            "id": "gid://shopify/DiscountCodeNode/99",
+                            "codeDiscount": {"title": "MGVIP15 — Jarvis VIP (15%, o utilizare per client)"},
+                        }
+                    }
+                }
+            if "discountCodeBasicUpdate" in query:
+                renamed_payloads.append(variables)
+                return {
+                    "data": {
+                        "discountCodeBasicUpdate": {
+                            "codeDiscountNode": {"id": "gid://shopify/DiscountCodeNode/99"},
+                            "userErrors": [],
+                        }
+                    }
+                }
+            return {}
+
+        client._graphql = fake_graphql
+        res = await client.ensure_brand_discount_codes([
+            {"code": "MGVIP15", "percent": 15, "title": "Grozavu MGVIP15 — 15% VIP & Win-Back"},
+        ])
+        self.assertIn("MGVIP15", res["renamed"])
+        self.assertEqual(res["codes"]["MGVIP15"]["status"], "renamed")
+        self.assertEqual(len(renamed_payloads), 1)
+        self.assertEqual(renamed_payloads[0]["basicCodeDiscount"]["title"], "Grozavu MGVIP15 — 15% VIP & Win-Back")
+
 
 class TestComplementaryCrossSellAndWinBack(unittest.TestCase):
     def setUp(self):

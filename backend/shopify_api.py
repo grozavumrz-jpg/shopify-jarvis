@@ -912,12 +912,31 @@ class ShopifyClient:
         results: Dict[str, Dict[str, Any]] = {}
         created: List[str] = []
         existing: List[str] = []
+        renamed: List[str] = []
         errors: List[str] = []
 
         check_query = """
         query CheckDiscountCode($code: String!) {
           codeDiscountNodeByCode(code: $code) {
             id
+            codeDiscount {
+              ... on DiscountCodeBasic {
+                title
+              }
+            }
+          }
+        }
+        """
+        update_mutation = """
+        mutation RenameBrandDiscount($id: ID!, $basicCodeDiscount: DiscountCodeBasicInput!) {
+          discountCodeBasicUpdate(id: $id, basicCodeDiscount: $basicCodeDiscount) {
+            codeDiscountNode {
+              id
+            }
+            userErrors {
+              field
+              message
+            }
           }
         }
         """
@@ -947,13 +966,32 @@ class ShopifyClient:
                 results[code] = {"status": "rejected", "percent": pct, "reason": "forbidden_code_prefix"}
                 continue
 
-            # 1. Check if code already exists via GraphQL
+            # 1. Check if code already exists via GraphQL (and rename if old title mentions 'Jarvis')
             try:
                 chk = await self._graphql(check_query, {"code": code})
                 node = ((chk or {}).get("data") or {}).get("codeDiscountNodeByCode")
                 if isinstance(node, dict) and node.get("id"):
                     existing.append(code)
-                    results[code] = {"status": "existing", "percent": pct, "id": node["id"]}
+                    cur_title = str(((node.get("codeDiscount") or {}).get("title")) or "")
+                    did_rename = False
+                    if "jarvis" in cur_title.lower():
+                        try:
+                            upd = await self._graphql(
+                                update_mutation,
+                                {"id": node["id"], "basicCodeDiscount": {"title": title}},
+                            )
+                            u_errs = (((upd or {}).get("data") or {}).get("discountCodeBasicUpdate") or {}).get("userErrors") or []
+                            if not (upd or {}).get("errors") and not u_errs:
+                                did_rename = True
+                                renamed.append(code)
+                        except Exception:
+                            pass
+                    results[code] = {
+                        "status": "renamed" if did_rename else "existing",
+                        "percent": pct,
+                        "id": node["id"],
+                        "title": title if did_rename else (cur_title or title),
+                    }
                     continue
             except Exception:
                 pass
@@ -1040,6 +1078,7 @@ class ShopifyClient:
             "ok": len(errors) == 0,
             "created": created,
             "existing": existing,
+            "renamed": renamed,
             "errors": errors,
             "codes": results,
         }
