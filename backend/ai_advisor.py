@@ -481,10 +481,18 @@ class AIAdvisor:
                 "en": "These shoppers reached checkout; contact them only if they gave consent.",
                 "es": "Llegaron al checkout; contáctalos solo si dieron su consentimiento.",
             }, lang), "icon": "🛒"})
+        top_prods = snap.get("top_products") if is_connected(snap) and isinstance(snap.get("top_products"), list) else []
+        featured_name = (top_prods[0].get("name") if top_prods and isinstance(top_prods[0], dict) else None) or ""
         tasks.append({"task": _pick({
-            "ro": "Postează un Reel/TikTok de 15–20 s care arată grosimea crewneck-ului de 380 g/m² și fit-ul boxy al tricourilor.",
-            "en": "Post a 15–20s Reel/TikTok showing the 380 g/m² crewneck fabric and the boxy tee fit.",
-            "es": "Publica un Reel/TikTok de 15–20 s mostrando el tejido de 380 g/m² de la crewneck y el fit boxy de las camisetas.",
+            "ro": (f"Postează un Reel/TikTok de 15–20 s cu piesa {featured_name} (textura materialului și cum se așază pe corp)."
+                   if featured_name else
+                   "Postează un Reel/TikTok de 15–20 s care arată textura materialului și croiala unei piese principale din colecție."),
+            "en": (f"Post a 15–20s Reel/TikTok featuring {featured_name} (fabric texture and fit)."
+                   if featured_name else
+                   "Post a 15–20s Reel/TikTok showing the fabric texture and fit of a key piece from your collection."),
+            "es": (f"Publica un Reel/TikTok de 15–20 s con {featured_name} (textura del tejido y caída)."
+                   if featured_name else
+                   "Publica un Reel/TikTok de 15–20 s mostrando la textura del tejido y el corte de una prenda principal."),
         }, lang), "why": _pick({
             "ro": "Idee: conținutul care arată materialul real răspunde la întrebarea principală a cumpărătorului online.",
             "en": "Idea: showing the real fabric answers the main question online shoppers have.",
@@ -827,7 +835,7 @@ Jarvis:"""
 Vânzări = Trafic × Rata de conversie × Valoarea medie a comenzii. Verifică pe rând:
 
 1. **Trafic** — Shopify → Analytics → Sesiuni. Jarvis nu citește sesiunile; dacă sunt puține, problema principală e traficul.
-2. **Pagina de produs** — fotografii clare (inclusiv purtat), ghid de mărimi cu măsuri reale, gramajul (ex. 380 g/m² la crewneck), politica reală de livrare și retur din Shopify → Policies.
+2. **Pagina de produs** — fotografii clare (inclusiv purtat), ghid de mărimi cu măsuri reale, gramajul și compoziția reală din fișa produsului, politica reală de livrare și retur din Shopify → Policies.
 3. **Coșuri abandonate** — în 7 zile: {carts_txt}. Secvența Jarvis scrie doar clienților cu consimțământ de marketing.
 4. **Încredere** — linkuri vizibile către politici, date de contact (info@maisongrozavu.com), recenzii doar dacă sunt reale.
 
@@ -841,7 +849,7 @@ Vânzări = Trafic × Rata de conversie × Valoarea medie a comenzii. Verifică 
 Sales = Traffic × Conversion rate × Average order value. Check in order:
 
 1. **Traffic** — Shopify → Analytics → Sessions. Jarvis doesn't read sessions; if they are low, traffic is the main issue.
-2. **Product page** — clear photos (including worn), size guide with real measurements, fabric weight (e.g. 380 g/m² crewneck), your real shipping and returns policy from Shopify → Policies.
+2. **Product page** — clear photos (including worn), size guide with real measurements, real fabric weight and composition from the product sheet, your real shipping and returns policy from Shopify → Policies.
 3. **Abandoned checkouts** — last 7 days: {carts_txt}. Jarvis only messages customers with marketing consent.
 4. **Trust** — visible policy links, contact details, reviews only if they are real.
 
@@ -855,7 +863,7 @@ Sales = Traffic × Conversion rate × Average order value. Check in order:
 Ventas = Tráfico × Tasa de conversión × Ticket medio. Revisa por orden:
 
 1. **Tráfico** — Shopify → Analytics → Sesiones. Jarvis no lee las sesiones; si son pocas, el problema principal es el tráfico.
-2. **Ficha de producto** — fotos claras (también puestas), guía de tallas con medidas reales, gramaje (p. ej. 380 g/m² en la crewneck), tu política real de envíos y devoluciones de Shopify → Políticas.
+2. **Ficha de producto** — fotos claras (también puestas), guía de tallas con medidas reales, gramaje y composición real de la prenda, tu política real de envíos y devoluciones de Shopify → Políticas.
 3. **Carritos abandonados** — últimos 7 días: {carts_txt}. Jarvis solo escribe a clientes con consentimiento de marketing.
 4. **Confianza** — enlaces visibles a las políticas, datos de contacto, reseñas solo si son reales.
 
@@ -870,30 +878,30 @@ Ventas = Tráfico × Tasa de conversión × Ticket medio. Revisa por orden:
             return _pick({
                 "ro": f"""### 🎬 Script TikTok / Reels (idee, 20–30 s) — {BRAND}
 
-- **0–3 s (hook):** prim-plan cu mâna care strânge materialul crewneck-ului. Text: „380 g/m². Așa arată un crewneck greu.”
+- **0–3 s (hook):** prim-plan cu mâna care arată textura materialului și detaliul brodat/imprimat.
 - **3–10 s:** piesa purtată, din față și din spate; se vede logo-ul și fit-ul.
-- **10–20 s:** detalii reale — gramaj, croială boxy la tricou (170 g/m²), cum cade la mișcare.
+- **10–20 s:** detalii reale din fișa produsului — gramajul exact, croiala și cum cade la mișcare.
 - **20–30 s (CTA):** „Designed in Spain. Link în bio.” — link direct către produs.
 
-**Descriere (EN, pentru public ES/RO):** "Heavyweight 380 g/m² crewneck. Designed in Spain. Link in bio. #streetwear #heavyweight #grozavu"
+**Descriere (EN, pentru public ES/RO):** "Premium streetwear by {BRAND}. Designed in Spain. Link in bio. #streetwear #grozavu"
 Nu menționa reduceri sau stoc limitat decât dacă sunt reale.{offline_note}""",
                 "en": f"""### 🎬 TikTok / Reels script (idea, 20–30s) — {BRAND}
 
-- **0–3s (hook):** close-up of a hand squeezing the crewneck fabric. On-screen: "380 g/m². This is what heavyweight means."
+- **0–3s (hook):** close-up of the fabric texture and embroidered/printed detail.
 - **3–10s:** the piece worn, front and back; logo and fit visible.
-- **10–20s:** real details — weight, boxy tee fit (170 g/m²), how it moves.
+- **10–20s:** real details from the product sheet — exact fabric weight, cut, and how it moves.
 - **20–30s (CTA):** "Designed in Spain. Link in bio." — link straight to the product.
 
-**Caption:** "Heavyweight 380 g/m² crewneck. Designed in Spain. Link in bio. #streetwear #heavyweight #grozavu"
+**Caption:** "Premium streetwear by {BRAND}. Designed in Spain. Link in bio. #streetwear #grozavu"
 Only mention discounts or limited stock if they are real.{offline_note}""",
                 "es": f"""### 🎬 Guion TikTok / Reels (idea, 20–30 s) — {BRAND}
 
-- **0–3 s (gancho):** primer plano de una mano apretando el tejido de la crewneck. Texto: "380 g/m². Esto es una sudadera gruesa."
+- **0–3 s (gancho):** primer plano mostrando la textura del tejido y el detalle bordado/estampado.
 - **3–10 s:** la prenda puesta, de frente y de espaldas; se ven el logo y el fit.
-- **10–20 s:** detalles reales — gramaje, fit boxy de la camiseta (170 g/m²), cómo cae al moverse.
+- **10–20 s:** detalles reales de la ficha — gramaje exacto, corte y cómo cae al moverse.
 - **20–30 s (CTA):** "Designed in Spain. Link en la bio." — enlace directo al producto.
 
-**Descripción:** "Crewneck de 380 g/m². Designed in Spain. Link en la bio. #streetwear #grozavu"
+**Descripción:** "Premium streetwear by {BRAND}. Designed in Spain. Link en la bio. #streetwear #grozavu"
 Menciona descuentos o stock limitado solo si son reales.{offline_note}""",
             }, lang)
 
@@ -944,7 +952,7 @@ Reglas: no prometas que los productos están apartados para el cliente ni que qu
 {data_line}
 
 1. **Trust sub butonul „Add to cart”:** linkuri către politica reală de livrare și retur (Shopify → Policies) și contact. Nu adăuga termene sau garanții care nu sunt în politici.
-2. **Ghid de mărimi** cu măsuri reale pentru fit-ul boxy/oversized; gramajul în descriere (380 g/m² crewneck, 170 g/m² tee).
+2. **Ghid de mărimi** cu măsuri reale pentru fit-ul boxy/oversized; gramajul și compoziția reală în descrierea fiecărui produs.
 3. **Fotografii:** produs fără persoane + 4 fotografii cu model, verticale 4:5, cu logo-ul fidel produsului.
 4. **Titluri și descrieri:** vezi propunerile din tabul SEO (doar previzualizare, le aplici tu).
 5. **Checkout:** testează o comandă de probă de pe mobil.{offline_note}""",
@@ -952,7 +960,7 @@ Reglas: no prometas que los productos están apartados para el cliente ni que qu
 {data_line}
 
 1. **Trust under "Add to cart":** links to your real shipping and returns policy (Shopify → Policies) and contact. Don't add delivery times or guarantees that aren't in your policies.
-2. **Size guide** with real measurements for the boxy/oversized fit; fabric weight in the description (380 g/m² crewneck, 170 g/m² tee).
+2. **Size guide** with real measurements for the boxy/oversized fit; real fabric weight and composition in each product description.
 3. **Photos:** product shots without people + model photos, vertical 4:5, logo faithful to the product.
 4. **Titles & descriptions:** see the SEO tab proposals (preview only, you apply them).
 5. **Checkout:** place a test order from mobile.{offline_note}""",
@@ -960,7 +968,7 @@ Reglas: no prometas que los productos están apartados para el cliente ni que qu
 {data_line}
 
 1. **Confianza bajo "Añadir al carrito":** enlaces a tu política real de envíos y devoluciones (Shopify → Políticas) y contacto. No añadas plazos ni garantías que no estén en tus políticas.
-2. **Guía de tallas** con medidas reales para el fit boxy/oversize; gramaje en la descripción (380 g/m² crewneck, 170 g/m² camiseta).
+2. **Guía de tallas** con medidas reales para el fit boxy/oversize; gramaje y composición real en la descripción de cada producto.
 3. **Fotos:** producto sin personas + fotos con modelo, verticales 4:5, con el logo fiel al producto.
 4. **Títulos y descripciones:** revisa las propuestas de la pestaña SEO (solo vista previa).
 5. **Checkout:** haz un pedido de prueba desde el móvil.{offline_note}""",
@@ -1069,25 +1077,25 @@ La reseña es opcional y nunca se premia de forma condicionada. Comprueba las in
                 "ro": f"""### 🎯 Texte pentru reclame Meta (idei, în engleză pentru ES/RO)
 
 **Unghi 1 — Material:**
-- Text: "Heavyweight 380 g/m² crewneck. Boxy fit. Designed in Spain."
+- Text: "Heavyweight combed cotton fleece. Relaxed fit. Designed in Spain."
 - Titlu: "{BRAND} — Premium streetwear"
 - CTA: Shop now
 
 **Unghi 2 — Fit:**
-- Text: "Boxy tees cut to sit right. 170 g/m² cotton, designed in Spain."
-- Titlu: "The boxy tee by {BRAND}"
+- Text: "Boxy tees & wide-leg cuts built to sit right. Designed in Spain."
+- Titlu: "The collection by {BRAND}"
 
 Testează fiecare unghi cu buget mic și urmărește rezultatele reale în Meta Ads Manager. Nu promite termene de livrare sau reduceri care nu există.{offline_note}""",
                 "en": f"""### 🎯 Meta ad copy (ideas)
 
-**Angle 1 — Fabric:** "Heavyweight 380 g/m² crewneck. Boxy fit. Designed in Spain." · Headline: "{BRAND} — Premium streetwear" · CTA: Shop now
-**Angle 2 — Fit:** "Boxy tees cut to sit right. 170 g/m², designed in Spain." · Headline: "The boxy tee by {BRAND}"
+**Angle 1 — Fabric:** "Heavyweight combed cotton fleece. Relaxed fit. Designed in Spain." · Headline: "{BRAND} — Premium streetwear" · CTA: Shop now
+**Angle 2 — Fit:** "Boxy tees & wide-leg cuts built to sit right. Designed in Spain." · Headline: "The collection by {BRAND}"
 
 Test each angle with a small budget and judge by real results in Ads Manager. Don't promise delivery times or discounts that don't exist.{offline_note}""",
                 "es": f"""### 🎯 Textos para anuncios de Meta (ideas)
 
-**Ángulo 1 — Tejido:** "Crewneck de 380 g/m². Fit boxy. Designed in Spain." · Título: "{BRAND} — Streetwear premium" · CTA: Comprar
-**Ángulo 2 — Fit:** "Camisetas boxy de 170 g/m², designed in Spain." · Título: "La camiseta boxy de {BRAND}"
+**Ángulo 1 — Tejido:** "Algodón peinado de alto gramaje. Fit relajado. Designed in Spain." · Título: "{BRAND} — Streetwear premium" · CTA: Comprar
+**Ángulo 2 — Fit:** "Camisetas boxy y pantalones wide-leg, designed in Spain." · Título: "La colección de {BRAND}"
 
 Prueba cada ángulo con poco presupuesto y decide con los resultados reales de Ads Manager. No prometas plazos ni descuentos que no existan.{offline_note}""",
             }, lang)
@@ -1379,10 +1387,10 @@ Compáralo con tus sesiones reales en Shopify → Analytics.""",
         brand = _customer_brand(shop_name)
         hooks = [
             {"title": "Hook material (TikTok/Reels)", "duration": "15–20s",
-             "script": "Prim-plan cu mâna care strânge materialul: „380 g/m². Așa arată un crewneck greu.” Apoi piesa purtată, față/spate. CTA: link în bio.",
+             "script": "Prim-plan cu mâna care arată textura materialului și interiorul flaușat. Apoi piesa purtată, față/spate. CTA: link în bio.",
              "best_sound": "Sunet trending din nișa streetwear (alege-l în aplicație)"},
-            {"title": "Hook fit boxy", "duration": "15s",
-             "script": "Tricoul boxy (170 g/m²) purtat de două persoane cu mărimi diferite — cum cade umărul și lungimea. Text: „Boxy fit, designed in Spain.”",
+            {"title": "Hook fit & siluetă", "duration": "15s",
+             "script": "Piesa purtată de două persoane cu mărimi diferite — cum cade umărul și croiala wide-leg/boxy. Text: „Designed in Spain.”",
              "best_sound": "Beat hip-hop / lo-fi"},
             {"title": "Hook detaliu logo", "duration": "10–15s",
              "script": "Macro pe logo-ul GROZAVU, apoi tranziție la ținuta completă. Fără afirmații despre stoc sau reduceri dacă nu sunt reale.",
@@ -1433,7 +1441,7 @@ Compáralo con tus sesiones reales en Shopify → Analytics.""",
             "connected": connected,
             "label": "Idei — Jarvis nu aplică nimic în magazin. Creezi ofertele în Shopify Admin → Discounts.",
             "abandoned_carts": snapshot.get("abandoned_carts") if connected else None,
-            "urgency_banner": "NEW DROP — Heavyweight 380 g/m² crewnecks. Designed in Spain.",
+            "urgency_banner": f"NEW COLLECTION — Premium streetwear by {BRAND}. Designed in Spain.",
             "urgency_banner_note": "Folosește doar informații adevărate (fără „stoc limitat” sau termene inventate).",
             "cart_bump": {
                 "product_title": "Șapcă sau sling bag (alege un produs real din magazin)",
