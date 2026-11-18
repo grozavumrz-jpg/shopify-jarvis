@@ -31,6 +31,7 @@ from google_merchant_feed import build_google_merchant_xml, build_feed_items, va
 from seo_optimizer import ProductSEOOptimizer
 from deliverability_checker import DeliverabilityChecker
 from store_watchdog import StoreWatchdogAgent
+from google_analytics_service import GoogleTrafficService
 import compliance_guard
 from compliance_guard import (is_quiet_hours, can_dispatch_to_customer, log_customer_dispatch,
                               ephemeral_db_blocks_marketing)
@@ -61,6 +62,7 @@ post_delivery_service = PostDeliveryService()
 seo_optimizer = ProductSEOOptimizer(brand_name=BRAND_NAME, domain=BRAND_DOMAIN)
 deliverability_checker = DeliverabilityChecker()
 store_watchdog = StoreWatchdogAgent(brand_domain=BRAND_DOMAIN, brand_name=BRAND_NAME)
+google_traffic = GoogleTrafficService(brand_domain=BRAND_DOMAIN)
 
 FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 assets_dir = os.path.join(FRONTEND_DIST, "assets")
@@ -231,6 +233,9 @@ async def health():
                                     "deci mesajele de marketing așteaptă Postgres.")
         if ephemeral_db_blocks_marketing() else None,
         "autopilot_last_cycle_at": AUTOPILOT_STATUS.get("last_cycle_at"),
+        "web_search_grounding_enabled": True,
+        "google_search_console_configured": google_traffic.is_gsc_configured(),
+        "google_analytics_configured": google_traffic.is_ga4_configured(),
     }
 
 
@@ -428,6 +433,18 @@ def _loads_maybe(value: Any) -> Any:
     return value
 
 
+async def get_google_traffic_prompt_context() -> str:
+    """Return compact real GSC + GA4 prompt block if configured; '' otherwise (never blocks or raises)."""
+    if not google_traffic.is_configured():
+        return ""
+    try:
+        report = await google_traffic.get_combined_report(days=28, force_refresh=False)
+        return google_traffic.to_prompt_context(report)
+    except Exception as e:
+        print(f"[GoogleTraffic Context Warning]: {e}")
+        return ""
+
+
 # ── API endpoints ─────────────────────────────────────────────────────────────
 
 @app.get("/api/briefing")
@@ -455,7 +472,8 @@ async def get_briefing(shop: Optional[str] = Query(None), lang: str = Query("ro"
         except Exception:
             pass
 
-    briefing = await ai.generate_briefing(snapshot, lang=lang)
+    traffic_ctx = await get_google_traffic_prompt_context()
+    briefing = await ai.generate_briefing(snapshot, lang=lang, google_traffic_context=traffic_ctx or None)
     if isinstance(briefing, dict):
         briefing["_lang"] = lang
     try:
@@ -515,18 +533,60 @@ async def chat(req: ChatRequest, auth: AuthContext = Depends(require_auth)):
     except Exception:
         clean_history = []
 
-    reply = await ai.chat(
-        shop_name=record.get("shop_name") or BRAND_NAME,
-        snapshot=snapshot,
-        history=clean_history,
-        message=message,
-        lang=req.lang or "ro",
-    )
+    traffic_ctx = await get_google_traffic_prompt_context()
+    ai.reset_last_chat_meta()
+    if traffic_ctx:
+        reply = await ai.chat(
+            shop_name=record.get("shop_name") or BRAND_NAME,
+            snapshot=snapshot,
+            history=clean_history,
+            message=message,
+            lang=req.lang or "ro",
+            google_traffic_context=traffic_ctx,
+        )
+    else:
+        reply = await ai.chat(
+            shop_name=record.get("shop_name") or BRAND_NAME,
+            snapshot=snapshot,
+            history=clean_history,
+            message=message,
+            lang=req.lang or "ro",
+        )
+    meta = ai.get_last_chat_meta()
     try:
         db.save_message(shop, "assistant", reply)
     except Exception as e:
         print(f"[db.save_message assistant warning]: {e}")
-    return {"reply": reply, "connected": bool(snapshot.get("connected"))}
+    return {
+        "reply": reply,
+        "connected": bool(snapshot.get("connected")),
+        "web_grounded": bool(meta.get("web_grounded")),
+        "sources": meta.get("sources") or [],
+        "search_queries": meta.get("search_queries") or [],
+    }
+
+
+@app.get("/api/google/analytics")
+async def get_google_analytics(shop: Optional[str] = Query(None), days: int = Query(28, ge=1, le=90),
+                               auth: AuthContext = Depends(require_auth)):
+    """Real Google Search Console & Google Analytics 4 metrics for maisongrozavu.com (or setup guide if unconfigured)."""
+    resolve_shop(auth, shop)
+    return await google_traffic.get_combined_report(days=days, force_refresh=False)
+
+
+class GoogleAnalyticsRefreshRequest(BaseModel):
+    shop: Optional[str] = None
+    days: int = 28
+
+
+@app.post("/api/google/analytics/refresh")
+async def refresh_google_analytics(req: Optional[GoogleAnalyticsRefreshRequest] = None,
+                                   auth: AuthContext = Depends(require_auth)):
+    """Clear cache and fetch fresh Google Search Console + GA4 data immediately."""
+    resolve_shop(auth, req.shop if req else None)
+    days = max(1, min(int((req.days if req else 28) or 28), 90))
+    google_traffic.clear_cache()
+    return await google_traffic.get_combined_report(days=days, force_refresh=True)
 
 
 # ── Growth ideas (AI suggestions, not data) ───────────────────────────────────

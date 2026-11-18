@@ -6,3 +6,4 @@ psycopg2-binary==2.9.13
 pydantic==2.14.2
 tzdata==2026.6
 pillow==11.3.0
+cryptography==50.0.0

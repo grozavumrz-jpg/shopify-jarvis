@@ -15,11 +15,16 @@ import json
 import math
 import re
 import asyncio
+import contextvars
 import urllib.parse
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 
 import httpx
+
+_LAST_CHAT_META: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
+    "_LAST_CHAT_META", default=None
+)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
@@ -210,10 +215,21 @@ class AIAdvisor:
         return (os.getenv("JARVIS_ADVISOR_PROVIDER") or "gemini").strip().lower()
 
     async def _call_advisor_model(self, prompt: str, json_mode: bool = False,
-                                  max_tokens: int = 1200, temperature: float = 0.7) -> str:
+                                  max_tokens: int = 1200, temperature: float = 0.7,
+                                  use_web_search: bool = False,
+                                  grounding_out: Optional[Dict[str, Any]] = None) -> str:
         """Optional local-only Ollama for advisory chat/briefings, never actions."""
         provider = self._advisor_provider()
         if provider == "gemini":
+            if use_web_search:
+                return await self._call_gemini(
+                    prompt,
+                    json_mode=json_mode,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    use_web_search=True,
+                    grounding_out=grounding_out,
+                )
             return await self._call_gemini(prompt, json_mode=json_mode, max_tokens=max_tokens, temperature=temperature)
         if provider != "ollama":
             raise GeminiUnavailable("Unknown advisor provider")
@@ -277,10 +293,13 @@ class AIAdvisor:
     # ── Gemini ────────────────────────────────────────────────────────────────
 
     async def _call_gemini(self, prompt: str, json_mode: bool = False, max_tokens: int = 1200,
-                           temperature: float = 0.7) -> str:
+                           temperature: float = 0.7, use_web_search: bool = False,
+                           grounding_out: Optional[Dict[str, Any]] = None) -> str:
         """
         Call Gemini generateContent via REST. The API key goes in the `x-goog-api-key` header
         (never in the URL). Tries models from get_gemini_models() in order.
+        When `use_web_search=True` (and not `json_mode`), enables official Google Search
+        Grounding (`tools: [{"google_search": {}}]`) and populates `grounding_out` if provided.
         Raises GeminiUnavailable when no key / every model failed.
         """
         key = self._get_api_key()
@@ -288,6 +307,7 @@ class AIAdvisor:
             raise GeminiUnavailable("GEMINI_API_KEY not configured")
         headers = {"x-goog-api-key": key, "Content-Type": "application/json"}
         last_error = ""
+        enable_search = bool(use_web_search and not json_mode)
         for model in get_gemini_models():
             gen_cfg: Dict[str, Any] = {"temperature": temperature, "maxOutputTokens": max_tokens}
             if json_mode:
@@ -296,8 +316,11 @@ class AIAdvisor:
                 gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
             else:
                 gen_cfg["maxOutputTokens"] = max(max_tokens, 4096)
-            payload = {"contents": [{"role": "user", "parts": [{"text": prompt}]}], "generationConfig": gen_cfg}
+            payload: Dict[str, Any] = {"contents": [{"role": "user", "parts": [{"text": prompt}]}], "generationConfig": gen_cfg}
+            if enable_search:
+                payload["tools"] = [{"google_search": {}}]
             url = f"{GEMINI_BASE_URL}/models/{model}:generateContent"
+            retried_without_tools = False
             for attempt in range(2):
                 try:
                     async with httpx.AsyncClient(timeout=GEMINI_TIMEOUT) as client:
@@ -313,9 +336,18 @@ class AIAdvisor:
                         break
                     text = self._extract_gemini_text(data)
                     if text:
+                        if isinstance(grounding_out, dict):
+                            meta = self._extract_grounding_metadata(data)
+                            grounding_out.clear()
+                            grounding_out.update(meta)
                         return text
                     last_error = f"{model}: empty response"
                     break
+                if res.status_code == 400 and "tools" in payload and not retried_without_tools:
+                    # Graceful fallback if a specific model rejects google_search tool
+                    payload = {k: v for k, v in payload.items() if k != "tools"}
+                    retried_without_tools = True
+                    continue
                 if res.status_code in (401, 403):
                     raise GeminiUnavailable(f"Gemini rejected the API key ({res.status_code})")
                 if res.status_code in (429, 500, 503) and attempt == 0:
@@ -336,6 +368,80 @@ class AIAdvisor:
             if text.strip():
                 return text.strip()
         return ""
+
+    @staticmethod
+    def _extract_grounding_metadata(data: Any) -> Dict[str, Any]:
+        """Extract deduplicated live web citations and search queries from Gemini groundingMetadata."""
+        sources: List[Dict[str, str]] = []
+        seen_urls: set = set()
+        queries: List[str] = []
+        if not isinstance(data, dict):
+            return {"web_grounded": False, "sources": [], "search_queries": []}
+        for cand in data.get("candidates") or []:
+            gm = (cand or {}).get("groundingMetadata") or (cand or {}).get("grounding_metadata")
+            if not isinstance(gm, dict):
+                continue
+            for q in gm.get("webSearchQueries") or gm.get("web_search_queries") or []:
+                qs = str(q or "").strip()
+                if qs and qs not in queries:
+                    queries.append(qs)
+            for chunk in gm.get("groundingChunks") or gm.get("grounding_chunks") or []:
+                web = (chunk or {}).get("web") if isinstance(chunk, dict) else None
+                if not isinstance(web, dict):
+                    continue
+                uri = str(web.get("uri") or "").strip()
+                if not uri.startswith(("http://", "https://")) or uri in seen_urls:
+                    continue
+                seen_urls.add(uri)
+                title = str(web.get("title") or "").strip() or urllib.parse.urlparse(uri).netloc or uri
+                sources.append({"title": title[:120], "url": uri})
+                if len(sources) >= 6:
+                    break
+        return {
+            "web_grounded": bool(sources or queries),
+            "sources": sources[:6],
+            "search_queries": queries[:6],
+        }
+
+    @staticmethod
+    def _should_use_web_search(message: str) -> bool:
+        """Enable live Gemini Google Search Grounding for market/trend/competitor/SEO/web queries."""
+        raw = (message or "").strip()
+        low = raw.lower()
+        if not low:
+            return False
+        if re.match(r"^/?(web|search|cauta|caută)\b", low):
+            return True
+        web_triggers = (
+            "trend", "tendin", "streetwear", "concuren", "competit", "piaț", "piat",
+            "prețuri", "preturi", "pricing", "benchmark", "campani", "sezon",
+            "black friday", "crăciun", "craciun", "christmas", "valentine",
+            "primăvară", "primavara", "vară", "vara", "toamnă", "toamna", "iarnă", "iarna",
+            "viral", "tiktok", "instagram", "reels", "google ads", "meta ads", "facebook ads",
+            "algoritm", "hashtag", "idei de conținut", "idei de continut", "content ideas",
+            "caută pe", "cauta pe", "pe net", "pe internet", "pe google", "online",
+            "live", "2025", "2026", "2027", "știri", "stiri", "news", "latest",
+            "zara", "bershka", "pull&bear", "supreme", "stussy", "corteiz", "represent", "essentials",
+            "seo", "keywords", "cuvinte cheie", "cuvinte-cheie",
+        )
+        return any(k in low for k in web_triggers)
+
+    @staticmethod
+    def _format_grounding_sources(sources: List[Dict[str, str]], lang: str = "ro") -> str:
+        if not sources:
+            return ""
+        header = _pick({
+            "ro": "\n\n🌐 Surse web live (Google Search):",
+            "en": "\n\n🌐 Live web sources (Google Search):",
+            "es": "\n\n🌐 Fuentes web en vivo (Google Search):",
+        }, lang)
+        lines = [header]
+        for s in sources[:6]:
+            title = str(s.get("title") or "").strip()
+            url = str(s.get("url") or "").strip()
+            if url:
+                lines.append(f"• {title or url} — {url}")
+        return "\n".join(lines)
 
     @staticmethod
     def _parse_json_object(text: str) -> Optional[Dict[str, Any]]:
@@ -655,7 +761,8 @@ class AIAdvisor:
             out["top_tasks"] = tasks
         return out
 
-    async def generate_briefing(self, snapshot: Dict, lang: str = "ro") -> Dict:
+    async def generate_briefing(self, snapshot: Dict, lang: str = "ro",
+                                google_traffic_context: Optional[str] = None) -> Dict:
         """Daily briefing. Numbers/alerts are deterministic from Shopify; Gemini only adds ideas."""
         lang = normalize_lang(lang, "ro")
         snapshot = snapshot if isinstance(snapshot, dict) else {}
@@ -663,12 +770,13 @@ class AIAdvisor:
         if not is_connected(snapshot):
             return base
 
+        traffic_block = f"\n\n{google_traffic_context.strip()}" if (google_traffic_context or "").strip() else ""
         prompt = f"""You are Jarvis, the AI assistant of the {BRAND} Shopify store ({DOMAIN}).
 {BRAND_FACTS}
 {CAPABILITIES}
 
 STORE DATA (real, from Shopify — the ONLY numbers you may use):
-{self._snapshot_to_text(snapshot)}
+{self._snapshot_to_text(snapshot)}{traffic_block}
 
 Write today's briefing ideas in {LANG_NAMES[lang]}. Return ONLY a JSON object:
 {{"greeting": "one short friendly sentence",
@@ -722,11 +830,21 @@ tasks are things the owner does (Jarvis cannot act on the store)."""
             "es": f"📊 Datos reales de Shopify: {o30} pedidos en 30 días ({revs} {cur}), {carts} carritos abandonados en 7 días.",
         }, lang)
 
-    async def chat(self, shop_name: str, snapshot: Dict, history: List[Dict], message: str, lang: str = "ro") -> str:
-        """Advisor chat. Respects `lang` (ro/en/es); never claims actions; no invented store numbers."""
+    async def chat_detailed(self, shop_name: str, snapshot: Dict, history: List[Dict], message: str,
+                            lang: str = "ro", google_traffic_context: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Advisor chat returning structured metadata:
+        {"reply": str, "web_grounded": bool, "sources": [...], "search_queries": [...]}.
+        Respects `lang` (ro/en/es); never claims actions; no invented store numbers.
+        """
         snapshot = snapshot if isinstance(snapshot, dict) else {}
         msg = message or ""
         eff_lang = normalize_lang(lang, None) or self._detect_lang(msg)
+
+        def _plain(text: str) -> Dict[str, Any]:
+            res = {"reply": text, "web_grounded": False, "sources": [], "search_queries": []}
+            _LAST_CHAT_META.set(res)
+            return res
 
         clean_input = re.sub(r"^[^\w/]+", "", msg.lower().strip()).strip()
         # Connection setup is security-sensitive and changes over time. Avoid letting
@@ -736,29 +854,29 @@ tasks are things the owner does (Jarvis cannot act on the store)."""
             r"conect|connect|conexi|conexión|access|acces|token|autoriz|authoriz|permis|instal",
             clean_input,
         ):
-            return _pick({
+            return _plain(_pick({
                 "ro": "Nu am în acest moment date Shopify verificate. Verifică starea conexiunii și autorizarea aplicației; nu pot confirma cauza sau pașii de configurare doar din această informație.",
                 "en": "Verified Shopify data is unavailable right now. Check the connection status and app authorization; this alone does not establish the cause or setup steps.",
                 "es": "Los datos verificados de Shopify no están disponibles ahora. Comprueba la conexión y la autorización de la aplicación; esto no confirma la causa ni los pasos de configuración.",
-            }, eff_lang)
+            }, eff_lang))
         elif is_connected(snapshot) and any(w in clean_input for w in ("shopify", "magazin", "store", "shop")) and re.search(
             r"conect|connect|conexi|conexión",
             clean_input,
         ):
             summary, _ = self._facts_summary(snapshot, eff_lang)
-            return _pick({
+            return _plain(_pick({
                 "ro": f"🟢 **Da, magazinul Shopify ({shop_name or BRAND}) este conectat și activ.**\n\n{summary}",
                 "en": f"🟢 **Yes, the Shopify store ({shop_name or BRAND}) is connected and active.**\n\n{summary}",
                 "es": f"🟢 **Sí, la tienda Shopify ({shop_name or BRAND}) está conectada y activa.**\n\n{summary}",
-            }, eff_lang)
+            }, eff_lang))
         if clean_input.startswith("/boost") or clean_input.startswith("boost"):
-            return self._build_boost_response(snapshot, shop_name, eff_lang, msg)
+            return _plain(self._build_boost_response(snapshot, shop_name, eff_lang, msg))
         if (clean_input.startswith("/browser") or clean_input.startswith("browser")
                 or any(k in clean_input for k in ["radar trafic", "caută clienți", "găsește clienți", "gaseste clienti"])):
-            return await self._build_radar_response(snapshot, shop_name, eff_lang, msg)
+            return _plain(await self._build_radar_response(snapshot, shop_name, eff_lang, msg))
         if (clean_input.startswith("/goal") or clean_input.startswith("goal")
                 or any(k in clean_input for k in ["simulator profit", "obiectiv vanzari", "țintă vanzari", "tinta vanzari"])):
-            return self._build_goal_response(snapshot, shop_name, eff_lang, msg)
+            return _plain(self._build_goal_response(snapshot, shop_name, eff_lang, msg))
 
         _stale_disconnect_markers = (
             "nu am în acest moment date shopify",
@@ -781,28 +899,91 @@ tasks are things the owner does (Jarvis cannot act on the store)."""
             role = "Owner" if h.get("role") == "user" else "Jarvis"
             history_str += f"{role}: {content_str[:1500]}\n"
 
+        use_web_search = self._should_use_web_search(msg)
+        owner_msg = re.sub(r"^/?(web|search)\s+", "", msg.strip(), flags=re.I) if use_web_search else msg
+        if not owner_msg.strip():
+            owner_msg = (
+                "Care sunt trendurile actuale de streetwear premium (hoodies, boxy tees) și prețurile concurenței în Europa acum?"
+                if eff_lang == "ro"
+                else "What are the latest premium streetwear trends and competitor price ranges in Europe right now?"
+            )
+
+        traffic_block = f"\n\n{google_traffic_context.strip()}" if (google_traffic_context or "").strip() else ""
+        web_search_block = (
+            "\nLIVE WEB SEARCH (Google Search Grounding ACTIVE): You have live Google Search enabled for this reply. "
+            "Use current, verified live web results for streetwear trends, competitor pricing, seasonal campaigns, "
+            "and content/SEO ideas. Cite real findings clearly without inventing URLs or numbers. "
+            "Store revenue/orders/traffic still come ONLY from STORE DATA and GOOGLE TRAFFIC & SEARCH DATA."
+            if use_web_search else ""
+        )
+
         prompt = f"""You are Jarvis, the AI assistant inside the Shopify admin of {BRAND} ({DOMAIN}).
 {BRAND_FACTS}
-{CAPABILITIES}
+{CAPABILITIES}{web_search_block}
 
 STORE DATA:
-{self._snapshot_to_text(snapshot)}
+{self._snapshot_to_text(snapshot)}{traffic_block}
 
-RULES: Use only numbers that appear in STORE DATA (earlier Jarvis messages may contain outdated or wrong numbers — ignore them). Present ideas as ideas, not as results. When STORE DATA shows 'Shopify connection status: CONNECTED', the store IS connected and active — never claim you lack access to Shopify data or that Shopify is disconnected.
-No made-up statistics, benchmarks presented as facts, reviews, ratings, delivery times or return policies.
+RULES: Use only store numbers that appear in STORE DATA or GOOGLE TRAFFIC & SEARCH DATA (earlier Jarvis messages may contain outdated or wrong numbers — ignore them). Present ideas as ideas, not as results. When STORE DATA shows 'Shopify connection status: CONNECTED', the store IS connected and active — never claim you lack access to Shopify data or that Shopify is disconnected.
+No made-up store statistics, reviews, ratings, delivery times or return policies.
 Reply in {LANG_NAMES[eff_lang]}, concise and structured (bullets, concrete steps, copy-ready texts when useful).
 
 CONVERSATION:
-{history_str}Owner: {msg[:4000]}
+{history_str}Owner: {owner_msg[:4000]}
 Jarvis:"""
+        grounding_out: Dict[str, Any] = {}
         try:
-            reply = await self._call_advisor_model(prompt, max_tokens=1200)
+            if use_web_search:
+                reply = await self._call_advisor_model(
+                    prompt, max_tokens=1400, use_web_search=True, grounding_out=grounding_out
+                )
+            else:
+                reply = await self._call_advisor_model(prompt, max_tokens=1200)
             if reply and len(reply.strip()) > 20:
-                return reply.strip()
+                clean_reply = reply.strip()
+                sources = grounding_out.get("sources") or []
+                if sources and not any(s.get("url", "") in clean_reply for s in sources):
+                    clean_reply += self._format_grounding_sources(sources, eff_lang)
+                res_obj = {
+                    "reply": clean_reply,
+                    "web_grounded": bool(grounding_out.get("web_grounded")),
+                    "sources": sources,
+                    "search_queries": grounding_out.get("search_queries") or [],
+                }
+                _LAST_CHAT_META.set(res_obj)
+                return res_obj
         except Exception as e:
             print(f"[Chat] AI advisor unavailable, offline reply used: {str(e)[:120]}")
 
-        return await self._autonomous_brain_reply(shop_name, snapshot, msg, eff_lang)
+        return _plain(await self._autonomous_brain_reply(shop_name, snapshot, msg, eff_lang))
+
+    @staticmethod
+    def reset_last_chat_meta() -> None:
+        _LAST_CHAT_META.set(None)
+
+    @staticmethod
+    def get_last_chat_meta() -> Dict[str, Any]:
+        meta = _LAST_CHAT_META.get()
+        if isinstance(meta, dict):
+            return {
+                "web_grounded": bool(meta.get("web_grounded")),
+                "sources": list(meta.get("sources") or []),
+                "search_queries": list(meta.get("search_queries") or []),
+            }
+        return {"web_grounded": False, "sources": [], "search_queries": []}
+
+    async def chat(self, shop_name: str, snapshot: Dict, history: List[Dict], message: str,
+                   lang: str = "ro", google_traffic_context: Optional[str] = None) -> str:
+        """Advisor chat. Respects `lang` (ro/en/es); never claims actions; no invented store numbers."""
+        res = await self.chat_detailed(
+            shop_name=shop_name,
+            snapshot=snapshot,
+            history=history,
+            message=message,
+            lang=lang,
+            google_traffic_context=google_traffic_context,
+        )
+        return res["reply"]
 
     async def _autonomous_brain_reply(self, shop_name: str, snapshot: Dict, message: str, lang: str = "ro") -> str:
         """Offline replies (no Gemini). Templates are ideas; store numbers only from the snapshot."""

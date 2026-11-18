@@ -343,6 +343,7 @@ SHOP_TABLES: List[Tuple[str, str]] = [
     ("checkout_drip_states", "shop_domain"),
     ("post_delivery_automations", "shop_domain"),
     ("seo_automation_logs", "shop_domain"),
+    ("product_visual_colors", "shop_domain"),
     ("marketing_consents", "shop_domain"),
     ("message_frequency_logs", "shop_domain"),
     ("suppression_list", "shop_domain"),

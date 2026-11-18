@@ -467,6 +467,10 @@ export default function App() {
   const [watchdogData, setWatchdogData] = useState(null)
   const [scanningWatchdog, setScanningWatchdog] = useState(false)
 
+  // Google Search Console & GA4 Real Traffic State
+  const [googleAnalyticsData, setGoogleAnalyticsData] = useState(null)
+  const [refreshingGoogleAnalytics, setRefreshingGoogleAnalytics] = useState(false)
+
   // Delivery & Email Gateway State
   const [deliverySettings, setDeliverySettings] = useState({
     email_provider: 'resend',
@@ -833,10 +837,45 @@ export default function App() {
     }
   }
 
+  const loadGoogleAnalytics = async () => {
+    try {
+      const res = await api(`/api/google/analytics?${qShop}&days=28`)
+      if (res.ok) {
+        setGoogleAnalyticsData(await readJson(res))
+        return true
+      }
+      return false
+    } catch (e) {
+      console.error('Google Analytics load failed', e)
+      return false
+    }
+  }
+
+  const handleRefreshGoogleAnalytics = async () => {
+    if (refreshingGoogleAnalytics) return
+    setRefreshingGoogleAnalytics(true)
+    try {
+      const res = await apiPost('/api/google/analytics/refresh', { shop, days: 28 })
+      if (res.ok) {
+        const data = await readJson(res)
+        setGoogleAnalyticsData(data)
+        showToast(lang === 'ro'
+          ? (data.connected ? '✅ Date live GSC & GA4 actualizate!' : 'ℹ️ GSC & GA4 verificate (necesită configurare).')
+          : (data.connected ? '✅ Live GSC & GA4 data refreshed!' : 'ℹ️ GSC & GA4 checked (setup required).'))
+      }
+    } catch (e) {
+      console.error('Google Analytics refresh failed', e)
+    } finally {
+      setRefreshingGoogleAnalytics(false)
+    }
+  }
+
   // Load only what the visible tab / subtab needs
   useEffect(() => {
     if (activeTab === 'radar') {
-      if (activeRadarSubtab === 'google-merchant') {
+      if (activeRadarSubtab === 'google-analytics') {
+        ensureLoaded('googleAnalytics', loadGoogleAnalytics)
+      } else if (activeRadarSubtab === 'google-merchant') {
         ensureLoaded('feed', loadFeedValidation)
         ensureLoaded('seoAudit', loadSeoAudit)
         ensureLoaded('seoLogs', loadSeoLogs)
@@ -1144,7 +1183,16 @@ export default function App() {
       }
       const reply = typeof data.reply === 'string' && data.reply.trim() ? data.reply : null
       if (!reply) throw new Error(effectiveLang === 'ro' ? 'răspuns gol' : 'empty reply')
-      setChatMessages([...updated, { role: 'assistant', content: reply }])
+      setChatMessages([
+        ...updated,
+        {
+          role: 'assistant',
+          content: reply,
+          web_grounded: Boolean(data.web_grounded),
+          sources: asArray(data.sources),
+          search_queries: asArray(data.search_queries),
+        }
+      ])
       if (voiceEnabled) {
         speakText(reply.slice(0, 260))
       }
@@ -1660,6 +1708,12 @@ export default function App() {
           <div className="radar-view">
             <div className="subnav-pills">
               <button 
+                className={`subnav-pill ${activeRadarSubtab === 'google-analytics' ? 'active' : ''}`}
+                onClick={() => setActiveRadarSubtab('google-analytics')}
+              >
+                📊 Trafic Real (GSC & GA4)
+              </button>
+              <button 
                 className={`subnav-pill ${activeRadarSubtab === 'google-merchant' ? 'active' : ''}`}
                 onClick={() => setActiveRadarSubtab('google-merchant')}
               >
@@ -1690,6 +1744,198 @@ export default function App() {
                 🎯 Simulator Țintă (/goal)
               </button>
             </div>
+
+            {/* Subtab 00: Google Search Console & GA4 Real Traffic */}
+            {activeRadarSubtab === 'google-analytics' && (
+              <div className="radar-content-grid">
+                <div className="hud-card">
+                  <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                    <span>📊 Trafic Real & Poziție Google (GSC & GA4 — Ultimele 28 zile)</span>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <span
+                        className="tag-live"
+                        style={{
+                          background: googleAnalyticsData?.search_console?.connected ? '#065f46' : '#3f3f46',
+                          color: googleAnalyticsData?.search_console?.connected ? '#6ee7b7' : '#d4d4d8',
+                        }}
+                      >
+                        {googleAnalyticsData?.search_console?.connected ? '✅ GSC Conectat' : '⚙️ GSC Neconectat'}
+                      </span>
+                      <span
+                        className="tag-live"
+                        style={{
+                          background: googleAnalyticsData?.ga4?.connected ? '#065f46' : '#3f3f46',
+                          color: googleAnalyticsData?.ga4?.connected ? '#6ee7b7' : '#d4d4d8',
+                        }}
+                      >
+                        {googleAnalyticsData?.ga4?.connected ? '✅ GA4 Conectat' : '⚙️ GA4 Neconectat'}
+                      </span>
+                      <button
+                        className="calculate-btn"
+                        disabled={refreshingGoogleAnalytics}
+                        onClick={handleRefreshGoogleAnalytics}
+                        style={{ padding: '6px 12px', fontSize: '12px' }}
+                      >
+                        {refreshingGoogleAnalytics ? '⏳ Se actualizează...' : '🔄 Actualizează Live'}
+                      </button>
+                    </div>
+                  </div>
+                  <p className="card-desc">
+                    Jarvis citește direct din API-urile oficiale <strong>Google Search Console</strong> și <strong>Google Analytics 4</strong> traficul real, poziția în Google și cuvintele-cheie care aduc vizitatori pe <code>{googleAnalyticsData?.domain || 'maisongrozavu.com'}</code> — și le folosește automat și în Chat & Briefing.
+                  </p>
+
+                  {!googleAnalyticsData && (
+                    <div style={{ padding: '16px', color: '#a8a29e' }}>⏳ Se încarcă datele Google Search Console & GA4...</div>
+                  )}
+
+                  {googleAnalyticsData?.search_console?.connected && googleAnalyticsData?.search_console?.summary && (
+                    <div style={{ marginTop: '14px' }}>
+                      <div style={{ fontSize: '13px', fontWeight: 700, color: '#f59e0b', marginBottom: '10px' }}>
+                        🔍 GOOGLE SEARCH CONSOLE ({googleAnalyticsData.search_console.site_url})
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(145px, 1fr))', gap: '10px', marginBottom: '16px' }}>
+                        <div className="autopilot-stat-card">
+                          <div className="stat-label">CLICK-URI GOOGLE</div>
+                          <div className="stat-value">{fmtNum(googleAnalyticsData.search_console.summary.clicks)}</div>
+                        </div>
+                        <div className="autopilot-stat-card">
+                          <div className="stat-label">AFIȘĂRI GOOGLE</div>
+                          <div className="stat-value">{fmtNum(googleAnalyticsData.search_console.summary.impressions)}</div>
+                        </div>
+                        <div className="autopilot-stat-card">
+                          <div className="stat-label">CTR MEDIU</div>
+                          <div className="stat-value">{googleAnalyticsData.search_console.summary.ctr}%</div>
+                        </div>
+                        <div className="autopilot-stat-card">
+                          <div className="stat-label">POZIȚIE MEDIE</div>
+                          <div className="stat-value">{googleAnalyticsData.search_console.summary.avg_position}</div>
+                        </div>
+                      </div>
+
+                      {asArray(googleAnalyticsData.search_console.top_queries).length > 0 && (
+                        <div style={{ marginBottom: '16px' }}>
+                          <div style={{ fontSize: '12px', fontWeight: 700, color: '#e7e5e4', marginBottom: '8px' }}>
+                            🔑 Cuvinte-cheie reale care aduc vizitatori (Top Queries)
+                          </div>
+                          <div style={{ overflowX: 'auto' }}>
+                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                              <thead>
+                                <tr style={{ borderBottom: '1px solid #44403c', color: '#a8a29e', textAlign: 'left' }}>
+                                  <th style={{ padding: '6px 8px' }}>Căutare Google</th>
+                                  <th style={{ padding: '6px 8px' }}>Click-uri</th>
+                                  <th style={{ padding: '6px 8px' }}>Afișări</th>
+                                  <th style={{ padding: '6px 8px' }}>CTR</th>
+                                  <th style={{ padding: '6px 8px' }}>Poziție</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {asArray(googleAnalyticsData.search_console.top_queries).map((q, idx) => (
+                                  <tr key={idx} style={{ borderBottom: '1px solid #292524' }}>
+                                    <td style={{ padding: '6px 8px', color: '#fef3c7', fontWeight: 500 }}>{q.query}</td>
+                                    <td style={{ padding: '6px 8px' }}>{q.clicks}</td>
+                                    <td style={{ padding: '6px 8px' }}>{q.impressions}</td>
+                                    <td style={{ padding: '6px 8px' }}>{q.ctr}%</td>
+                                    <td style={{ padding: '6px 8px', color: q.position <= 10 ? '#10b981' : '#f59e0b' }}>#{q.position}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+
+                      {asArray(googleAnalyticsData.search_console.opportunity_queries).length > 0 && (
+                        <div style={{ marginBottom: '16px', padding: '12px', background: 'rgba(245,158,11,0.08)', borderRadius: '8px', border: '1px solid #78350f' }}>
+                          <div style={{ fontSize: '12px', fontWeight: 700, color: '#fbbf24', marginBottom: '6px' }}>
+                            🎯 Oportunități Prima Pagină (Pozițiile 5–25 — aproape de Top 3)
+                          </div>
+                          {asArray(googleAnalyticsData.search_console.opportunity_queries).map((q, idx) => (
+                            <div key={idx} style={{ fontSize: '13px', padding: '3px 0', color: '#f5f5f4' }}>
+                              • <strong>{q.query}</strong> — poziția #{q.position} ({q.impressions} afișări, {q.clicks} click-uri)
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {googleAnalyticsData?.ga4?.connected && googleAnalyticsData?.ga4?.summary && (
+                    <div style={{ marginTop: '18px' }}>
+                      <div style={{ fontSize: '13px', fontWeight: 700, color: '#38bdf8', marginBottom: '10px' }}>
+                        📈 GOOGLE ANALYTICS 4 (Property {googleAnalyticsData.ga4.property_id})
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px', marginBottom: '16px' }}>
+                        <div className="autopilot-stat-card">
+                          <div className="stat-label">SESIUNI</div>
+                          <div className="stat-value">{fmtNum(googleAnalyticsData.ga4.summary.sessions)}</div>
+                        </div>
+                        <div className="autopilot-stat-card">
+                          <div className="stat-label">UTILIZATORI</div>
+                          <div className="stat-value">{fmtNum(googleAnalyticsData.ga4.summary.total_users)}</div>
+                        </div>
+                        <div className="autopilot-stat-card">
+                          <div className="stat-label">VIZUALIZĂRI</div>
+                          <div className="stat-value">{fmtNum(googleAnalyticsData.ga4.summary.page_views)}</div>
+                        </div>
+                        <div className="autopilot-stat-card">
+                          <div className="stat-label">ANGAJAMENT</div>
+                          <div className="stat-value">{googleAnalyticsData.ga4.summary.engagement_rate}%</div>
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
+                        {asArray(googleAnalyticsData.ga4.channels).length > 0 && (
+                          <div style={{ background: '#1c1917', padding: '12px', borderRadius: '8px', border: '1px solid #292524' }}>
+                            <div style={{ fontSize: '12px', fontWeight: 700, color: '#38bdf8', marginBottom: '8px' }}>🚦 Surse de Trafic (Canale)</div>
+                            {asArray(googleAnalyticsData.ga4.channels).map((c, idx) => (
+                              <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', padding: '4px 0', borderBottom: '1px solid #292524' }}>
+                                <span>{c.channel}</span>
+                                <strong>{c.sessions} sesiuni</strong>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {asArray(googleAnalyticsData.ga4.countries).length > 0 && (
+                          <div style={{ background: '#1c1917', padding: '12px', borderRadius: '8px', border: '1px solid #292524' }}>
+                            <div style={{ fontSize: '12px', fontWeight: 700, color: '#10b981', marginBottom: '8px' }}>🌍 Top Țări Vizitatori</div>
+                            {asArray(googleAnalyticsData.ga4.countries).map((c, idx) => (
+                              <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', padding: '4px 0', borderBottom: '1px solid #292524' }}>
+                                <span>{c.country}</span>
+                                <strong>{c.sessions} sesiuni</strong>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {googleAnalyticsData && (!googleAnalyticsData.search_console?.connected || !googleAnalyticsData.ga4?.connected) && (
+                    <div style={{ marginTop: '16px', padding: '16px', background: '#1c1917', borderRadius: '10px', border: '1px solid #78350f' }}>
+                      <div style={{ fontSize: '13px', fontWeight: 700, color: '#f59e0b', marginBottom: '8px' }}>
+                        🔧 Conectare Google Search Console & GA4 (4 pași simpli, 100% gratuit)
+                      </div>
+                      {googleAnalyticsData.search_console?.error && (
+                        <div className="delivery-alert error" style={{ marginBottom: '8px', fontSize: '12px' }}>
+                          GSC: {googleAnalyticsData.search_console.error}
+                        </div>
+                      )}
+                      {googleAnalyticsData.ga4?.error && (
+                        <div className="delivery-alert error" style={{ marginBottom: '10px', fontSize: '12px' }}>
+                          GA4: {googleAnalyticsData.ga4.error}
+                        </div>
+                      )}
+                      {asArray(googleAnalyticsData.setup_guide_ro).map((s, idx) => (
+                        <div key={idx} style={{ marginBottom: '10px', fontSize: '13px', lineHeight: 1.5 }}>
+                          <strong style={{ color: '#fef3c7' }}>{s.step}. {s.title}:</strong>{' '}
+                          <span style={{ color: '#d6d3d1' }}>{s.detail}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Subtab 0A: Google Merchant Center & Shopping Feed */}
             {activeRadarSubtab === 'google-merchant' && (
@@ -2482,6 +2728,9 @@ export default function App() {
                   <h3>{t.chat_welcome_title}</h3>
                   <p>{t.chat_welcome_desc}</p>
                   <div className="prompt-chips">
+                    <button onClick={() => handleSendMessage('/web Care sunt trendurile actuale streetwear premium și prețurile concurenței în Europa acum?')}>
+                      🌐 Trenduri Streetwear Live (Google)
+                    </button>
                     <button onClick={() => handleSendMessage(t.chip_diagnosis)}>
                       {t.chip_diagnosis}
                     </button>
@@ -2503,7 +2752,14 @@ export default function App() {
                 chatMessages.map((msg, i) => (
                   <div key={i} className={`chat-bubble ${msg.role}`}>
                     <div className="bubble-header-flex">
-                      <span className="bubble-header-name">{msg.role === 'user' ? (lang === 'ro' ? 'TU' : 'YOU') : '🧠 JARVIS'}</span>
+                      <span className="bubble-header-name">
+                        {msg.role === 'user' ? (lang === 'ro' ? 'TU' : 'YOU') : '🧠 JARVIS'}
+                        {msg.role !== 'user' && msg.web_grounded && (
+                          <span style={{ marginLeft: '8px', fontSize: '11px', padding: '2px 7px', borderRadius: '999px', background: '#065f46', color: '#6ee7b7', fontWeight: 600 }}>
+                            🌐 Google Search Live
+                          </span>
+                        )}
+                      </span>
                       {msg.role !== 'user' && (
                         <button 
                           className="copy-btn-bubble" 
@@ -2515,6 +2771,29 @@ export default function App() {
                       )}
                     </div>
                     <div className="bubble-body" style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+                    {msg.role !== 'user' && asArray(msg.sources).length > 0 && (
+                      <div style={{ marginTop: '10px', display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {asArray(msg.sources).map((src, sIdx) => (
+                          <a
+                            key={sIdx}
+                            href={src.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{
+                              fontSize: '11px',
+                              padding: '4px 8px',
+                              borderRadius: '6px',
+                              background: '#1c1917',
+                              border: '1px solid #78350f',
+                              color: '#fbbf24',
+                              textDecoration: 'none',
+                            }}
+                          >
+                            🔗 {src.title || src.url}
+                          </a>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ))
               )}
@@ -2532,6 +2811,7 @@ export default function App() {
 
             <div className="chat-quick-actions-bar">
               <span className="quick-label">Comenzi rapide:</span>
+              <button className="chip-tag" disabled={sendingChat} onClick={() => handleSendMessage('/web Care sunt trendurile actuale streetwear premium și prețurile concurenței în Europa acum?')}>🌐 /web Trenduri Live</button>
               <button className="chip-tag" disabled={sendingChat} onClick={() => handleSendMessage('/boost')}>⚡ /boost</button>
               <button className="chip-tag" disabled={sendingChat} onClick={() => handleSendMessage('/browser')}>🌐 /browser</button>
               <button className="chip-tag" disabled={sendingChat} onClick={() => handleSendMessage('/goal')}>🎯 /goal</button>
