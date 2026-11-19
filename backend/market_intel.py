@@ -33,6 +33,7 @@ REPORT_MAX_AGE_DAYS = 7
 MAX_PAGE_BYTES = 1_500_000
 FETCH_TIMEOUT = 8.0
 RESEARCH_TIMEOUT = 75.0   # background job: Gemini + Google Search may be slow
+CALL_SPACING_SECONDS = 8.0  # one Gemini search at a time, spaced: free API keys have low per-minute limits
 USER_AGENT = "Mozilla/5.0 (compatible; GrozavuJarvis/1.0; +https://maisongrozavu.com)"
 
 CATEGORY_SEARCH = {
@@ -292,32 +293,49 @@ async def build_market_report(ai_advisor: Any, products: Optional[List[Dict[str,
         return {"ok": False, "error": "gemini_not_configured",
                 "message": "GEMINI_API_KEY lipsește: raportul cu surse nu poate căuta pe internet."}
     cats = catalog_categories(products)
-    sem = asyncio.Semaphore(2)
     errors: List[str] = []
+    categories: Dict[str, Any] = {}
+    quota_hit = False
 
-    async def one_cat(key: str, label: str):
-        async with sem:
-            try:
-                return key, await collect_competitor_prices(ai_advisor, key, label, fetch=fetch)
-            except Exception as e:  # noqa: BLE001 - one category failing must not stop the report
-                errors.append(f"{label}: {str(e)[:140]}")
-                return key, None
+    def _is_quota(e: Exception) -> bool:
+        return "429" in str(e) or "quota" in str(e).lower() or "rate" in str(e).lower()
 
-    results = await asyncio.gather(*(one_cat(k, lbl) for k, lbl in cats))
-    categories = {k: v for k, v in results if v}
-    try:
-        trends = await collect_trends(ai_advisor)
-    except Exception as e:  # noqa: BLE001
-        errors.append(f"Trenduri: {str(e)[:140]}")
-        trends = {"trends": [], "sources": [], "web_grounded": False}
+    # One search at a time with a pause between them; stop at the first "429" (API limit reached)
+    # instead of hammering the key - the other Jarvis features share the same Gemini quota.
+    for i, (key, label) in enumerate(cats):
+        if i:
+            await asyncio.sleep(CALL_SPACING_SECONDS)
+        try:
+            categories[key] = await collect_competitor_prices(ai_advisor, key, label, fetch=fetch)
+        except Exception as e:  # noqa: BLE001 - one category failing must not stop the report
+            errors.append(f"{label}: {str(e)[:140]}")
+            if _is_quota(e):
+                quota_hit = True
+                break
+    trends: Dict[str, Any] = {"trends": [], "sources": [], "web_grounded": False}
+    if not quota_hit:
+        try:
+            if cats:
+                await asyncio.sleep(CALL_SPACING_SECONDS)
+            trends = await collect_trends(ai_advisor)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"Trenduri: {str(e)[:140]}")
+            quota_hit = quota_hit or _is_quota(e)
 
     verified = sum(1 for c in categories.values() for o in c["observations"] if o.get("verified"))
     found = sum(len(c["observations"]) for c in categories.values())
     ok = bool(categories or trends.get("trends"))
+    if ok:
+        message = None
+    elif quota_hit:
+        message = ("Gemini a refuzat cererile (429: limita de utilizare a cheii API Gemini a fost atinsă). "
+                   "Jarvis reîncearcă automat peste câteva ore.")
+    else:
+        message = "Raportul nu s-a putut face: " + ("; ".join(errors)[:400] or "căutarea nu a întors niciun rezultat cu sursă")
     return {
         "ok": ok,
-        "message": None if ok else ("Raportul nu s-a putut face: " + ("; ".join(errors)[:400] or
-                                    "căutarea nu a întors niciun rezultat cu sursă")),
+        "quota_hit": quota_hit,
+        "message": message,
         "generated_at": _now_iso(),
         "engine": "Gemini + Google Search; Jarvis deschide fiecare link și verifică prețul pe pagină",
         "categories": categories,

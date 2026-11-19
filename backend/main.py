@@ -634,6 +634,7 @@ _MARKET_REPORT_RUNNING: Dict[str, bool] = {}
 _MARKET_REPORT_LAST_MANUAL: Dict[str, float] = {}
 _MARKET_REPORT_LAST_ATTEMPT: Dict[str, Dict[str, Any]] = {}
 MARKET_REPORT_MANUAL_COOLDOWN = 3600
+MARKET_REPORT_RETRY_AFTER_FAIL = 6 * 3600   # a failed weekly attempt is retried after 6 h, not every loop
 
 
 async def build_and_store_market_report(shop: str, notify: bool = True) -> Dict[str, Any]:
@@ -654,7 +655,7 @@ async def build_and_store_market_report(shop: str, notify: bool = True) -> Dict[
         except Exception as e:  # never leave a silent failure behind
             report = {"ok": False, "message": f"Raportul nu s-a putut face: {str(e)[:300]}", "errors": [str(e)[:300]]}
         _MARKET_REPORT_LAST_ATTEMPT[shop] = {
-            "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "ts": time.time(),
             "ok": bool(report.get("ok")), "message": report.get("message"),
             "errors": (report.get("errors") or [])[:6],
         }
@@ -687,7 +688,10 @@ async def maybe_refresh_weekly_jobs(shop: str) -> None:
         latest = db.get_latest_market_report(shop)
     except Exception:
         latest = None
-    if market_intel.report_is_stale(latest) and len(ai._get_api_key()) >= 10 and not _MARKET_REPORT_RUNNING.get(shop):
+    last = _MARKET_REPORT_LAST_ATTEMPT.get(shop) or {}
+    failed_recently = (not last.get("ok", True)) and time.time() - float(last.get("ts") or 0) < MARKET_REPORT_RETRY_AFTER_FAIL
+    if (market_intel.report_is_stale(latest) and len(ai._get_api_key()) >= 10
+            and not _MARKET_REPORT_RUNNING.get(shop) and not failed_recently):
         asyncio.create_task(build_and_store_market_report(shop))
 
 

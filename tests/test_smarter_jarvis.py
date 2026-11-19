@@ -367,6 +367,36 @@ class TestMarketIntel(unittest.IsolatedAsyncioTestCase):
         res = await market_intel.build_market_report(NoKey(), [], None)
         self.assertFalse(res["ok"])
 
+    async def test_api_limit_stops_the_report_instead_of_hammering(self):
+        calls = []
+
+        class LimitedAI:
+            def _get_api_key(self):
+                return "AIzaTestKey1234567890"
+
+            async def _call_gemini(self, prompt, **kw):
+                calls.append(prompt)
+                raise RuntimeError("Gemini unavailable (gemini-flash-latest (429))")
+        prods = [_product(20, title="Heavy Hoodie"), _product(21, title="Boxy Tee"), _product(22, title="Wide Pants")]
+        with patch.object(market_intel, "CALL_SPACING_SECONDS", 0):
+            res = await market_intel.build_market_report(LimitedAI(), prods, None)
+        self.assertEqual(len(calls), 1)                  # stopped at the first 429
+        self.assertTrue(res["quota_hit"])
+        self.assertIn("429", res["message"])
+
+    async def test_weekly_job_does_not_retry_every_loop_after_a_failure(self):
+        shop = f"wk-{time.time_ns()}.myshopify.com"
+        main._MARKET_REPORT_LAST_ATTEMPT[shop] = {"ok": False, "ts": time.time(), "at": "now"}
+        try:
+            with patch.object(main.ai, "_get_api_key", return_value="AIzaTestKey1234567890"), \
+                 patch.object(main, "build_and_store_market_report", new_callable=AsyncMock) as build, \
+                 patch.object(main.google_traffic, "is_ga4_configured", return_value=False):
+                await main.maybe_refresh_weekly_jobs(shop)
+                await asyncio.sleep(0)
+            build.assert_not_called()
+        finally:
+            main._MARKET_REPORT_LAST_ATTEMPT.pop(shop, None)
+
     async def test_failed_research_explains_why(self):
         class SlowAI:
             def _get_api_key(self):
@@ -375,7 +405,8 @@ class TestMarketIntel(unittest.IsolatedAsyncioTestCase):
             async def _call_gemini(self, prompt, **kw):
                 assert kw.get("timeout") == market_intel.RESEARCH_TIMEOUT
                 raise RuntimeError("Gemini unavailable (ReadTimeout)")
-        res = await market_intel.build_market_report(SlowAI(), [_product(12)], None)
+        with patch.object(market_intel, "CALL_SPACING_SECONDS", 0):
+            res = await market_intel.build_market_report(SlowAI(), [_product(12)], None)
         self.assertFalse(res["ok"])
         self.assertIn("ReadTimeout", res["message"])
 

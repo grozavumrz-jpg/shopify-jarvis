@@ -312,7 +312,10 @@ class AIAdvisor:
         last_error = ""
         enable_search = bool(use_web_search and not json_mode)
         req_timeout = float(timeout) if timeout else (30.0 if enable_search else GEMINI_TIMEOUT)
+        model_errors: List[str] = []
         for model in get_gemini_models():
+            if last_error and (not model_errors or model_errors[-1] != last_error):
+                model_errors.append(last_error)  # keep every model's failure, not only the last one
             gen_cfg: Dict[str, Any] = {"temperature": temperature, "maxOutputTokens": max_tokens}
             if json_mode:
                 gen_cfg["responseMimeType"] = "application/json"
@@ -366,8 +369,11 @@ class AIAdvisor:
                     continue
                 last_error = f"{model} ({res.status_code})"
                 break
-        self.last_gemini_error = last_error or "unknown"
-        raise GeminiUnavailable(f"Gemini unavailable ({last_error})")
+        if last_error and (not model_errors or model_errors[-1] != last_error):
+            model_errors.append(last_error)
+        summary = "; ".join(model_errors) or "unknown"
+        self.last_gemini_error = summary
+        raise GeminiUnavailable(f"Gemini unavailable ({summary})")
 
     @staticmethod
     def _extract_gemini_text(data: Any) -> str:
