@@ -7,6 +7,7 @@ Nov 19 upgrades:
   4. Weekly market report with sources: prices kept only from cited pages, verified on the page.
 """
 import asyncio
+import json
 import os
 import sys
 import time
@@ -636,3 +637,30 @@ class GeminiSearchKeyTests(unittest.IsolatedAsyncioTestCase):
     async def test_without_search_key_everything_uses_main_key(self):
         env = {"GEMINI_API_KEY": "AIzaFREEkey1234567890", "GEMINI_SEARCH_API_KEY": ""}
         self.assertEqual(await self._run(env, True), ["AIzaFREEkey1234567890"])
+
+
+class GeminiThinkingLevelTests(unittest.IsolatedAsyncioTestCase):
+    async def test_gemini3_uses_low_thinking_and_falls_back_if_refused(self):
+        bodies = []
+
+        def handler(request):
+            body = json.loads(request.content.decode())
+            bodies.append(body)
+            tc = body["generationConfig"].get("thinkingConfig")
+            if tc and tc.get("thinkingLevel") == "low" and len(bodies) == 1:
+                return httpx.Response(400, json={"error": {"message": "thinking_level is not supported for this model"}})
+            return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": "ok answer"}]}}]})
+
+        transport = httpx.MockTransport(handler)
+        real = httpx.AsyncClient
+        adv = ai_advisor.AIAdvisor()
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "AIzaTestKey1234567890", "GEMINI_MODEL": "gemini-3.5-flash-lite"}), \
+                patch.object(ai_advisor.httpx, "AsyncClient", lambda **kw: real(transport=transport, **kw)):
+            self.assertEqual(await adv._call_gemini("hi"), "ok answer")
+        self.assertEqual(bodies[0]["generationConfig"]["thinkingConfig"], {"thinkingLevel": "low"})
+        self.assertNotIn("thinkingConfig", bodies[1]["generationConfig"])
+
+    def test_levels(self):
+        self.assertEqual(ai_advisor.thinking_config_for("gemini-3.5-flash-lite"), {"thinkingLevel": "low"})
+        self.assertEqual(ai_advisor.thinking_config_for("gemini-flash-latest"), {"thinkingLevel": "low"})
+        self.assertEqual(ai_advisor.thinking_config_for("gemini-2.5-flash"), {"thinkingBudget": 0})

@@ -75,6 +75,15 @@ def get_gemini_models() -> List[str]:
     return out
 
 
+def thinking_config_for(model: str) -> Dict[str, Any]:
+    """Gemini 3+ models think at level HIGH unless told otherwise, which made chat answers take
+    longer than the timeouts. Jarvis' tasks are chat / short tool use: LOW is Google's recommended
+    level for that (fast). 2.5 models: thinking off."""
+    if str(model).startswith("gemini-2."):
+        return {"thinkingBudget": 0}
+    return {"thinkingLevel": os.getenv("GEMINI_THINKING_LEVEL", "low").strip().lower() or "low"}
+
+
 # Google Search grounding (AI Studio → Rate limit → Tools, free tier): "Gemini 3 and newer" get 0
 # grounded requests, and the 2.x models that still had free search answer 404 "no longer
 # available to new users". So web search needs billing on the key's project; until then grounded
@@ -422,16 +431,15 @@ class AIAdvisor:
             gen_cfg: Dict[str, Any] = {"temperature": temperature, "maxOutputTokens": max_tokens}
             if json_mode:
                 gen_cfg["responseMimeType"] = "application/json"
-            if model.startswith("gemini-2.5"):
-                gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
-            else:
+            gen_cfg["thinkingConfig"] = thinking_config_for(model)
+            if not model.startswith("gemini-2.5"):
                 gen_cfg["maxOutputTokens"] = max(max_tokens, 4096)
             payload: Dict[str, Any] = {"contents": [{"role": "user", "parts": [{"text": prompt}]}], "generationConfig": gen_cfg}
             if enable_search:
                 payload["tools"] = [{"googleSearch": {}}]
             url = f"{GEMINI_BASE_URL}/models/{model}:generateContent"
             tool_variant_idx = 0  # 0: googleSearch, 1: google_search, 2: no tools
-            for attempt in range(3):
+            for attempt in range(4):
                 try:
                     async with httpx.AsyncClient(timeout=req_timeout) as client:
                         res = await client.post(url, json=payload, headers=headers)
@@ -454,6 +462,10 @@ class AIAdvisor:
                         return text
                     last_error = f"{model}: empty response"
                     break
+                if res.status_code == 400 and "thinkingConfig" in gen_cfg \
+                        and "thinking" in self._gemini_error_reason(res).lower():
+                    gen_cfg.pop("thinkingConfig", None)  # model does not accept this thinking level
+                    continue
                 if res.status_code == 400 and "tools" in payload:
                     if tool_variant_idx == 0:
                         payload["tools"] = [{"google_search": {}}]
@@ -497,11 +509,10 @@ class AIAdvisor:
         for model in order:
             payload = dict(body)
             gen_cfg = dict(payload.get("generationConfig") or {})
-            if model.startswith("gemini-2.5"):
-                gen_cfg.setdefault("thinkingConfig", {"thinkingBudget": 0})
+            gen_cfg.setdefault("thinkingConfig", thinking_config_for(model))
             payload["generationConfig"] = gen_cfg
             url = f"{GEMINI_BASE_URL}/models/{model}:generateContent"
-            for attempt in range(2):
+            for attempt in range(3):
                 try:
                     async with httpx.AsyncClient(timeout=float(timeout or 45.0)) as client:
                         res = await client.post(url, json=payload, headers=headers)
@@ -520,6 +531,9 @@ class AIAdvisor:
                     self.last_gemini_error = f"Gemini rejected API key ({res.status_code})"
                     raise GeminiUnavailable(f"Gemini rejected the API key ({res.status_code})")
                 reason = self._gemini_error_reason(res)
+                if res.status_code == 400 and "thinkingConfig" in gen_cfg and "thinking" in reason.lower():
+                    gen_cfg.pop("thinkingConfig", None)  # model does not accept this thinking level
+                    continue
                 if res.status_code in (429, 500, 503) and attempt == 0:
                     await _real_sleep(1.5)
                     continue
