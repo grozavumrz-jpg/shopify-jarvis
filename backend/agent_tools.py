@@ -138,10 +138,11 @@ class AgentToolbox:
 
     WRITE_ACTIONS = ("update_product", "change_prices", "create_discount", "change_collection", "set_product_status")
 
-    def __init__(self, client: Any, ai: Any = None, shop: str = ""):
+    def __init__(self, client: Any, ai: Any = None, shop: str = "", scopes: Optional[List[str]] = None):
         self.client = client
         self.ai = ai
         self.shop = shop or getattr(client, "shop", "")
+        self.scopes = list(scopes) if scopes else None  # None = unknown (then Shopify decides)
         self._metaobjects: Dict[str, List[Dict[str, str]]] = {}
         self._online_store_pub: Optional[str] = None
 
@@ -182,6 +183,9 @@ class AgentToolbox:
                 for n in ((data.get("metaobjects") or {}).get("nodes") or []) if n.get("id")]
         self._metaobjects[mo_type] = vals
         return vals
+
+    def can(self, scope: str) -> bool:
+        return self.scopes is None or scope in self.scopes
 
     async def _labels_to_ids(self, field: str, labels: List[str]) -> List[Dict[str, str]]:
         spec = CATEGORY_FIELDS[field]
@@ -479,7 +483,8 @@ class AgentToolbox:
                        "admin_url": f"https://{self.shop}/admin/products/{_legacy(pid)}"},
         }
 
-    async def _write_product_fields(self, pid: str, state: Dict[str, Any], changed: List[str]) -> None:
+    async def _write_product_fields(self, pid: str, state: Dict[str, Any], changed: List[str],
+                                    rollback_state: Optional[Dict[str, Any]] = None) -> None:
         product: Dict[str, Any] = {"id": pid}
         if "title" in changed:
             product["title"] = state["title"]
@@ -495,6 +500,20 @@ class AgentToolbox:
             data = await self._gql("""mutation U($product: ProductUpdateInput!) { productUpdate(product: $product) {
                 product { id } userErrors { field message } } }""", {"product": product})
             _user_errors(data.get("productUpdate") or {}, "modificarea produsului")
+        try:
+            await self._write_category_metafields(pid, state, changed)
+        except AgentError as e:
+            if len(product) > 1 and rollback_state is not None:
+                try:
+                    await self._write_product_fields(pid, rollback_state, [k for k in changed if k not in CATEGORY_FIELDS])
+                    raise AgentError(f"{e} Am pus la loc și restul câmpurilor: nu s-a schimbat nimic.")
+                except AgentError as e2:
+                    if "Am pus la loc" in str(e2):
+                        raise
+                    raise AgentError(f"{e} ATENȚIE: titlul/textele au fost deja schimbate și nu le-am putut pune la loc: {e2}")
+            raise
+
+    async def _write_category_metafields(self, pid: str, state: Dict[str, Any], changed: List[str]) -> None:
         to_set, to_delete = [], []
         for f, spec in CATEGORY_FIELDS.items():
             if f in changed:
@@ -773,10 +792,14 @@ class AgentToolbox:
         publish = (status == "ACTIVE") if publish is None else bool(publish)
         if status == "DRAFT":
             publish = before["published"]  # drafting does not touch channels
+        warnings: List[str] = []
+        if publish and not before["published"] and not self.can("write_publications"):
+            publish = False
+            warnings.append("Produsul nu e pe Online Store și aplicația Jarvis nu are permisiunea de publicare "
+                            "(write_publications): după aprobare, bifează Online Store la produs (Publishing) în Shopify.")
         after = {"status": status, "published": bool(publish or before["published"])}
         if after == before:
-            raise AgentError("Produsul are deja statusul cerut.")
-        warnings: List[str] = []
+            raise AgentError("Produsul are deja statusul cerut." if not warnings else warnings[0])
         if status == "ACTIVE":
             if not (p.get("mediaCount") or {}).get("count"):
                 warnings.append("Produsul nu are nicio poză.")
@@ -826,7 +849,7 @@ class AgentToolbox:
         action, args, before, after = rec["action"], rec["args"], rec["before"], rec["after"]
         if action == "update_product":
             changed = self._changed(before, after)
-            await self._write_product_fields(args["product"], after, changed)
+            await self._write_product_fields(args["product"], after, changed, rollback_state=before)
             return {"changed": changed}
         if action == "change_prices":
             await self._write_prices(args["product"], after)
@@ -835,15 +858,42 @@ class AgentToolbox:
             did = await self._create_discount(args)
             return {"discount_id": did}
         if action == "change_collection":
-            for pid in args.get("add_products") or []:
-                await self._set_membership(args["collection"], pid, True)
-            for pid in args.get("remove_products") or []:
-                await self._set_membership(args["collection"], pid, False)
+            done: List[Tuple[str, bool]] = []
+            try:
+                for pid in args.get("add_products") or []:
+                    await self._set_membership(args["collection"], pid, True)
+                    done.append((pid, True))
+                for pid in args.get("remove_products") or []:
+                    await self._set_membership(args["collection"], pid, False)
+                    done.append((pid, False))
+            except AgentError as e:
+                await self._rollback_membership(args["collection"], done, e)
             return {"added": len(args.get("add_products") or []), "removed": len(args.get("remove_products") or [])}
         if action == "set_product_status":
-            await self._write_status(args["product"], before, after)
+            try:
+                await self._write_status(args["product"], before, after)
+            except AgentError as e:
+                if after["status"] != before["status"]:
+                    try:
+                        await self._write_status(args["product"], {"status": after["status"], "published": before["published"]},
+                                                 {"status": before["status"], "published": before["published"]})
+                    except AgentError as e2:
+                        raise AgentError(f"{e} ATENȚIE: statusul a rămas {after['status']} și nu l-am putut pune la loc: {e2}")
+                    raise AgentError(f"{e} Am pus statusul la loc: nu s-a schimbat nimic.")
+                raise
             return {"status": after["status"], "published": after["published"]}
         raise AgentError(f"Acțiune necunoscută: {action}")
+
+    async def _rollback_membership(self, cid: str, done: List[Tuple[str, bool]], err: AgentError) -> None:
+        failed: List[str] = []
+        for pid, inside in reversed(done):
+            try:
+                await self._set_membership(cid, pid, not inside)
+            except AgentError:
+                failed.append(pid)
+        if failed:
+            raise AgentError(f"{err} ATENȚIE: {len(failed)} produse au rămas schimbate în colecție.")
+        raise AgentError(f"{err} Am pus la loc ce apucasem să schimb: nu s-a schimbat nimic.")
 
     async def verify(self, rec: Dict[str, Any], want_after: bool = True) -> Tuple[bool, str]:
         """Re-read Shopify and check the state is the expected one (after, or before for undo)."""

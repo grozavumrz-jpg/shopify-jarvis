@@ -78,6 +78,7 @@ class FakeShopify:
                             C_AUTO: {"id": C_AUTO, "title": "Hoodies", "ruleSet": {"appliedDisjunctively": False}}}
         self.discounts = {"MGVIP15": {"id": "gid://shopify/DiscountCodeNode/9", "title": "VIP", "status": "ACTIVE"}}
         self.last_discount_input = None
+        self.fail_ops = {}
 
     def _mo_label(self, gid):
         for vals in self.metaobjects.values():
@@ -103,6 +104,9 @@ class FakeShopify:
         for op in WRITE_OPS:
             if op in q:
                 self.writes.append((op, copy.deepcopy(v)))
+                fail = self.fail_ops.get(op)
+                if fail and (fail.get("when") is None or fail["when"](v)):
+                    return {"errors": [{"message": fail["message"]}]}
                 return self._mutate(op, v)
         if "publications(" in q:
             return {"data": {"publications": {"nodes": [
@@ -408,6 +412,43 @@ class AgentToolsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(undone["status"], "undone")
         self.assertEqual(self.fake.products[P2]["status"], "DRAFT")
         self.assertFalse(self.fake.products[P2]["published"])
+
+    async def test_no_publish_permission_means_no_publish_attempt(self):
+        tb = AgentToolbox(self.fake, None, self.fake.shop, scopes=["write_products", "write_discounts"])
+        prop = await tb.prepare("set_product_status", {"product": P2, "status": "ACTIVE"})
+        self.assertFalse(prop["after"]["published"])
+        self.assertTrue(any("write_publications" in w for w in prop["warnings"]))
+        rec = await self._propose("set_product_status", {"product": P2, "status": "ACTIVE"})
+        rec.update(after=prop["after"], args=prop["args"], before=prop["before"])
+        db.save_agent_action(self.shop, rec)
+        res = await agent.approve_action(tb, self.shop, rec["id"])
+        self.assertEqual(res["status"], "executed", res)
+        self.assertEqual(self.fake.products[P2]["status"], "ACTIVE")
+        self.assertNotIn("publishablePublish(", [w[0] for w in self.fake.writes])
+
+    async def test_partial_failures_are_rolled_back(self):
+        # publish refused after the status changed → status goes back to DRAFT
+        self.fake.fail_ops["publishablePublish("] = {"message": "Access denied for publishablePublish field."}
+        rec = await self._propose("set_product_status", {"product": P2, "status": "ACTIVE"})
+        res = await agent.approve_action(self.tb, self.shop, rec["id"])
+        self.assertEqual(res["status"], "failed")
+        self.assertIn("nu s-a schimbat nimic", res["error"])
+        self.assertEqual(self.fake.products[P2]["status"], "DRAFT")
+        # metafields refused after the title changed → title goes back
+        self.fake.fail_ops = {"metafieldsSet(": {"message": "Invalid value"}}
+        rec = await self._propose("update_product", {"product": P1, "title": "New Title", "fabrics": ["Cotton"]})
+        res = await agent.approve_action(self.tb, self.shop, rec["id"])
+        self.assertEqual(res["status"], "failed")
+        self.assertIn("nu s-a schimbat nimic", res["error"])
+        self.assertEqual(self.fake.products[P1]["title"], "Oversized Organic Tee")
+        # second product refused in a collection change → the first one is taken out again
+        self.fake.fail_ops = {"productUpdate(": {"message": "Throttled", "when": lambda v: v["product"]["id"] == P1}}
+        self.fake.products[P1]["collections"] = []
+        rec = await self._propose("change_collection", {"collection": C_MANUAL, "add_products": [P2, P1]})
+        res = await agent.approve_action(self.tb, self.shop, rec["id"])
+        self.assertEqual(res["status"], "failed")
+        self.assertIn("nu s-a schimbat nimic", res["error"])
+        self.assertNotIn(C_MANUAL, self.fake.products[P2]["collections"])
 
     async def test_undo_refused_if_changed_again_after_us(self):
         rec = await self._propose("update_product", {"product": P1, "product_type": "Tee"})

@@ -599,7 +599,12 @@ def _agent_toolbox(shop: str) -> "agent_tools.AgentToolbox":
     token = record.get("access_token", "")
     if not has_real_token(token):
         raise HTTPException(409, "shopify_not_connected")
-    return agent_tools.AgentToolbox(ShopifyClient(shop, token), ai, shop)
+    try:
+        import shopify_auth as _sa
+        scopes = _sa.GRANTED_SCOPES.get(shop) or None
+    except Exception:
+        scopes = None
+    return agent_tools.AgentToolbox(ShopifyClient(shop, token), ai, shop, scopes=scopes)
 
 
 @app.post("/api/agent/chat")
