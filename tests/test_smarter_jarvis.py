@@ -473,7 +473,7 @@ class GeminiErrorReasonTests(unittest.TestCase):
         return R()
 
     def test_quota_violation_and_retry_delay(self):
-        from backend.ai_advisor import AIAdvisor
+        AIAdvisor = ai_advisor.AIAdvisor
         body = {"error": {"code": 429, "message": "You exceeded your current quota. https://ai.google.dev/x",
                           "details": [
                               {"@type": "type.googleapis.com/google.rpc.QuotaFailure",
@@ -487,14 +487,14 @@ class GeminiErrorReasonTests(unittest.TestCase):
         self.assertIn("retry in 37s", reason)
 
     def test_plain_message_without_urls(self):
-        from backend.ai_advisor import AIAdvisor
+        AIAdvisor = ai_advisor.AIAdvisor
         body = {"error": {"message": "Model not found https://example.com/x   for v1beta"}}
         reason = AIAdvisor._gemini_error_reason(self._res(body))
         self.assertNotIn("http", reason)
         self.assertIn("Model not found", reason)
 
     def test_free_tier_message_text(self):
-        from backend.ai_advisor import AIAdvisor
+        AIAdvisor = ai_advisor.AIAdvisor
         body = {"error": {"code": 429, "message": (
             "You exceeded your current quota, please check your plan and billing details. For more information "
             "on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits.\n"
@@ -505,8 +505,83 @@ class GeminiErrorReasonTests(unittest.TestCase):
         self.assertIn("retry in 41.2s", reason)
 
     def test_non_json_body(self):
-        from backend.ai_advisor import AIAdvisor
+        AIAdvisor = ai_advisor.AIAdvisor
         class Bad:
             def json(self):
                 raise ValueError("no json")
         self.assertEqual(AIAdvisor._gemini_error_reason(Bad()), "")
+
+
+class GeminiSearchModelOrderTests(unittest.IsolatedAsyncioTestCase):
+    def tearDown(self):
+        aa = ai_advisor
+        aa.AVAILABLE_GEMINI_MODELS["names"] = None
+
+    def test_search_calls_try_free_grounding_family_first(self):
+        get_gemini_search_models, get_gemini_models = ai_advisor.get_gemini_search_models, ai_advisor.get_gemini_models
+        with patch.dict(os.environ, {"GEMINI_MODEL": "", "GEMINI_SEARCH_MODEL": ""}):
+            order = get_gemini_search_models()
+            self.assertEqual(order[:2], ["gemini-2.5-flash", "gemini-2.5-flash-lite"])
+            for m in get_gemini_models():
+                self.assertIn(m, order)
+            self.assertNotIn("gemini-2.5-flash", get_gemini_models())
+
+    def test_filter_drops_missing_models_but_keeps_aliases(self):
+        aa = ai_advisor
+        aa.AVAILABLE_GEMINI_MODELS["names"] = {"gemini-2.5-flash-lite", "gemini-3.5-flash-lite"}
+        self.assertEqual(aa.filter_available_models(["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest"]),
+                         ["gemini-2.5-flash-lite", "gemini-flash-latest"])
+        # never empty
+        self.assertEqual(aa.filter_available_models(["x-model"]), ["x-model"])
+        aa.AVAILABLE_GEMINI_MODELS["names"] = None
+        self.assertEqual(aa.filter_available_models(["a", "b"]), ["a", "b"])
+
+    async def test_refresh_reads_generate_capable_models(self):
+        aa = ai_advisor
+
+        class Resp:
+            status_code = 200
+            def json(self):
+                return {"models": [
+                    {"name": "models/gemini-2.5-flash", "supportedGenerationMethods": ["generateContent"]},
+                    {"name": "models/text-embedding-004", "supportedGenerationMethods": ["embedContent"]},
+                    {"name": "models/gemini-3.5-flash-lite", "supportedGenerationMethods": ["generateContent", "countTokens"]},
+                ]}
+
+        class Client:
+            def __init__(self, *a, **k):
+                self.calls = []
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                return False
+            async def get(self, url, params=None, headers=None):
+                assert "key=" not in url  # key goes in the header, never the URL
+                assert headers and headers.get("x-goog-api-key")
+                return Resp()
+
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key-1234567890"}), \
+                patch.object(aa.httpx, "AsyncClient", Client):
+            names = await aa.refresh_available_gemini_models()
+        self.assertEqual(set(names), {"gemini-2.5-flash", "gemini-3.5-flash-lite"})
+        self.assertEqual(aa.AVAILABLE_GEMINI_MODELS["names"], {"gemini-2.5-flash", "gemini-3.5-flash-lite"})
+
+    async def test_chat_still_answers_when_web_search_is_unavailable(self):
+        AIAdvisor, GeminiUnavailable = ai_advisor.AIAdvisor, ai_advisor.GeminiUnavailable
+        adv = AIAdvisor()
+        calls = []
+
+        async def fake_call(prompt, json_mode=False, max_tokens=1200, temperature=0.7,
+                            use_web_search=False, grounding_out=None, timeout=None):
+            calls.append(use_web_search)
+            if use_web_search:
+                raise GeminiUnavailable("Gemini unavailable (gemini-2.5-flash (429))")
+            return "Iată câteva idei de prețuri pentru hanorace, verifică-le înainte să le folosești."
+
+        adv._call_advisor_model = fake_call
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "AIzaTestKey1234567890"}):
+            res = await adv.chat_detailed(shop_name="Grozavu", snapshot={"connected": True}, history=[],
+                                          message="/web prețuri concurență hanorace", lang="ro")
+        self.assertEqual(calls, [True, False])
+        self.assertIn("⚠️", res["reply"])
+        self.assertFalse(res["web_grounded"])

@@ -74,6 +74,77 @@ def get_gemini_models() -> List[str]:
     return out
 
 
+# Google Search grounding on the FREE tier (AI Studio → Rate limit → Tools): the Gemini 2 / 2.5
+# families get ~1.5K grounded requests/day, "Gemini 3 and newer" get 0 (they need billing).
+# So calls that need web search try a 2.5 model first and only then the normal list.
+DEFAULT_SEARCH_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+
+
+def get_gemini_search_models() -> List[str]:
+    """Model order for grounded (web search) calls: env GEMINI_SEARCH_MODEL first, then the 2.5
+    family (free search quota), then the normal models (work once billing is enabled)."""
+    env = os.getenv("GEMINI_SEARCH_MODEL", "") or ""
+    out: List[str] = []
+    for m in [x.strip() for x in env.split(",") if x.strip()] + DEFAULT_SEARCH_MODELS + get_gemini_models():
+        if m not in out:
+            out.append(m)
+    return out
+
+
+# Models this API key can really call (read once from the API at startup; None = unknown).
+AVAILABLE_GEMINI_MODELS: Dict[str, Any] = {"names": None, "at": 0.0}
+
+
+def filter_available_models(models: List[str]) -> List[str]:
+    """Drop models the key's model list says do not exist (avoids a wasted 404 per call).
+    Unknown list → unchanged; '-latest' aliases are kept; never returns an empty list."""
+    names = AVAILABLE_GEMINI_MODELS.get("names")
+    if not names:
+        return list(models)
+    kept = [m for m in models if m in names or m.endswith("-latest")]
+    return kept or list(models)
+
+
+async def refresh_available_gemini_models(timeout: float = 10.0) -> Optional[List[str]]:
+    """GET /models once (does not use generate quota) and remember which models support
+    generateContent. Logs a short list so the Render logs show what the key can use."""
+    key = (os.getenv("GEMINI_API_KEY") or "").strip()
+    if len(key) < 10:
+        return None
+    names: List[str] = []
+    page_token = ""
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            for _ in range(5):
+                params = {"pageSize": 200}
+                if page_token:
+                    params["pageToken"] = page_token
+                res = await client.get(f"{GEMINI_BASE_URL}/models", params=params,
+                                       headers={"x-goog-api-key": key})
+                if res.status_code != 200:
+                    print(f"[Gemini] Could not list models ({res.status_code}); using the default order.")
+                    return None
+                data = res.json() or {}
+                for m in data.get("models") or []:
+                    if "generateContent" in (m.get("supportedGenerationMethods") or []):
+                        names.append(str(m.get("name") or "").replace("models/", ""))
+                page_token = data.get("nextPageToken") or ""
+                if not page_token:
+                    break
+    except Exception as e:
+        print(f"[Gemini] Could not list models ({type(e).__name__}); using the default order.")
+        return None
+    names = [n for n in names if n]
+    if names:
+        AVAILABLE_GEMINI_MODELS["names"] = set(names)
+        AVAILABLE_GEMINI_MODELS["at"] = __import__("time").time()
+        wanted = list(dict.fromkeys(get_gemini_search_models() + get_gemini_models()))
+        status = ", ".join(f"{m}={'yes' if (m in names or m.endswith('-latest')) else 'NO'}" for m in wanted)
+        flash = sorted(n for n in names if "flash" in n and not any(x in n for x in ("tts", "image", "live", "audio")))
+        print(f"[Gemini] Models for this key: {status}. Flash models available: {', '.join(flash[:15])}")
+    return names
+
+
 def normalize_lang(lang: Optional[str], default: Optional[str] = "ro") -> Optional[str]:
     code = (lang or "").strip().lower().replace("_", "-").split("-")[0]
     return code if code in SUPPORTED_LANGS else default
@@ -315,7 +386,8 @@ class AIAdvisor:
         enable_search = bool(use_web_search and not json_mode)
         req_timeout = float(timeout) if timeout else (30.0 if enable_search else GEMINI_TIMEOUT)
         model_errors: List[str] = []
-        for model in get_gemini_models():
+        model_order = filter_available_models(get_gemini_search_models() if enable_search else get_gemini_models())
+        for model in model_order:
             if last_error and (not model_errors or model_errors[-1] != last_error):
                 model_errors.append(last_error)  # keep every model's failure, not only the last one
             gen_cfg: Dict[str, Any] = {"temperature": temperature, "maxOutputTokens": max_tokens}
@@ -999,9 +1071,16 @@ Jarvis:"""
         grounding_out: Dict[str, Any] = {}
         try:
             if use_web_search:
-                reply = await self._call_advisor_model(
-                    prompt, max_tokens=1400, use_web_search=True, grounding_out=grounding_out
-                )
+                try:
+                    reply = await self._call_advisor_model(
+                        prompt, max_tokens=1400, use_web_search=True, grounding_out=grounding_out
+                    )
+                except GeminiUnavailable as e:
+                    # Search quota/model unavailable: still answer, without search; the ⚠️ note
+                    # below tells the owner the reply is NOT based on verified sources.
+                    print(f"[Chat] Web search unavailable ({str(e)[:200]}); answering without it.")
+                    grounding_out.clear()
+                    reply = await self._call_advisor_model(prompt, max_tokens=1200)
             else:
                 reply = await self._call_advisor_model(prompt, max_tokens=1200)
             if reply and len(reply.strip()) > 20:

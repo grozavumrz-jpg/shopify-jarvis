@@ -22,6 +22,7 @@ from auth_guard import (
 from shopify_auth import verify_hmac, build_install_url, exchange_code_for_token, public_app_url, fetch_client_credentials_token
 from shopify_api import ShopifyClient
 from ai_advisor import AIAdvisor
+import ai_advisor as ai_advisor_module
 from whatsapp_dispatcher import WhatsAppDispatcher
 from email_dispatcher import EmailDispatcher
 from cadence_manager import DripCadenceManager
@@ -1405,6 +1406,11 @@ async def run_autopilot_cycle(only_shop: Optional[str] = None, skip_log: Optiona
 
 async def autopilot_daemon_loop():
     await asyncio.sleep(15)
+    try:
+        # Which Gemini models this key can call (one list request, no generate quota used).
+        await ai_advisor_module.refresh_available_gemini_models()
+    except Exception as e:
+        print(f"[Gemini] Model list check skipped: {type(e).__name__}")
     store_watchdog.state["is_running"] = True
     print(f"[AUTOPILOT] Starting autopilot + 24/7 Store Guardian (one loop, every {AUTOPILOT_INTERVAL_SECONDS // 60} minutes)...")
     while True:
