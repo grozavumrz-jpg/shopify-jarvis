@@ -517,14 +517,38 @@ class GeminiSearchModelOrderTests(unittest.IsolatedAsyncioTestCase):
         aa = ai_advisor
         aa.AVAILABLE_GEMINI_MODELS["names"] = None
 
-    def test_search_calls_try_free_grounding_family_first(self):
+    def test_search_model_order_and_override(self):
         get_gemini_search_models, get_gemini_models = ai_advisor.get_gemini_search_models, ai_advisor.get_gemini_models
         with patch.dict(os.environ, {"GEMINI_MODEL": "", "GEMINI_SEARCH_MODEL": ""}):
-            order = get_gemini_search_models()
-            self.assertEqual(order[:2], ["gemini-2.5-flash", "gemini-2.5-flash-lite"])
-            for m in get_gemini_models():
-                self.assertIn(m, order)
-            self.assertNotIn("gemini-2.5-flash", get_gemini_models())
+            self.assertEqual(get_gemini_search_models(), get_gemini_models())
+            # retired 2.x models (404 "no longer available to new users") are not tried by default
+            self.assertNotIn("gemini-2.5-flash", get_gemini_search_models())
+        with patch.dict(os.environ, {"GEMINI_MODEL": "", "GEMINI_SEARCH_MODEL": "gemini-x-search"}):
+            self.assertEqual(get_gemini_search_models()[0], "gemini-x-search")
+
+    async def test_model_answering_404_is_skipped_next_time(self):
+        aa = ai_advisor
+        aa._DEAD_MODELS.clear()
+        seen = []
+
+        def handler(request):
+            model = request.url.path.split("/models/")[1].split(":")[0]
+            seen.append(model)
+            if model == "gemini-gone":
+                return httpx.Response(404, json={"error": {"message": "This model models/gemini-gone is no longer available to new users."}})
+            return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": "ok answer"}]}}]})
+
+        transport = httpx.MockTransport(handler)
+        real = httpx.AsyncClient
+        adv = aa.AIAdvisor()
+        try:
+            with patch.dict(os.environ, {"GEMINI_API_KEY": "AIzaTestKey1234567890", "GEMINI_MODEL": "gemini-gone"}), \
+                    patch.object(aa.httpx, "AsyncClient", lambda **kw: real(transport=transport, **kw)):
+                self.assertEqual(await adv._call_gemini("hi"), "ok answer")
+                self.assertEqual(await adv._call_gemini("hi again"), "ok answer")
+        finally:
+            aa._DEAD_MODELS.clear()
+        self.assertEqual(seen.count("gemini-gone"), 1)
 
     def test_filter_drops_missing_models_but_keeps_aliases(self):
         aa = ai_advisor

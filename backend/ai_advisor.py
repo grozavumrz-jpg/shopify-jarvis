@@ -13,6 +13,7 @@ Truth rules enforced here:
 import os
 import json
 import math
+import time
 import re
 import asyncio
 import contextvars
@@ -74,15 +75,31 @@ def get_gemini_models() -> List[str]:
     return out
 
 
-# Google Search grounding on the FREE tier (AI Studio → Rate limit → Tools): the Gemini 2 / 2.5
-# families get ~1.5K grounded requests/day, "Gemini 3 and newer" get 0 (they need billing).
-# So calls that need web search try a 2.5 model first and only then the normal list.
-DEFAULT_SEARCH_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+# Google Search grounding (AI Studio → Rate limit → Tools, free tier): "Gemini 3 and newer" get 0
+# grounded requests, and the 2.x models that still had free search answer 404 "no longer
+# available to new users". So web search needs billing on the key's project; until then grounded
+# calls answer 429 and Jarvis says so honestly. GEMINI_SEARCH_MODEL can point search elsewhere.
+DEFAULT_SEARCH_MODELS: List[str] = []
+
+# Models that answered 404 (retired / not for new users): skipped for a day instead of
+# wasting a request on every call.
+_DEAD_MODELS: Dict[str, float] = {}
+DEAD_MODEL_TTL_SECONDS = 24 * 3600
+
+
+def _model_is_dead(model: str) -> bool:
+    ts = _DEAD_MODELS.get(model)
+    if ts is None:
+        return False
+    if time.time() - ts > DEAD_MODEL_TTL_SECONDS:
+        _DEAD_MODELS.pop(model, None)
+        return False
+    return True
 
 
 def get_gemini_search_models() -> List[str]:
-    """Model order for grounded (web search) calls: env GEMINI_SEARCH_MODEL first, then the 2.5
-    family (free search quota), then the normal models (work once billing is enabled)."""
+    """Model order for grounded (web search) calls: env GEMINI_SEARCH_MODEL first, then the
+    normal models."""
     env = os.getenv("GEMINI_SEARCH_MODEL", "") or ""
     out: List[str] = []
     for m in [x.strip() for x in env.split(",") if x.strip()] + DEFAULT_SEARCH_MODELS + get_gemini_models():
@@ -137,7 +154,7 @@ async def refresh_available_gemini_models(timeout: float = 10.0) -> Optional[Lis
     names = [n for n in names if n]
     if names:
         AVAILABLE_GEMINI_MODELS["names"] = set(names)
-        AVAILABLE_GEMINI_MODELS["at"] = __import__("time").time()
+        AVAILABLE_GEMINI_MODELS["at"] = time.time()
         wanted = list(dict.fromkeys(get_gemini_search_models() + get_gemini_models()))
         status = ", ".join(f"{m}={'yes' if (m in names or m.endswith('-latest')) else 'NO'}" for m in wanted)
         flash = sorted(n for n in names if "flash" in n and not any(x in n for x in ("tts", "image", "live", "audio")))
@@ -387,6 +404,8 @@ class AIAdvisor:
         req_timeout = float(timeout) if timeout else (30.0 if enable_search else GEMINI_TIMEOUT)
         model_errors: List[str] = []
         model_order = filter_available_models(get_gemini_search_models() if enable_search else get_gemini_models())
+        alive = [m for m in model_order if not _model_is_dead(m)]
+        model_order = alive or model_order
         for model in model_order:
             if last_error and (not model_errors or model_errors[-1] != last_error):
                 model_errors.append(last_error)  # keep every model's failure, not only the last one
@@ -443,6 +462,8 @@ class AIAdvisor:
                     await _real_sleep(1.0)
                     continue
                 last_error = f"{model} ({res.status_code}{': ' + reason if reason else ''})"
+                if res.status_code == 404:
+                    _DEAD_MODELS[model] = time.time()
                 break
         if last_error and (not model_errors or model_errors[-1] != last_error):
             model_errors.append(last_error)

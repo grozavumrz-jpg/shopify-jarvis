@@ -328,7 +328,10 @@ async def build_market_report(ai_advisor: Any, products: Optional[List[Dict[str,
     if ok:
         message = None
     elif quota_hit:
-        message = ("Gemini a refuzat cererile (429: limita de utilizare a cheii API Gemini a fost atinsă). "
+        message = ("Gemini a refuzat căutarea pe Google (429). Pe planul gratuit, Google permite 0 căutări "
+                   "pentru modelele Gemini 3 și mai noi, iar modelele vechi cu căutare gratuită nu mai sunt "
+                   "disponibile pentru chei noi. Căutarea pornește după ce activezi facturarea pe proiectul "
+                   "cheii API (Google AI Studio → Claves de API → Configurar la facturación). "
                    "Jarvis reîncearcă automat peste câteva ore.")
     else:
         message = "Raportul nu s-a putut face: " + ("; ".join(errors)[:400] or "căutarea nu a întors niciun rezultat cu sursă")
