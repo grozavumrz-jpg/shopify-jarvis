@@ -465,32 +465,33 @@ class TestGeminiTransport(AdvisorBase):
 
     async def test_key_in_header_not_url_and_default_model(self):
         p, rec = mock_http(lambda req: self._ok())
-        with p, patch.dict(os.environ, {"GEMINI_API_KEY": "AIzaTestKey1234567890"}):
+        with p, patch.dict(os.environ, {"GEMINI_API_KEY": "AIzaTestKey1234567890", "GEMINI_MODEL": ""}):
             out = await self.ai._call_gemini("hello")
         self.assertTrue(out.startswith("Salut"))
         req = rec.requests[0]
         self.assertNotIn("key=", str(req.url))
         self.assertNotIn("AIzaTestKey1234567890", str(req.url))
         self.assertEqual(req.headers.get("x-goog-api-key"), "AIzaTestKey1234567890")
-        self.assertIn("/models/gemini-2.5-flash:generateContent", str(req.url))
+        self.assertIn("/models/gemini-3.5-flash-lite:generateContent", str(req.url))
 
     async def test_model_fallback_order(self):
         def h(req):
-            if "gemini-2.5-flash:" in str(req.url):
+            if "gemini-3.5-flash-lite:" in str(req.url):
                 return httpx.Response(404, json={"error": {"message": "model not found"}})
             return self._ok()
         p, rec = mock_http(h)
-        with p, patch.dict(os.environ, {"GEMINI_API_KEY": "AIzaTestKey1234567890"}):
+        with p, patch.dict(os.environ, {"GEMINI_API_KEY": "AIzaTestKey1234567890", "GEMINI_MODEL": ""}):
             await self.ai._call_gemini("hello")
         models = [re.search(r"models/([^:]+):", str(r.url)).group(1) for r in rec.requests]
-        self.assertEqual(models, ["gemini-2.5-flash", "gemini-flash-latest"])
+        self.assertEqual(models, ["gemini-3.5-flash-lite", "gemini-flash-latest"])
 
     def test_env_model_first_and_no_retired_models(self):
         with patch.dict(os.environ, {"GEMINI_MODEL": "gemini-3-flash"}):
-            self.assertEqual(get_gemini_models(), ["gemini-3-flash", "gemini-2.5-flash", "gemini-flash-latest"])
+            self.assertEqual(get_gemini_models(), ["gemini-3-flash", "gemini-3.5-flash-lite", "gemini-flash-latest"])
         with patch.dict(os.environ, {"GEMINI_MODEL": ""}):
             models = get_gemini_models()
-        self.assertEqual(models, ["gemini-2.5-flash", "gemini-flash-latest"])
+        self.assertEqual(models, ["gemini-3.5-flash-lite", "gemini-flash-latest"])
+        self.assertNotIn("gemini-2.5-flash", models)   # 404 for new projects since Nov 2026
         self.assertNotIn("gemini-1.5-flash", models)
         self.assertNotIn("gemini-2.0-flash", models)
 

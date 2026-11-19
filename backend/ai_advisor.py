@@ -28,7 +28,9 @@ _LAST_CHAT_META: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
-DEFAULT_GEMINI_MODELS = ["gemini-2.5-flash", "gemini-flash-latest"]
+# gemini-2.5-flash answers 404 for projects that did not use it before (Google, Nov 2026) and the newest
+# Flash has a very small free daily quota; Flash-Lite first keeps Jarvis answering on a free key.
+DEFAULT_GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-flash-latest"]
 CANDIDATE_MODELS = list(DEFAULT_GEMINI_MODELS)  # backwards-compatible name
 GEMINI_TIMEOUT = 20.0
 SUGGEST_URL = "https://suggestqueries.google.com/complete/search"
