@@ -23,6 +23,8 @@ from shopify_auth import verify_hmac, build_install_url, exchange_code_for_token
 from shopify_api import ShopifyClient
 from ai_advisor import AIAdvisor
 import ai_advisor as ai_advisor_module
+import agent as agent_mod
+import agent_tools
 from whatsapp_dispatcher import WhatsAppDispatcher
 from email_dispatcher import EmailDispatcher
 from cadence_manager import DripCadenceManager
@@ -153,6 +155,13 @@ async def ensure_shop_connection(force: bool = False) -> None:
                                       refreshed_at=datetime.now(timezone.utc).isoformat())
             _SNAPSHOT_CACHE.pop(shop, None)
             print(f"[Shopify] Connected {shop} with client credentials (token valid {expires_in // 3600}h).")
+            try:
+                import shopify_auth as _sa
+                scopes = _sa.GRANTED_SCOPES.get(shop) or []
+                writes = [x for x in scopes if x.startswith("write_")]
+                print(f"[Shopify] App permissions: {len(scopes)} scopes; write: {', '.join(writes) or 'none'}")
+            except Exception:
+                pass
         except Exception as e:
             message = str(e)[:300]
             retry_in = CC_RETRY_AFTER_FAILURE_SECONDS
@@ -244,6 +253,7 @@ async def health():
         "winback_enabled": winback_enabled(),
         "web_search_grounding_enabled": True,
         "gemini_configured": bool(len(ai._get_api_key()) >= 10),
+        "gemini_search_key_configured": bool(len(ai._get_search_api_key()) >= 10),
         # Public endpoint: only whether the last Gemini call failed, never the raw error text.
         "gemini_last_call_failed": bool(ai.last_gemini_error),
         "google_search_console_configured": google_traffic.is_gsc_configured(),
@@ -578,6 +588,104 @@ async def chat(req: ChatRequest, auth: AuthContext = Depends(require_auth)):
     }
 
 
+class ShopOnlyRequest(BaseModel):
+    shop: Optional[str] = None
+
+
+# ── Jarvis agent: reads the store, proposes changes, runs them only after "Aprobă" ──
+
+def _agent_toolbox(shop: str) -> "agent_tools.AgentToolbox":
+    record = get_shop_or_404(shop)
+    token = record.get("access_token", "")
+    if not has_real_token(token):
+        raise HTTPException(409, "shopify_not_connected")
+    return agent_tools.AgentToolbox(ShopifyClient(shop, token), ai, shop)
+
+
+@app.post("/api/agent/chat")
+async def agent_chat(req: ChatRequest, auth: AuthContext = Depends(require_auth)):
+    shop = resolve_shop(auth, req.shop)
+    record = get_shop_or_404(shop)
+    message = (req.message or "").strip()[:4000]
+    if not message:
+        raise HTTPException(400, "empty_message")
+    try:
+        history = db.get_messages(shop, limit=10)
+    except Exception:
+        history = []
+    try:
+        db.save_message(shop, "user", message)
+    except Exception as e:
+        print(f"[db.save_message warning]: {e}")
+    snapshot = await get_resilient_store_snapshot(shop, record.get("access_token", ""), record.get("shop_name", ""))
+    shop_name = record.get("shop_name") or BRAND_NAME
+    lang = req.lang or "ro"
+    try:
+        toolbox = _agent_toolbox(shop)
+        result = await agent_mod.run_agent(ai, toolbox, shop, shop_name, message, history, lang,
+                                           ai._snapshot_to_text(snapshot))
+        result["agent"] = True
+    except Exception as e:
+        # The model (or Shopify connection) is not available: answer with the normal chat instead.
+        print(f"[Agent] unavailable, normal chat used: {type(e).__name__}: {str(getattr(e, 'detail', e))[:200]}")
+        ai.reset_last_chat_meta()
+        reply = await ai.chat(shop_name=shop_name, snapshot=snapshot, history=history, message=message, lang=lang)
+        meta = ai.get_last_chat_meta()
+        result = {"reply": reply, "actions": [], "sources": meta.get("sources") or [],
+                  "web_grounded": bool(meta.get("web_grounded")), "agent": False,
+                  "agent_note": "Modul agent nu e disponibil acum (Gemini nu răspunde); ți-a răspuns chatul obișnuit."}
+    try:
+        db.save_message(shop, "assistant", result.get("reply") or "")
+    except Exception as e:
+        print(f"[db.save_message assistant warning]: {e}")
+    result.pop("tools_used", None)
+    result["connected"] = bool(snapshot.get("connected"))
+    return result
+
+
+def _agent_error(e: Exception) -> HTTPException:
+    return HTTPException(400, str(e)[:400])
+
+
+@app.post("/api/agent/actions/{action_id}/approve")
+async def agent_approve(action_id: str, req: ShopOnlyRequest, auth: AuthContext = Depends(require_auth)):
+    shop = resolve_shop(auth, req.shop)
+    try:
+        return {"action": await agent_mod.approve_action(_agent_toolbox(shop), shop, action_id)}
+    except agent_tools.AgentError as e:
+        raise _agent_error(e)
+
+
+@app.post("/api/agent/actions/{action_id}/reject")
+async def agent_reject(action_id: str, req: ShopOnlyRequest, auth: AuthContext = Depends(require_auth)):
+    shop = resolve_shop(auth, req.shop)
+    try:
+        return {"action": await agent_mod.reject_action(shop, action_id)}
+    except agent_tools.AgentError as e:
+        raise _agent_error(e)
+
+
+@app.post("/api/agent/actions/{action_id}/undo")
+async def agent_undo(action_id: str, req: ShopOnlyRequest, auth: AuthContext = Depends(require_auth)):
+    shop = resolve_shop(auth, req.shop)
+    try:
+        return {"action": await agent_mod.undo_action(_agent_toolbox(shop), shop, action_id)}
+    except agent_tools.AgentError as e:
+        raise _agent_error(e)
+
+
+@app.get("/api/agent/actions")
+async def agent_actions(shop: Optional[str] = Query(None), limit: int = Query(30, ge=1, le=100),
+                        auth: AuthContext = Depends(require_auth)):
+    shop = resolve_shop(auth, shop)
+    try:
+        rows = db.list_agent_actions(shop, limit=limit)
+    except Exception as e:
+        print(f"[Agent] journal read failed: {e}")
+        rows = []
+    return {"actions": [agent_mod.public_action(r) for r in rows]}
+
+
 @app.get("/api/google/analytics")
 async def get_google_analytics(shop: Optional[str] = Query(None), days: int = Query(28, ge=1, le=90),
                                auth: AuthContext = Depends(require_auth)):
@@ -712,10 +820,6 @@ async def get_market_report(shop: Optional[str] = Query(None), auth: AuthContext
     report["running"] = bool(_MARKET_REPORT_RUNNING.get(shop))
     report["last_attempt"] = last
     return report
-
-
-class ShopOnlyRequest(BaseModel):
-    shop: Optional[str] = None
 
 
 @app.post("/api/market/report/refresh")

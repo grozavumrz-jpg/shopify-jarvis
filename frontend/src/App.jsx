@@ -604,6 +604,11 @@ export default function App() {
   const [inputMessage, setInputMessage] = useState('')
   const [sendingChat, setSendingChat] = useState(false)
   const chatBottomRef = useRef(null)
+  // Jarvis agent: proposes Shopify changes; nothing runs until the owner presses "Aprobă"
+  const [agentMode, setAgentMode] = useState(() => storageGet('jarvis_agent_mode') !== 'off')
+  const [agentBusy, setAgentBusy] = useState(null) // action id currently being approved/undone
+  const [agentJournal, setAgentJournal] = useState([])
+  const [showAgentJournal, setShowAgentJournal] = useState(false)
 
   // Tactical Tasks
   const [completedTasks, setCompletedTasks] = useState({})
@@ -1536,7 +1541,9 @@ export default function App() {
     const effectiveLang = isRoInput ? 'ro' : lang
 
     try {
-      const res = await apiPost('/api/chat', { shop, message: text, lang: effectiveLang })
+      // Slash commands (/boost, /goal, /web ...) keep the classic chat; everything else goes to the agent.
+      const useAgent = agentMode && !text.trim().startsWith('/')
+      const res = await apiPost(useAgent ? '/api/agent/chat' : '/api/chat', { shop, message: text, lang: effectiveLang })
       const data = await readJson(res)
       if (!res.ok) {
         throw new Error(res.status === 401
@@ -1553,6 +1560,8 @@ export default function App() {
           web_grounded: Boolean(data.web_grounded),
           sources: asArray(data.sources),
           search_queries: asArray(data.search_queries),
+          actions: asArray(data.actions),
+          agent_note: typeof data.agent_note === 'string' ? data.agent_note : null,
         }
       ])
       if (voiceEnabled) {
@@ -1567,6 +1576,118 @@ export default function App() {
     } finally {
       setSendingChat(false)
     }
+  }
+
+  const toggleAgentMode = () => {
+    const next = !agentMode
+    setAgentMode(next)
+    storageSet('jarvis_agent_mode', next ? 'on' : 'off')
+  }
+
+  const loadAgentJournal = async () => {
+    try {
+      const res = await api(`/api/agent/actions?shop=${encodeURIComponent(shop || '')}&limit=20`)
+      const data = await readJson(res)
+      if (res.ok) setAgentJournal(asArray(data.actions))
+    } catch (e) {
+      console.warn('Agent journal error:', e)
+    }
+  }
+
+  const replaceAgentAction = (updatedAction) => {
+    if (!updatedAction || !updatedAction.id) return
+    setChatMessages((msgs) => msgs.map((m) => (
+      asArray(m.actions).some((a) => a && a.id === updatedAction.id)
+        ? { ...m, actions: asArray(m.actions).map((a) => (a && a.id === updatedAction.id ? updatedAction : a)) }
+        : m
+    )))
+    setAgentJournal((rows) => rows.map((a) => (a && a.id === updatedAction.id ? updatedAction : a)))
+  }
+
+  const handleAgentAction = async (action, verb) => {
+    if (!action || !action.id || agentBusy) return
+    setAgentBusy(action.id)
+    try {
+      const res = await apiPost(`/api/agent/actions/${encodeURIComponent(action.id)}/${verb}`, { shop })
+      const data = await readJson(res)
+      if (!res.ok) throw new Error(errorText(data, res))
+      replaceAgentAction(data.action)
+    } catch (e) {
+      replaceAgentAction({ ...action, error: `${lang === 'ro' ? 'Nu a mers' : 'Failed'}: ${e.message}` })
+    } finally {
+      setAgentBusy(null)
+    }
+  }
+
+  const AGENT_STATUS = {
+    proposed: ['⏳ Așteaptă aprobarea ta', '#f59e0b'],
+    executing: ['⏳ Se execută…', '#f59e0b'],
+    executed: ['✅ Făcut', '#10b981'],
+    undone: ['↩️ Anulat', '#94a3b8'],
+    rejected: ['✖️ Respins', '#94a3b8'],
+    stale: ['⚠️ Neaplicat: s-a schimbat ceva între timp', '#f97316'],
+    failed: ['❌ Nu s-a putut face', '#ef4444'],
+    expired: ['⌛ Expirat', '#94a3b8'],
+  }
+
+  const renderAgentAction = (a) => {
+    if (!a || !a.id) return null
+    const [label, color] = AGENT_STATUS[a.status] || [a.status || '', '#94a3b8']
+    const busy = agentBusy === a.id
+    const btn = (bg, fg) => ({ padding: '7px 14px', borderRadius: '8px', border: 'none', fontWeight: 700, fontSize: '13px', cursor: busy ? 'wait' : 'pointer', background: bg, color: fg, opacity: busy ? 0.6 : 1 })
+    return (
+      <div key={a.id} style={{ marginTop: '12px', border: '1px solid #334155', borderRadius: '10px', padding: '12px', background: '#0f172a' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+          <strong style={{ color: '#f8fafc', fontSize: '14px' }}>🛠️ {a.title}</strong>
+          <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '999px', background: '#1e293b', color, fontWeight: 700 }}>{label}</span>
+        </div>
+        {asArray(a.rows).length > 0 && (
+          <table style={{ width: '100%', marginTop: '10px', borderCollapse: 'collapse', fontSize: '12.5px', tableLayout: 'fixed' }}>
+            <thead>
+              <tr style={{ color: '#94a3b8', textAlign: 'left' }}>
+                <th style={{ padding: '4px 6px', width: '24%' }}>Ce</th>
+                <th style={{ padding: '4px 6px' }}>Acum</th>
+                <th style={{ padding: '4px 6px' }}>Propus</th>
+              </tr>
+            </thead>
+            <tbody>
+              {asArray(a.rows).map((r, i) => (
+                <tr key={i} style={{ borderTop: '1px solid #1e293b', verticalAlign: 'top' }}>
+                  <td style={{ padding: '6px', color: '#cbd5e1', fontWeight: 600, wordBreak: 'break-word' }}>{r.field}</td>
+                  <td style={{ padding: '6px', color: '#94a3b8', wordBreak: 'break-word' }}>{r.before}</td>
+                  <td style={{ padding: '6px', color: '#e2e8f0', wordBreak: 'break-word' }}>{r.after}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {asArray(a.warnings).map((w, i) => (
+          <div key={i} style={{ marginTop: '6px', color: '#fbbf24', fontSize: '12.5px' }}>⚠️ {w}</div>
+        ))}
+        {a.message && <div style={{ marginTop: '8px', color: '#e2e8f0', fontSize: '13px' }}>{a.message}</div>}
+        {a.error && <div style={{ marginTop: '8px', color: '#f87171', fontSize: '13px' }}>{a.error}</div>}
+        <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+          {a.can_approve && (
+            <>
+              <button style={btn('#10b981', '#022c22')} disabled={busy} onClick={() => handleAgentAction(a, 'approve')}>
+                {busy ? '⏳ Se face…' : '✅ Aprobă'}
+              </button>
+              <button style={btn('#334155', '#e2e8f0')} disabled={busy} onClick={() => handleAgentAction(a, 'reject')}>✖️ Respinge</button>
+            </>
+          )}
+          {a.can_undo && (
+            <button style={btn('#334155', '#e2e8f0')} disabled={busy} onClick={() => handleAgentAction(a, 'undo')}>
+              {busy ? '⏳ Se anulează…' : '↩️ Anulează'}
+            </button>
+          )}
+          {a.target && a.target.admin_url && (
+            <a href={a.target.admin_url} target="_blank" rel="noopener noreferrer" style={{ fontSize: '12px', color: '#fbbf24' }}>
+              Deschide în Shopify ↗
+            </a>
+          )}
+        </div>
+      </div>
+    )
   }
 
   // 1-Click AI draft generators (nothing is sent or written anywhere)
@@ -3597,6 +3718,19 @@ export default function App() {
                   <h3>{t.chat_welcome_title}</h3>
                   <p>{t.chat_welcome_desc}</p>
                   <div className="prompt-chips">
+                    {agentMode && (
+                      <>
+                        <button onClick={() => handleSendMessage('Găsește produsele active care nu au completate Category metafields (culoare, material, gen, vârstă) și propune-le completarea, începând cu primele 3.')}>
+                          🛠️ Completează Category metafields lipsă
+                        </button>
+                        <button onClick={() => handleSendMessage('Propune un cod de reducere de 15% valabil până duminică, o dată per client.')}>
+                          🏷️ Cod de reducere pentru weekend
+                        </button>
+                        <button onClick={() => handleSendMessage('Caută pe internet prețurile hanoracelor premium oversized la mărcile europene de streetwear și compară-le cu ale mele.')}>
+                          🔎 Prețurile concurenței (internet)
+                        </button>
+                      </>
+                    )}
                     <button onClick={() => handleSendMessage('/web Care sunt trendurile actuale streetwear premium și prețurile concurenței în Europa acum?')}>
                       🌐 Trenduri Streetwear Live (Google)
                     </button>
@@ -3662,6 +3796,10 @@ export default function App() {
                         renderCleanMessage(msg.content)
                       )}
                     </div>
+                    {msg.role !== 'user' && msg.agent_note && (
+                      <div style={{ marginTop: '8px', fontSize: '12px', color: '#94a3b8' }}>ℹ️ {msg.agent_note}</div>
+                    )}
+                    {msg.role !== 'user' && asArray(msg.actions).map((a) => renderAgentAction(a))}
                     {msg.role !== 'user' && asArray(msg.sources).length > 0 && (
                       <div style={{ marginTop: '10px', display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                         {asArray(msg.sources).map((src, sIdx) => (
@@ -3701,6 +3839,20 @@ export default function App() {
             </div>
 
             <div className="chat-quick-actions-bar">
+              <button
+                className="chip-tag"
+                onClick={toggleAgentMode}
+                title="În modul agent, Jarvis lucrează în Shopify: îți propune schimbări și le face doar după ce apeși Aprobă."
+                style={{ borderColor: agentMode ? '#10b981' : undefined, color: agentMode ? '#6ee7b7' : undefined }}
+              >
+                🛠️ Agent Shopify: {agentMode ? 'PORNIT' : 'OPRIT'}
+              </button>
+              <button
+                className="chip-tag"
+                onClick={() => { const next = !showAgentJournal; setShowAgentJournal(next); if (next) loadAgentJournal() }}
+              >
+                📜 Jurnal schimbări
+              </button>
               <span className="quick-label">Comenzi rapide:</span>
               <button className="chip-tag" disabled={sendingChat} onClick={() => handleSendMessage('/web Care sunt trendurile actuale streetwear premium și prețurile concurenței în Europa acum?')}>🌐 /web Trenduri Live</button>
               <button className="chip-tag" disabled={sendingChat} onClick={() => handleSendMessage('/boost')}>⚡ /boost</button>
@@ -3709,10 +3861,24 @@ export default function App() {
               <button className="chip-tag" disabled={sendingChat} onClick={() => handleSendMessage(t.chip_diagnosis)}>💡 Diagnostic Vânzări</button>
             </div>
 
+            {showAgentJournal && (
+              <div style={{ maxHeight: '340px', overflowY: 'auto', padding: '10px 14px', borderTop: '1px solid #1e293b', background: '#0b1220' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <strong style={{ color: '#f8fafc', fontSize: '13px' }}>📜 Ultimele schimbări propuse de Jarvis</strong>
+                  <button className="chip-tag" onClick={loadAgentJournal}>↻ Reîncarcă</button>
+                </div>
+                {agentJournal.length === 0
+                  ? <div style={{ color: '#94a3b8', fontSize: '13px', marginTop: '8px' }}>Încă nicio propunere.</div>
+                  : agentJournal.map((a) => renderAgentAction(a))}
+              </div>
+            )}
+
             <div className="chat-input-bar">
               <input
                 type="text"
-                placeholder={plan === 'free' ? t.chat_placeholder_free : t.chat_placeholder_pro}
+                placeholder={agentMode
+                  ? 'Ex.: „Completează culoarea și materialul la Magenta Smoke Hoodie” sau „Caută prețurile concurenței la hanorace”'
+                  : (plan === 'free' ? t.chat_placeholder_free : t.chat_placeholder_pro)}
                 value={inputMessage}
                 onChange={(e) => setInputMessage(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}

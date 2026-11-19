@@ -66,6 +66,10 @@ async def exchange_code_for_token(shop: str, code: str) -> str:
         return r.json()["access_token"]
 
 
+# shop -> scopes granted to the last client-credentials token (empty list = unknown).
+GRANTED_SCOPES: dict = {}
+
+
 async def fetch_client_credentials_token(shop: str) -> tuple:
     """
     Client credentials grant (Dev Dashboard apps installed on a store of the same organization).
@@ -93,4 +97,6 @@ async def fetch_client_credentials_token(shop: str) -> tuple:
         token = body.get("access_token")
         if not token:
             raise RuntimeError("Shopify token response had no access_token")
+        # Remember which permissions the app version grants (the agent checks them before writing).
+        GRANTED_SCOPES[shop] = sorted({x.strip() for x in str(body.get("scope") or "").split(",") if x.strip()})
         return token, int(body.get("expires_in") or 86399)

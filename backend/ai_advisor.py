@@ -302,6 +302,11 @@ class AIAdvisor:
     def _get_api_key(self) -> str:
         return (os.getenv("GEMINI_API_KEY") or self.api_key or "").strip()
 
+    @staticmethod
+    def _get_search_api_key() -> str:
+        """Optional key used ONLY for Google Search grounding (a project with billing)."""
+        return (os.getenv("GEMINI_SEARCH_API_KEY") or "").strip()
+
     def _advisor_provider(self) -> str:
         return (os.getenv("JARVIS_ADVISOR_PROVIDER") or "gemini").strip().lower()
 
@@ -394,13 +399,18 @@ class AIAdvisor:
         Grounding (`tools: [{"google_search": {}}]`) and populates `grounding_out` if provided.
         Raises GeminiUnavailable when no key / every model failed.
         """
-        key = self._get_api_key()
+        enable_search = bool(use_web_search and not json_mode)
+        # Web searches may use a separate key from a project with billing (GEMINI_SEARCH_API_KEY):
+        # Google Search is not available on the free tier, so only these calls are billed while
+        # everything else stays on the free key.
+        key = self._get_search_api_key() if enable_search else ""
+        if len(key) < 10:
+            key = self._get_api_key()
         if len(key) < 10:
             self.last_gemini_error = "GEMINI_API_KEY not configured"
             raise GeminiUnavailable("GEMINI_API_KEY not configured")
         headers = {"x-goog-api-key": key, "Content-Type": "application/json"}
         last_error = ""
-        enable_search = bool(use_web_search and not json_mode)
         req_timeout = float(timeout) if timeout else (30.0 if enable_search else GEMINI_TIMEOUT)
         model_errors: List[str] = []
         model_order = filter_available_models(get_gemini_search_models() if enable_search else get_gemini_models())
@@ -468,6 +478,56 @@ class AIAdvisor:
         if last_error and (not model_errors or model_errors[-1] != last_error):
             model_errors.append(last_error)
         summary = "; ".join(model_errors) or "unknown"
+        self.last_gemini_error = summary
+        raise GeminiUnavailable(f"Gemini unavailable ({summary})")
+
+    async def _gemini_request(self, body: Dict[str, Any], models: Optional[List[str]] = None,
+                              timeout: Optional[float] = None) -> Tuple[Dict[str, Any], str]:
+        """Send a full generateContent body (multi-turn, function calling) with the main key.
+        Returns (response JSON, model used). Tries `models` (default: the normal order) and
+        raises GeminiUnavailable with the reasons when none answers."""
+        key = self._get_api_key()
+        if len(key) < 10:
+            self.last_gemini_error = "GEMINI_API_KEY not configured"
+            raise GeminiUnavailable("GEMINI_API_KEY not configured")
+        headers = {"x-goog-api-key": key, "Content-Type": "application/json"}
+        order = models or filter_available_models(get_gemini_models())
+        order = [m for m in order if not _model_is_dead(m)] or order
+        errors: List[str] = []
+        for model in order:
+            payload = dict(body)
+            gen_cfg = dict(payload.get("generationConfig") or {})
+            if model.startswith("gemini-2.5"):
+                gen_cfg.setdefault("thinkingConfig", {"thinkingBudget": 0})
+            payload["generationConfig"] = gen_cfg
+            url = f"{GEMINI_BASE_URL}/models/{model}:generateContent"
+            for attempt in range(2):
+                try:
+                    async with httpx.AsyncClient(timeout=float(timeout or 45.0)) as client:
+                        res = await client.post(url, json=payload, headers=headers)
+                except httpx.HTTPError as e:
+                    errors.append(f"{model}: {type(e).__name__}")
+                    break
+                if res.status_code == 200:
+                    try:
+                        data = res.json()
+                    except ValueError:
+                        errors.append(f"{model}: invalid JSON")
+                        break
+                    self.last_gemini_error = None
+                    return data, model
+                if res.status_code in (401, 403):
+                    self.last_gemini_error = f"Gemini rejected API key ({res.status_code})"
+                    raise GeminiUnavailable(f"Gemini rejected the API key ({res.status_code})")
+                reason = self._gemini_error_reason(res)
+                if res.status_code in (429, 500, 503) and attempt == 0:
+                    await _real_sleep(1.5)
+                    continue
+                errors.append(f"{model} ({res.status_code}{': ' + reason if reason else ''})")
+                if res.status_code == 404:
+                    _DEAD_MODELS[model] = time.time()
+                break
+        summary = "; ".join(errors) or "unknown"
         self.last_gemini_error = summary
         raise GeminiUnavailable(f"Gemini unavailable ({summary})")
 

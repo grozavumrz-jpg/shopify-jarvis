@@ -609,3 +609,30 @@ class GeminiSearchModelOrderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, [True, False])
         self.assertIn("⚠️", res["reply"])
         self.assertFalse(res["web_grounded"])
+
+
+class GeminiSearchKeyTests(unittest.IsolatedAsyncioTestCase):
+    async def _run(self, env, use_web_search):
+        seen = []
+
+        def handler(request):
+            seen.append(request.headers.get("x-goog-api-key"))
+            assert "key=" not in str(request.url)
+            return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": "answer text"}]}}]})
+
+        transport = httpx.MockTransport(handler)
+        real = httpx.AsyncClient
+        adv = ai_advisor.AIAdvisor()
+        with patch.dict(os.environ, env, clear=False), \
+                patch.object(ai_advisor.httpx, "AsyncClient", lambda **kw: real(transport=transport, **kw)):
+            await adv._call_gemini("q", use_web_search=use_web_search)
+        return seen
+
+    async def test_search_uses_search_key_and_normal_calls_use_free_key(self):
+        env = {"GEMINI_API_KEY": "AIzaFREEkey1234567890", "GEMINI_SEARCH_API_KEY": "AIzaPAIDkey1234567890"}
+        self.assertEqual(await self._run(env, True), ["AIzaPAIDkey1234567890"])
+        self.assertEqual(await self._run(env, False), ["AIzaFREEkey1234567890"])
+
+    async def test_without_search_key_everything_uses_main_key(self):
+        env = {"GEMINI_API_KEY": "AIzaFREEkey1234567890", "GEMINI_SEARCH_API_KEY": ""}
+        self.assertEqual(await self._run(env, True), ["AIzaFREEkey1234567890"])

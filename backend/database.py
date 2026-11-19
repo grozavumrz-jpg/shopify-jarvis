@@ -349,6 +349,7 @@ SHOP_TABLES: List[Tuple[str, str]] = [
     ("suppression_list", "shop_domain"),
     ("market_reports", "shop_domain"),
     ("email_experiments", "shop_domain"),
+    ("agent_actions", "shop_domain"),
     ("shops", "shop"),
 ]
 
@@ -591,6 +592,19 @@ def init_db():
 
                 CREATE INDEX IF NOT EXISTS idx_experiments_kind
                 ON email_experiments(shop_domain, kind, variant);
+
+                CREATE TABLE IF NOT EXISTS agent_actions (
+                    id TEXT PRIMARY KEY,
+                    shop_domain TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW(),
+                    status TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    data_json TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_agent_actions_shop
+                ON agent_actions(shop_domain, created_at);
             """)
 
             if not _is_sqlite_conn(conn):
@@ -2392,4 +2406,67 @@ def get_experiment_stats(shop_domain: str) -> List[Dict[str, Any]]:
         r = dict(r)
         out.append({"kind": r["kind"], "variant": r["variant"], "sends": int(r["sends"] or 0),
                     "conversions": int(r["conversions"] or 0), "revenue": float(r["revenue"] or 0)})
+    return out
+
+
+# ── Jarvis agent: proposed / executed Shopify changes (agent_tools.py) ───────
+
+def save_agent_action(shop_domain: str, action: Dict[str, Any]) -> bool:
+    """Insert or update one agent action (proposal, execution result, undo)."""
+    if not shop_domain or not isinstance(action, dict) or not action.get("id"):
+        return False
+    now = _utc_naive()
+    data = json.dumps(action, ensure_ascii=False, default=str)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO agent_actions(id, shop_domain, created_at, updated_at, status, action, data_json)
+                VALUES(%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET updated_at = EXCLUDED.updated_at,
+                    status = EXCLUDED.status, data_json = EXCLUDED.data_json
+            """, (str(action["id"]), shop_domain, now, now, str(action.get("status") or "proposed"),
+                  str(action.get("action") or ""), data))
+            # keep the newest 300 actions per shop
+            cur.execute("""
+                DELETE FROM agent_actions WHERE shop_domain = %s AND id NOT IN (
+                    SELECT id FROM agent_actions WHERE shop_domain = %s ORDER BY created_at DESC LIMIT 300
+                )
+            """, (shop_domain, shop_domain))
+        conn.commit()
+    return True
+
+
+def _agent_row(row: Any) -> Optional[Dict[str, Any]]:
+    if not row:
+        return None
+    raw = row["data_json"] if isinstance(row, dict) else row[0]
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def get_agent_action(shop_domain: str, action_id: str) -> Optional[Dict[str, Any]]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT data_json FROM agent_actions WHERE shop_domain = %s AND id = %s",
+                        (shop_domain, str(action_id)))
+            return _agent_row(cur.fetchone())
+
+
+def list_agent_actions(shop_domain: str, limit: int = 30) -> List[Dict[str, Any]]:
+    limit = max(1, min(100, int(limit or 30)))
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT data_json FROM agent_actions WHERE shop_domain = %s
+                ORDER BY created_at DESC LIMIT %s
+            """, (shop_domain, limit))
+            rows = cur.fetchall() or []
+    out = []
+    for r in rows:
+        d = _agent_row(r)
+        if d:
+            out.append(d)
     return out

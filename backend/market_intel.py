@@ -327,6 +327,10 @@ async def build_market_report(ai_advisor: Any, products: Optional[List[Dict[str,
     ok = bool(categories or trends.get("trends"))
     if ok:
         message = None
+    elif quota_hit and len(str(getattr(ai_advisor, "_get_search_api_key", lambda: "")() or "")) >= 10:
+        message = ("Gemini a refuzat căutarea pe Google (429) și cu cheia de căutare (GEMINI_SEARCH_API_KEY). "
+                   "Verifică în Google AI Studio că proiectul acelei chei are facturarea activă și credit. "
+                   "Jarvis reîncearcă automat peste câteva ore.")
     elif quota_hit:
         message = ("Gemini a refuzat căutarea pe Google (429). Pe planul gratuit, Google permite 0 căutări "
                    "pentru modelele Gemini 3 și mai noi, iar modelele vechi cu căutare gratuită nu mai sunt "
