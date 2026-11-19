@@ -442,6 +442,44 @@ class GoogleTrafficService:
         except ValueError:
             return None, 200, "Răspuns JSON invalid din Google Analytics 4"
 
+    async def fetch_ga4_sessions_by_hour(self, days: int = 28) -> Dict[str, Any]:
+        """
+        Real GA4 sessions per hour of day (property time zone), read-only. Engaged sessions are
+        returned too: they are a better signal of real people than raw sessions.
+        """
+        days = max(7, min(int(days or 28), 90))
+        out: Dict[str, Any] = {"connected": False, "days": days, "hours": [], "error": None}
+        if not self.is_ga4_configured():
+            out["error"] = "GA4 neconfigurat"
+            return out
+        token, tok_err = await self._get_access_token([GA4_SCOPE])
+        if not token:
+            out["error"] = tok_err
+            return out
+        async with httpx.AsyncClient(timeout=GOOGLE_API_TIMEOUT) as client:
+            res, _code, err = await self._run_ga4_report(client, token, self._ga4_property_id(), {
+                "dateRanges": [{"startDate": f"{days}daysAgo", "endDate": "today"}],
+                "dimensions": [{"name": "hour"}],
+                "metrics": [{"name": "sessions"}, {"name": "engagedSessions"}],
+                "limit": 24,
+            })
+        if res is None:
+            out["error"] = f"Google Analytics 4: {err}"
+            return out
+        hours = []
+        for row in res.get("rows") or []:
+            dims = row.get("dimensionValues") or []
+            mets = row.get("metricValues") or []
+            h = _safe_int((dims[0] or {}).get("value") if dims else None, -1)
+            if 0 <= h <= 23:
+                hours.append({
+                    "hour": h,
+                    "sessions": _safe_int((mets[0] or {}).get("value") if mets else 0),
+                    "engaged_sessions": _safe_int((mets[1] or {}).get("value") if len(mets) > 1 else 0),
+                })
+        out.update(connected=True, hours=sorted(hours, key=lambda x: x["hour"]))
+        return out
+
     async def fetch_ga4_report(self, days: int = 28) -> Dict[str, Any]:
         days = max(1, min(int(days or 28), 90))
         property_id = self._ga4_property_id()
@@ -659,13 +697,14 @@ class GoogleTrafficService:
             bot_summary_ro = "GA4 nu este conectat încă — filtrul de boți așteaptă date GA4."
         elif bot_alert:
             bot_summary_ro = (
-                f"Atenție: {direct_pct}% din sesiunile GA4 ({direct_unassigned:,} din {total_sessions:,}) sunt Direct/Unassigned "
-                f"cu angajament mic ({engagement_rate}%) — semn tipic de trafic automat/boți. "
-                f"Traficul uman calificat (Organic Search, Social, Referral) este de {qualified_sessions:,} sesiuni."
+                f"Posibil trafic automat (estimare, nu certitudine): {direct_pct}% din sesiunile GA4 "
+                f"({direct_unassigned:,} din {total_sessions:,}) sunt Direct/Unassigned, cu angajament mic ({engagement_rate}%). "
+                "Tiparul ăsta apare des la boți, dar poate fi și trafic din aplicații sau linkuri fără UTM. "
+                f"Sesiuni din canale identificate (Organic Search, Social, Referral): {qualified_sessions:,}."
             )
         else:
             bot_summary_ro = (
-                f"Traficul GA4 pare sănătos: {qualified_sessions:,} sesiuni din canale identificate "
+                f"Nu apare tiparul tipic de trafic automat: {qualified_sessions:,} sesiuni din canale identificate "
                 f"și rată de angajament {engagement_rate}%."
             )
 
@@ -678,7 +717,7 @@ class GoogleTrafficService:
             alerts.append({
                 "severity": "warning",
                 "code": "ga4_bot_traffic_inflation",
-                "title": f"Trafic umflat de boți în GA4 ({direct_pct}% Direct/Unassigned)",
+                "title": f"Posibil trafic de boți în GA4 ({direct_pct}% Direct/Unassigned) — estimare",
                 "detail": bot_summary_ro,
             })
         if gsc_ok and opp_queries:
@@ -827,7 +866,7 @@ class GoogleTrafficService:
                 f"- Traffic Quality Filter: {tq.get('qualified_human_sessions', 0)} qualified sessions "
                 f"(Organic Search: {tq.get('organic_search_sessions', 0)}), "
                 f"Direct/Unassigned: {tq.get('direct_unassigned_pct', 0)}% "
-                f"({'BOT INFLATION DETECTED' if tq.get('bot_alert') else 'normal'})"
+                f"({'possible bot traffic: heuristic estimate, NOT confirmed' if tq.get('bot_alert') else 'no bot pattern detected'})"
             )
 
         return "\n".join(lines) if len(lines) > 1 else ""

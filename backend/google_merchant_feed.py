@@ -128,9 +128,34 @@ _MATERIAL_PATTERNS: List[Tuple[re.Pattern, str]] = [
 ]
 
 
+def _category_attrs(product: Dict[str, Any]) -> Dict[str, List[str]]:
+    """The owner's Shopify Category metafields attached by the feed loader (may be missing)."""
+    attrs = product.get("_category_attrs")
+    return attrs if isinstance(attrs, dict) else {}
+
+
+def _colour_from_category(product: Dict[str, Any]) -> str:
+    """Colour from the owner's Category metafield 'Color' (shopify.color-pattern), max 3 labels."""
+    labels = [str(x).strip() for x in (_category_attrs(product).get("colors") or []) if str(x).strip()]
+    return "/".join(labels[:3])
+
+
 def _gender_for(product: Dict[str, Any]) -> str:
     """Google's gender attribute (machine value, not shown as store text).
-    The title decides first ("Women's Wide-Leg Pants"); if type/tags mention both genders -> unisex."""
+    The owner's Category metafield 'Target gender' decides first; then the title
+    ("Women's Wide-Leg Pants"); if type/tags mention both genders -> unisex."""
+    meta = {str(g).strip().lower() for g in (_category_attrs(product).get("genders") or [])}
+    if meta:
+        is_f = bool(meta & {"female", "women", "woman"})
+        is_m = bool(meta & {"male", "men", "man"})
+        if is_f and is_m:
+            return "unisex"
+        if is_f:
+            return "female"
+        if is_m:
+            return "male"
+        if "unisex" in meta:
+            return "unisex"
     title = str(product.get("title") or "").lower()
     if _FEMALE_RE.search(title) and not _MALE_RE.search(title):
         return "female"
@@ -146,6 +171,11 @@ def _gender_for(product: Dict[str, Any]) -> str:
 
 
 def _age_group_for(product: Dict[str, Any]) -> str:
+    meta = {str(a).strip().lower() for a in (_category_attrs(product).get("age_groups") or [])}
+    if meta & {"kids", "children", "toddlers", "infants", "babies"} and not meta & {"adults", "adult"}:
+        return "kids"
+    if meta & {"adults", "adult"}:
+        return "adult"
     hay = " ".join([str(product.get("title") or ""), str(product.get("product_type") or ""),
                     str(product.get("tags") or "")]).lower()
     return "kids" if _KIDS_RE.search(hay) else "adult"
@@ -241,7 +271,8 @@ def _material_for(product: Dict[str, Any]) -> str:
     for pattern, label in _MATERIAL_PATTERNS:
         if pattern.search(hay):
             return label
-    return ""
+    fabrics = [str(x).strip() for x in (_category_attrs(product).get("fabrics") or []) if str(x).strip()]
+    return "/".join(fabrics[:3])
 
 
 def _option_positions(product: Dict[str, Any]) -> Dict[str, int]:
@@ -315,8 +346,10 @@ def build_feed_items(
         category = _category_for(p)
         gender = _gender_for(p)
         age_group = _age_group_for(p)
+        # The owner's own Category metafield "Color" wins over every guess (title, text, images).
         title_colour = (
-            _colour_from_title(p)
+            _colour_from_category(p)
+            or _colour_from_title(p)
             or _colour_from_description(p)
             or _colour_from_images([main_image] + extra_images)
             or str(vcolors.get(pid) or "").strip()

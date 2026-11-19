@@ -1106,6 +1106,68 @@ class ShopifyClient:
             "codes": results,
         }
 
+    async def get_category_attributes(self, max_pages: int = 10) -> Dict[str, Dict[str, List[str]]]:
+        """
+        The owner's own Shopify Category metafields for every active product (read-only):
+        {product_id: {"colors": [...], "fabrics": [...], "genders": [...], "age_groups": [...]}}.
+        Labels come from the standard metaobjects (shopify.color-pattern, shopify.fabric,
+        shopify.target-gender, shopify.age-group). Raises on API errors (caller falls back).
+        """
+        query = """
+        query JarvisCategoryAttrs($cursor: String) {
+          products(first: 100, after: $cursor, query: "status:active") {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              legacyResourceId
+              metafields(first: 4, keys: ["shopify.color-pattern", "shopify.fabric", "shopify.target-gender", "shopify.age-group"]) {
+                nodes {
+                  key
+                  references(first: 6) { nodes { ... on Metaobject { label: field(key: "label") { value } } } }
+                }
+              }
+            }
+          }
+        }
+        """
+        key_map = {
+            "shopify.color-pattern": "colors", "color-pattern": "colors",
+            "shopify.fabric": "fabrics", "fabric": "fabrics",
+            "shopify.target-gender": "genders", "target-gender": "genders",
+            "shopify.age-group": "age_groups", "age-group": "age_groups",
+        }
+        out: Dict[str, Dict[str, List[str]]] = {}
+        cursor: Optional[str] = None
+        for _ in range(max(1, int(max_pages))):
+            res = await self._graphql(query, {"cursor": cursor})
+            if not isinstance(res, dict):
+                raise Exception("Shopify GraphQL: unexpected response")
+            if res.get("errors"):
+                first = res["errors"][0] if isinstance(res["errors"], list) and res["errors"] else res["errors"]
+                raise Exception(f"Shopify GraphQL error: {first.get('message') if isinstance(first, dict) else first}")
+            block = ((res.get("data") or {}).get("products") or {})
+            for node in block.get("nodes") or []:
+                pid = str((node or {}).get("legacyResourceId") or "").strip()
+                if not pid:
+                    continue
+                attrs: Dict[str, List[str]] = {}
+                for mf in (((node.get("metafields") or {}).get("nodes")) or []):
+                    field = key_map.get(str((mf or {}).get("key") or ""))
+                    if not field:
+                        continue
+                    labels = []
+                    for ref in (((mf.get("references") or {}).get("nodes")) or []):
+                        val = str((((ref or {}).get("label") or {}).get("value")) or "").strip()
+                        if val and val not in labels:
+                            labels.append(val)
+                    if labels:
+                        attrs[field] = labels
+                out[pid] = attrs
+            info = block.get("pageInfo") or {}
+            if not info.get("hasNextPage"):
+                break
+            cursor = info.get("endCursor")
+        return out
+
     async def get_winback_customer_state(self, email: str, order_id: Any) -> Dict[str, Any]:
         """
         Live Shopify state needed right before a 30-day win-back email (read-only):

@@ -54,6 +54,11 @@ except ImportError:
 
 import threading
 
+try:
+    import experiments
+except ImportError:  # pragma: no cover
+    from backend import experiments
+
 _VIP_PROCESS_LOCK = threading.Lock()
 
 
@@ -648,6 +653,10 @@ class PostDeliveryService:
                 resolved_settings = {}
         resolved_settings.setdefault("shop", shop)
 
+        # Non-urgent: wait for the hours when the most engaged visitors are on the site (GA4).
+        if not experiments.is_good_send_hour(now):
+            return 0
+
         due_records = []
         if db:
             try:
@@ -750,8 +759,11 @@ class PostDeliveryService:
         failures: List[str] = []
 
         # 1. Email (only if allowed for the email identity)
+        ab_variant = None
         if email_ok:
-            subject = self.build_vip_subject(c_name, discount_code, lang)
+            ab_variant = experiments.choose_variant(shop, "vip", c_email)
+            subject = (experiments.vip_subject_b(lang, c_name, discount_code) if ab_variant == "B"
+                       else self.build_vip_subject(c_name, discount_code, lang))
             html_body = self.email_dispatcher.build_html_email(
                 shop_name=brand,
                 customer_name=c_name,
@@ -774,6 +786,7 @@ class PostDeliveryService:
                 ))
                 if self._send_succeeded(mail_res):
                     sent_channels.append("email")
+                    experiments.record_send(shop, "vip", ab_variant or "A", c_email, lang, now)
                     try:
                         log_customer_dispatch(shop, c_email, "email", "vip_post_delivery", sequence_key=seq_key)
                     except Exception as log_err:
@@ -929,6 +942,8 @@ class PostDeliveryService:
         if not db or not hasattr(db, "get_due_winback_candidates"):
             return 0
         now = self.parse_datetime(now_dt) or datetime.now(timezone.utc)
+        if not experiments.is_good_send_hour(now):
+            return 0  # non-urgent: wait for the hours with the most engaged visitors (GA4)
         resolved_settings = dict(settings or {})
         if not resolved_settings:
             try:
@@ -1070,7 +1085,9 @@ class PostDeliveryService:
                 lang=lang,
                 shop_name=brand,
             )
-            subj = self.build_winback_subject(c_name, discount_code=discount_code, lang=lang, shop_name=brand)
+            ab_variant = experiments.choose_variant(shop, "winback", c_email)
+            subj = (experiments.winback_subject_b(lang, c_name, discount_code, brand) if ab_variant == "B"
+                    else self.build_winback_subject(c_name, discount_code=discount_code, lang=lang, shop_name=brand))
             html_body = self.email_dispatcher.build_html_email(
                 shop_name=brand,
                 customer_name=c_name,
@@ -1106,6 +1123,7 @@ class PostDeliveryService:
                 continue
 
             sent_count += 1
+            experiments.record_send(shop, "winback", ab_variant, c_email, lang, now)
             try:
                 db.save_autopilot_log(
                     shop=shop,

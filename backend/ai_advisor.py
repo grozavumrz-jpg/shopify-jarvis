@@ -413,28 +413,30 @@ class AIAdvisor:
             "search_queries": queries[:6],
         }
 
-    @staticmethod
-    def _should_use_web_search(message: str) -> bool:
-        """Enable live Gemini Google Search Grounding for market/trend/competitor/SEO/web queries."""
+    _WEB_SEARCH_RE = re.compile(
+        r"\b(?:trend\w*|tendin\w*|concuren\w*|competit\w*|competitor\w*|benchmark\w*|"
+        r"știri|stiri|news|latest|noutăți|noutati|black\s+friday|cyber\s+monday|"
+        r"zara|bershka|pull\s*&\s*bear|supreme|st[uü]ssy|corteiz|represent|essentials|nude\s+project|scuffers|cold\s+culture)\b"
+        r"|\b(?:caut[ăa]|search|verific[ăa]?)\s+(?:pe\s+)?(?:net|internet|google|web)\b"
+        r"|\bpe\s+(?:net|internet|google)\b"
+        r"|\bpre[țt]uri(?:le)?\s+(?:la\s+)?(?:concuren|competit|pia[țt])",
+        re.I,
+    )
+
+    @classmethod
+    def _should_use_web_search(cls, message: str) -> bool:
+        """
+        Live Google Search only when the owner asks for current OUTSIDE information (trends,
+        competitors, news, '/web ...'). Ordinary store questions stay fast and offline: the brand
+        is streetwear, so a word like "streetwear", "online" or "2026" is not a reason to search.
+        """
         raw = (message or "").strip()
         low = raw.lower()
         if not low:
             return False
         if re.match(r"^/?(web|search|cauta|caută)\b", low):
             return True
-        web_triggers = (
-            "trend", "tendin", "streetwear", "concuren", "competit", "piaț", "piat",
-            "prețuri", "preturi", "pricing", "benchmark", "campani", "sezon",
-            "black friday", "crăciun", "craciun", "christmas", "valentine",
-            "primăvară", "primavara", "vară", "vara", "toamnă", "toamna", "iarnă", "iarna",
-            "viral", "tiktok", "instagram", "reels", "google ads", "meta ads", "facebook ads",
-            "algoritm", "hashtag", "idei de conținut", "idei de continut", "content ideas",
-            "caută pe", "cauta pe", "pe net", "pe internet", "pe google", "online",
-            "live", "2025", "2026", "2027", "știri", "stiri", "news", "latest",
-            "zara", "bershka", "pull&bear", "supreme", "stussy", "corteiz", "represent", "essentials",
-            "seo", "keywords", "cuvinte cheie", "cuvinte-cheie",
-        )
-        return any(k in low for k in web_triggers)
+        return bool(cls._WEB_SEARCH_RE.search(low))
 
     @staticmethod
     def _format_grounding_sources(sources: List[Dict[str, str]], lang: str = "ro") -> str:
@@ -920,9 +922,10 @@ tasks are things the owner does (Jarvis cannot act on the store)."""
 
         traffic_block = f"\n\n{google_traffic_context.strip()}" if (google_traffic_context or "").strip() else ""
         web_search_block = (
-            "\nLIVE WEB SEARCH (Google Search Grounding ACTIVE): You have live Google Search enabled for this reply. "
-            "Use current, verified live web results for streetwear trends, competitor pricing, seasonal campaigns, "
-            "and content/SEO ideas. Cite real findings clearly without inventing URLs or numbers. "
+            "\nWEB SEARCH REQUESTED (Google Search grounding): state current outside facts (trends, competitor "
+            "prices, news) ONLY if they come from search results you actually received for this reply, and name "
+            "the source. If you received no search results, say clearly that you could not verify it online and "
+            "do not give prices or trend facts. Never invent URLs or numbers. "
             "Store revenue/orders/traffic still come ONLY from STORE DATA and GOOGLE TRAFFIC & SEARCH DATA."
             if use_web_search else ""
         )
@@ -954,6 +957,13 @@ Jarvis:"""
                 sources = grounding_out.get("sources") or []
                 if sources and not any(s.get("url", "") in clean_reply for s in sources):
                     clean_reply += self._format_grounding_sources(sources, eff_lang)
+                if use_web_search and not (grounding_out.get("web_grounded") or sources):
+                    # The search tool was dropped or returned nothing: never let the reply pass as "live".
+                    clean_reply += _pick({
+                        "ro": "\n\n⚠️ Căutarea pe internet nu a funcționat de data asta: răspunsul de mai sus NU se bazează pe surse verificate. Verifică prețurile și trendurile înainte să le folosești.",
+                        "en": "\n\n⚠️ The web search did not work this time: the answer above is NOT based on verified sources. Check prices and trends before using them.",
+                        "es": "\n\n⚠️ La búsqueda web no funcionó esta vez: la respuesta NO se basa en fuentes verificadas. Comprueba precios y tendencias antes de usarlos.",
+                    }, eff_lang)
                 res_obj = {
                     "reply": clean_reply,
                     "web_grounded": bool(grounding_out.get("web_grounded")),
@@ -1305,7 +1315,7 @@ La reseña es opcional y nunca se premia de forma condicionada. Comprueba las in
                 "ro": f"""### 🎯 Texte pentru reclame Meta (idei, în engleză pentru ES/RO)
 
 **Unghi 1 — Material:**
-- Text: "Heavyweight combed cotton fleece. Relaxed fit. Designed in Spain."
+- Text: "[Materialul și gramajul real din fișa produsului]. Designed in Spain."
 - Titlu: "{BRAND} — Premium streetwear"
 - CTA: Shop now
 
@@ -1316,13 +1326,13 @@ La reseña es opcional y nunca se premia de forma condicionada. Comprueba las in
 Testează fiecare unghi cu buget mic și urmărește rezultatele reale în Meta Ads Manager. Nu promite termene de livrare sau reduceri care nu există.{offline_note}""",
                 "en": f"""### 🎯 Meta ad copy (ideas)
 
-**Angle 1 — Fabric:** "Heavyweight combed cotton fleece. Relaxed fit. Designed in Spain." · Headline: "{BRAND} — Premium streetwear" · CTA: Shop now
+**Angle 1 — Fabric:** "[The product's real fabric and weight from its product page]. Designed in Spain." · Headline: "{BRAND} — Premium streetwear" · CTA: Shop now
 **Angle 2 — Fit:** "Boxy tees & wide-leg cuts built to sit right. Designed in Spain." · Headline: "The collection by {BRAND}"
 
 Test each angle with a small budget and judge by real results in Ads Manager. Don't promise delivery times or discounts that don't exist.{offline_note}""",
                 "es": f"""### 🎯 Textos para anuncios de Meta (ideas)
 
-**Ángulo 1 — Tejido:** "Algodón peinado de alto gramaje. Fit relajado. Designed in Spain." · Título: "{BRAND} — Streetwear premium" · CTA: Comprar
+**Ángulo 1 — Tejido:** "[El tejido y gramaje reales de la ficha del producto]. Designed in Spain." · Título: "{BRAND} — Streetwear premium" · CTA: Comprar
 **Ángulo 2 — Fit:** "Camisetas boxy y pantalones wide-leg, designed in Spain." · Título: "La colección de {BRAND}"
 
 Prueba cada ángulo con poco presupuesto y decide con los resultados reales de Ads Manager. No prometas plazos ni descuentos que no existan.{offline_note}""",

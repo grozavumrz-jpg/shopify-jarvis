@@ -184,8 +184,8 @@ async def generate_aeo_pack(keyword: str, products, gsc_report, ai_advisor: Any 
     price_txt = f" la {price}" if price else ""
 
     answer_first = (
-        f"{prod}{price_txt} este varianta {BRAND} pentru „{kw}”: croială relaxată, "
-        f"design Designed in Spain, disponibilă direct pe {DOMAIN}."
+        f"{prod}{price_txt} este varianta {BRAND} pentru „{kw}”: "
+        f"Designed in Spain, disponibilă direct pe {DOMAIN}."
     )
     faq = [
         {"question": f"Ce este {prod}?",
@@ -261,7 +261,13 @@ Return ONLY JSON: {{"answer_first_paragraph":"2 sentences answering the query di
 
 # ── GEO test ─────────────────────────────────────────────────────────────────
 
+def brand_knowledge_prompt() -> str:
+    """Asked separately and NEVER counted in the GEO score: it already contains the brand name."""
+    return f"Is {BRAND} ({DOMAIN}) a good streetwear brand? What do you know about it?"
+
+
 def build_geo_prompts(products, gsc_report) -> List[str]:
+    """Unbranded buyer questions only (the brand name never appears), so a mention is a real recommendation."""
     prompts: List[str] = []
     queries = [str(q.get("query")) for q in _gsc_queries(gsc_report)]
     for q in queries:
@@ -275,14 +281,13 @@ def build_geo_prompts(products, gsc_report) -> List[str]:
     if "hoodies" in cats:
         prompts.append("What is a good heavyweight oversized hoodie brand from Spain or Europe, mid-premium price?")
     prompts.append("¿Qué marcas de streetwear premium diseñadas en España recomiendas descubrir?")
-    prompts.append(f"Is {BRAND} ({DOMAIN}) a good streetwear brand? What do you know about it?")
     del labels
     seen, out = set(), []
     for p in prompts:
-        if p not in seen:
+        if p not in seen and not BRAND_RE.search(p) and DOMAIN not in p.lower():
             seen.add(p)
             out.append(p)
-    return out[:5]
+    return out[:4]
 
 
 async def run_geo_test(shop: str, ai_advisor: Any, products, gsc_report,
@@ -321,7 +326,10 @@ async def run_geo_test(shop: str, ai_advisor: Any, products, gsc_report,
             "answer_excerpt": body[:420], "sources": (g.get("sources") or [])[:4],
         }
 
-    results = await asyncio.gather(*(one(p) for p in prompts))
+    knowledge_prompt = brand_knowledge_prompt()
+    gathered = await asyncio.gather(*(one(p) for p in prompts + [knowledge_prompt]))
+    results = list(gathered[:len(prompts)])
+    knowledge = gathered[len(prompts)] if len(gathered) > len(prompts) else {}
     ok = [r for r in results if "error" not in r]
     if not ok:
         return {"ok": False, "error": "gemini_failed",
@@ -338,7 +346,17 @@ async def run_geo_test(shop: str, ai_advisor: Any, products, gsc_report,
         "ok": True, "engine": "Gemini + Google Search (indicator; nu măsoară ChatGPT)",
         "prompts_tested": len(ok), "brand_mentioned_count": hits,
         "mention_rate_pct": round(100 * hits / len(ok)),
+        "score_basis": "Doar întrebări fără numele mărcii: o mențiune înseamnă că AI-ul te-a recomandat singur.",
         "results": results,
+        # What the AI says when asked directly about the brand: useful, but excluded from the score
+        # (the question itself names Grozavu, so it would always "mention" it).
+        "brand_knowledge": {
+            "prompt": knowledge_prompt,
+            "answer_excerpt": (knowledge or {}).get("answer_excerpt", ""),
+            "sources": (knowledge or {}).get("sources", []),
+            "error": (knowledge or {}).get("error"),
+            "excluded_from_score": True,
+        },
         "competitors_recommended_instead": [{"brand": b, "times": n} for b, n in top_comp],
         "tested_at": now, "tested_at_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
         "from_cache": False,
@@ -356,9 +374,13 @@ def build_mentions_plan(products, gsc_report) -> Dict[str, Any]:
             cats.setdefault(_classify_product(p), p)
     sample = next(iter(cats.values()), None)
     sample_title = str(sample.get("title") or BRAND).strip() if sample else BRAND
-    top_q = next((str(q.get("query")) for q in _gsc_queries(gsc_report) if "grozavu" not in str(q.get("query")).lower()),
-                 "shorts de pernera ancha")
+    real_q = next((str(q.get("query")) for q in _gsc_queries(gsc_report) if "grozavu" not in str(q.get("query")).lower()),
+                  None)
+    # Never present an invented phrase as a real Google search: without Search Console data the
+    # drafts carry a placeholder the owner fills in.
+    top_q = real_q or "[expresia reală pe care o caută clienții — din Search Console]"
     return {
+        "top_query_source": "gsc_real" if real_q else "placeholder_no_gsc_data",
         "principle": "AI-urile recomandă ce au văzut recomandat în surse independente. Postezi tu, cu identitatea reală; Jarvis doar pregătește materialele.",
         "do_not": [
             "Nu posta recenzii false sau conturi multiple.",

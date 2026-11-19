@@ -347,6 +347,8 @@ SHOP_TABLES: List[Tuple[str, str]] = [
     ("marketing_consents", "shop_domain"),
     ("message_frequency_logs", "shop_domain"),
     ("suppression_list", "shop_domain"),
+    ("market_reports", "shop_domain"),
+    ("email_experiments", "shop_domain"),
     ("shops", "shop"),
 ]
 
@@ -559,6 +561,36 @@ def init_db():
 
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_suppression_shop_hash
                 ON suppression_list(shop_domain, identifier_hash);
+
+                CREATE TABLE IF NOT EXISTS market_reports (
+                    id SERIAL PRIMARY KEY,
+                    shop_domain TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    report_json TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_market_reports_shop
+                ON market_reports(shop_domain, created_at);
+
+                CREATE TABLE IF NOT EXISTS email_experiments (
+                    id SERIAL PRIMARY KEY,
+                    shop_domain TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    variant TEXT NOT NULL,
+                    recipient_hash TEXT NOT NULL,
+                    lang TEXT,
+                    sent_at TIMESTAMP NOT NULL,
+                    send_hour INTEGER,
+                    converted_order_id TEXT,
+                    converted_at TIMESTAMP,
+                    revenue DOUBLE PRECISION DEFAULT 0
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_experiments_recipient
+                ON email_experiments(shop_domain, recipient_hash, sent_at);
+
+                CREATE INDEX IF NOT EXISTS idx_experiments_kind
+                ON email_experiments(shop_domain, kind, variant);
             """)
 
             if not _is_sqlite_conn(conn):
@@ -2229,6 +2261,11 @@ def redact_customer(shop: str, email: Optional[str] = None, phone: Optional[str]
 
             for table, rows in found.items():
                 deleted[table] = _delete_ids(cur, table, [r.get("id") for r in rows])
+            if e:
+                # A/B test rows only hold a one-way hash of the email; delete them too.
+                cur.execute("DELETE FROM email_experiments WHERE shop_domain = %s AND recipient_hash = %s",
+                            (shop, identity_hash(e)))
+                deleted["email_experiments"] = _rowcount(cur)
         conn.commit()
     return {"ok": True, "shop": shop, "deleted": deleted, "suppression_kept": kept}
 
@@ -2246,3 +2283,113 @@ def purge_shop(shop: str) -> Dict[str, Any]:
                 deleted[table] = _rowcount(cur)
         conn.commit()
     return {"ok": True, "shop": clean, "deleted": deleted}
+
+
+# ── Weekly market report (market_intel.py) ───────────────────────────────────
+
+def save_market_report(shop_domain: str, report: Dict[str, Any]) -> bool:
+    if not shop_domain or not isinstance(report, dict):
+        return False
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO market_reports(shop_domain, created_at, report_json) VALUES(%s, %s, %s)",
+                        (shop_domain, _utc_naive(), json.dumps(report, ensure_ascii=False, default=str)))
+            # keep the last 12 reports per shop
+            cur.execute("""
+                DELETE FROM market_reports WHERE shop_domain = %s AND id NOT IN (
+                    SELECT id FROM market_reports WHERE shop_domain = %s ORDER BY created_at DESC, id DESC LIMIT 12
+                )
+            """, (shop_domain, shop_domain))
+        conn.commit()
+    return True
+
+
+def get_latest_market_report(shop_domain: str) -> Optional[Dict[str, Any]]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT report_json FROM market_reports WHERE shop_domain = %s
+                ORDER BY created_at DESC, id DESC LIMIT 1
+            """, (shop_domain,))
+            row = cur.fetchone()
+    if not row:
+        return None
+    raw = row["report_json"] if isinstance(row, dict) else row[0]
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+# ── Email A/B experiments (experiments.py) ───────────────────────────────────
+
+def record_experiment_send(shop_domain: str, kind: str, variant: str, email: str, lang: Optional[str],
+                           sent_at: Optional[datetime] = None, send_hour: Optional[int] = None) -> bool:
+    e = normalize_email(email)
+    if not shop_domain or not e or variant not in ("A", "B"):
+        return False
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO email_experiments(shop_domain, kind, variant, recipient_hash, lang, sent_at, send_hour)
+                VALUES(%s, %s, %s, %s, %s, %s, %s)
+            """, (shop_domain, kind, variant, identity_hash(e), (lang or "")[:5], _utc_naive(sent_at), send_hour))
+        conn.commit()
+    return True
+
+
+def attribute_experiment_conversion(shop_domain: str, email: str, order_id: str, order_created_at: datetime,
+                                    revenue: float, window_days: int = 7) -> Optional[Dict[str, Any]]:
+    """
+    Last-touch attribution: the most recent experiment email to this customer in the `window_days`
+    before the order is marked converted (once per order; a repeated call is a no-op).
+    """
+    e = normalize_email(email)
+    oid = str(order_id or "").strip()
+    if not shop_domain or not e or not oid:
+        return None
+    created = _utc_naive(order_created_at)
+    since = created - timedelta(days=max(1, int(window_days)))
+    h = identity_hash(e)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 AS hit FROM email_experiments WHERE shop_domain = %s AND converted_order_id = %s LIMIT 1",
+                        (shop_domain, oid))
+            if cur.fetchone():
+                return None
+            cur.execute("""
+                SELECT id, kind, variant FROM email_experiments
+                WHERE shop_domain = %s AND recipient_hash = %s AND sent_at >= %s AND sent_at <= %s
+                  AND converted_order_id IS NULL
+                ORDER BY sent_at DESC, id DESC LIMIT 1
+            """, (shop_domain, h, since, created))
+            row = cur.fetchone()
+            if not row:
+                return None
+            row = dict(row)
+            cur.execute("""
+                UPDATE email_experiments SET converted_order_id = %s, converted_at = %s, revenue = %s
+                WHERE id = %s
+            """, (oid, created, float(revenue or 0), row["id"]))
+        conn.commit()
+    return {"kind": row["kind"], "variant": row["variant"]}
+
+
+def get_experiment_stats(shop_domain: str) -> List[Dict[str, Any]]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT kind, variant, COUNT(*) AS sends,
+                       SUM(CASE WHEN converted_order_id IS NOT NULL THEN 1 ELSE 0 END) AS conversions,
+                       SUM(COALESCE(revenue, 0)) AS revenue
+                FROM email_experiments WHERE shop_domain = %s
+                GROUP BY kind, variant
+            """, (shop_domain,))
+            rows = cur.fetchall()
+    out = []
+    for r in rows:
+        r = dict(r)
+        out.append({"kind": r["kind"], "variant": r["variant"], "sends": int(r["sends"] or 0),
+                    "conversions": int(r["conversions"] or 0), "revenue": float(r["revenue"] or 0)})
+    return out

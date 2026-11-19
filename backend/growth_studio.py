@@ -5,8 +5,9 @@ Upgrade 3: European Streetwear Competitor Price Radar & Real-Query Campaign Stud
 Truthfulness & brand rules enforced:
   - Store category prices (min / avg / max / count) are calculated strictly from real
     active Shopify products. When no products are provided, store prices are None.
-  - Competitor positioning tiers are clearly labelled as `market_reference` benchmarks
-    for European streetwear (never invented live scrape numbers or fake sales figures).
+  - Competitor prices come ONLY from the weekly market report (market_intel.py): each price has
+    a source link and a date, and only prices found on the linked page count as verified.
+    Without that report there is no market reference at all (never hard-coded brand prices).
   - Campaign kits match real GSC queries to real Shopify products and URLs, respect
     "Designed in Spain" and "Grozavu" brand rules, and never use forbidden terms
     ("unisex", "atelier", "silk", "Bucharest").
@@ -25,56 +26,31 @@ CATEGORY_RULES: List[Tuple[str, str, Tuple[str, ...], Dict[str, Any]]] = [
         "hoodies",
         "Hoodies & Sweatshirts",
         ("hoodie", "sweatshirt", "crewneck", "pullover", "fleece", "hanorac"),
-        {
-            "mass_market_eur": "45–70 EUR (Zara, Bershka, Pull&Bear)",
-            "indie_streetwear_eur": "90–150 EUR (Nude Project, Scuffers, Cold Culture, Represent entry)",
-            "luxury_streetwear_eur": "180–350+ EUR (Represent, Cole Buxton, Fear of God)",
-            "positioning_tip_ro": "Pe segmentul European Independent Streetwear, clienții caută croială boxy/oversized, gramaj real vizibil în poze și identitate vizuală curată.",
-        },
+        {"positioning_tip_ro": "Arată gramajul real și croiala în poze purtate; la hanorace clienții compară întâi materialul."},
     ),
     (
         "tshirts",
         "T-Shirts & Tops",
         ("tee", "t-shirt", "shirt", "top", "tricou", "polo", "tank"),
-        {
-            "mass_market_eur": "20–35 EUR (Zara, Pull&Bear)",
-            "indie_streetwear_eur": "42–68 EUR (Nude Project, Cold Culture, Stüssy)",
-            "luxury_streetwear_eur": "95–180 EUR (Represent, Palm Angels)",
-            "positioning_tip_ro": "Tricourile boxy cu guler gros și print curat convertesc cel mai bine prin clipuri scurte 4:5 care arată cum cade materialul pe umeri.",
-        },
+        {"positioning_tip_ro": "Clipurile scurte 4:5 care arată cum cade tricoul pe umeri explică croiala mai bine decât textul."},
     ),
     (
         "bottoms",
         "Shorts & Pants",
         ("short", "pant", "jogger", "trouser", "sweatpant", "cargo", "denim", "pantalon", "pernera"),
-        {
-            "mass_market_eur": "30–55 EUR (Zara, Bershka)",
-            "indie_streetwear_eur": "65–115 EUR (Scuffers, Cold Culture, Corteiz)",
-            "luxury_streetwear_eur": "140–280 EUR (Represent, Essentials)",
-            "positioning_tip_ro": "Ai deja căutări reale în Google Spania pe pantaloni scurți cu croială largă (shorts de pernera ancha) — pune accent pe poze cu model + ghid clar de mărimi.",
-        },
+        {"positioning_tip_ro": "Poze cu model din față/profil și un ghid clar de mărimi reduc nesiguranța la pantaloni."},
     ),
     (
         "outerwear",
         "Jackets & Windbreakers",
         ("jacket", "windbreaker", "coat", "bomber", "vest", "geaca", "jacheta"),
-        {
-            "mass_market_eur": "60–100 EUR (Zara, Pull&Bear)",
-            "indie_streetwear_eur": "110–190 EUR (Carhartt WIP, Stüssy, Cold Culture)",
-            "luxury_streetwear_eur": "250–500+ EUR (Represent, Stone Island)",
-            "positioning_tip_ro": "Piesele outerwear cresc valoarea medie a coșului (AOV). Arată detaliile fermoarelor, căptușelii și purtarea peste un hanorac.",
-        },
+        {"positioning_tip_ro": "Arată detaliile (fermoare, căptușeală) și cum se poartă peste un hanorac."},
     ),
     (
         "accessories",
         "Caps, Beanies & Bags",
         ("cap", "hat", "beanie", "bag", "sling", "tote", "backpack", "sock", "sapca", "șapcă", "rucsac", "geanta"),
-        {
-            "mass_market_eur": "15–28 EUR (Zara, Bershka)",
-            "indie_streetwear_eur": "32–55 EUR (Stüssy, Carhartt WIP, Nude Project)",
-            "luxury_streetwear_eur": "75–180 EUR (Represent, Jacquemus)",
-            "positioning_tip_ro": "Accesoriile sunt cel mai ușor produs de intrare și cel mai bun cross-sell lângă hanorace/tricouri (Complete the fit).",
-        },
+        {"positioning_tip_ro": "Accesoriile merg bine ca adaos lângă hanorace și tricouri (Complete the fit)."},
     ),
 ]
 
@@ -112,16 +88,24 @@ def _product_url(product: Dict[str, Any], domain: str = DOMAIN) -> str:
     return f"https://{domain}/products/{handle}" if handle else f"https://{domain}"
 
 
+def _market_category(market_report: Optional[Dict[str, Any]], key: str) -> Optional[Dict[str, Any]]:
+    if not isinstance(market_report, dict):
+        return None
+    cat = (market_report.get("categories") or {}).get(key)
+    return cat if isinstance(cat, dict) else None
+
+
 def build_competitor_radar(
     products: Optional[List[Dict[str, Any]]] = None,
     gsc_report: Optional[Dict[str, Any]] = None,
     currency: str = "EUR",
     domain: str = DOMAIN,
     lang: str = "ro",
+    market_report: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
-    Compare real active Shopify catalog prices by category against European streetwear
-    reference tiers and surface top real Google Search Console keyword opportunities.
+    Compare real active Shopify catalog prices by category against competitor prices from the
+    weekly sourced market report (verified prices only) and surface real Search Console queries.
     """
     active = [
         p for p in (products or [])
@@ -148,19 +132,38 @@ def build_competitor_radar(
         min_p = round(min(valid_prices), 2) if valid_prices else None
         max_p = round(max(valid_prices), 2) if valid_prices else None
 
-        # Honest positioning assessment based on real store avg price vs indie tier
-        positioning = "Fără produse active în categorie"
-        if avg_p is not None:
-            if key == "hoodies":
-                positioning = "Competitiv (sub pragul premium EU)" if avg_p < 90 else ("Exact în zona Indie Streetwear EU" if avg_p <= 150 else "Zona Luxury Streetwear")
-            elif key == "tshirts":
-                positioning = "Accesibil față de indie EU" if avg_p < 42 else ("Exact în zona Indie Streetwear EU" if avg_p <= 68 else "Zona Luxury Streetwear")
-            elif key == "bottoms":
-                positioning = "Accesibil față de indie EU" if avg_p < 65 else ("Exact în zona Indie Streetwear EU" if avg_p <= 115 else "Zona Luxury Streetwear")
-            elif key == "outerwear":
-                positioning = "Competitiv (entry-level EU)" if avg_p < 110 else ("Exact în zona Indie Streetwear EU" if avg_p <= 190 else "Zona Luxury Streetwear")
-            elif key == "accessories":
-                positioning = "Accesibil (bun pentru impulse-buy)" if avg_p < 32 else ("Exact în zona Indie Streetwear EU" if avg_p <= 55 else "Zona Luxury")
+        # Positioning only against VERIFIED competitor prices (found on the linked page) from the
+        # weekly market report; without them there is no comparison at all.
+        mcat = _market_category(market_report, key)
+        verified = [o for o in ((mcat or {}).get("observations") or []) if isinstance(o, dict) and o.get("verified")]
+        verified_prices = sorted(float(o["price"]) for o in verified if isinstance(o.get("price"), (int, float)))
+        market_reference = None
+        if verified_prices:
+            mid = len(verified_prices) // 2
+            median = (verified_prices[mid] if len(verified_prices) % 2
+                      else round((verified_prices[mid - 1] + verified_prices[mid]) / 2, 2))
+            market_reference = {
+                "min": round(verified_prices[0], 2), "max": round(verified_prices[-1], 2),
+                "median": round(median, 2), "currency": "EUR",
+                "verified_prices": len(verified_prices),
+                "as_of": (market_report or {}).get("generated_at"),
+                "sources": [{"brand": o.get("brand"), "product": o.get("product"), "price": o.get("price"),
+                             "url": o.get("url")} for o in verified[:6]],
+            }
+        if avg_p is None:
+            positioning = "Fără produse active în categorie"
+        elif not market_reference:
+            positioning = "Fără prețuri verificate ale concurenților încă (raportul săptămânal le adaugă)"
+        elif len(verified_prices) < 3:
+            positioning = f"Prea puține prețuri verificate ({len(verified_prices)}) pentru o comparație sigură"
+        else:
+            med = market_reference["median"]
+            if avg_p < med * 0.85:
+                positioning = f"Sub mediana concurenților găsiți ({med} EUR)"
+            elif avg_p > med * 1.15:
+                positioning = f"Peste mediana concurenților găsiți ({med} EUR)"
+            else:
+                positioning = f"În linie cu mediana concurenților găsiți ({med} EUR)"
 
         categories.append({
             "key": key,
@@ -171,7 +174,8 @@ def build_competitor_radar(
             "store_max_price": max_p,
             "currency": currency,
             "positioning_label": positioning,
-            "market_reference": ref,
+            "market_reference": market_reference,
+            "positioning_tip_ro": ref.get("positioning_tip_ro"),
             "sample_products": items[:4],
         })
 
@@ -197,20 +201,27 @@ def build_competitor_radar(
                     break
 
     if not suggested_campaign_keywords:
-        for fallback_kw in (
-            "heavyweight boxy hoodie Spain",
-            "streetwear oversize hoodie Europe",
-            "premium boxy t-shirt",
-            "Grozavu streetwear",
-        ):
+        # No Search Console data: ideas from the REAL catalog titles, clearly labelled as ideas.
+        for p in active[:4]:
+            title = str(p.get("title") or "").strip()
+            if not title:
+                continue
             suggested_campaign_keywords.append({
-                "keyword": fallback_kw,
-                "source": "catalog_idea",
-                "badge": "Idee Catalog",
+                "keyword": title,
+                "source": "catalog_title",
+                "badge": "Idee din catalog (nu e o căutare reală)",
                 "clicks": None,
                 "impressions": None,
                 "position": None,
             })
+
+    real_kw = [k["keyword"] for k in suggested_campaign_keywords if k.get("source") == "gsc_real"][:3]
+    differentiators = ["Designed in Spain — poziționare europeană, cu identitate proprie."]
+    present = [lbl for k, lbl, *_ in CATEGORY_RULES if buckets.get(k)]
+    if len(present) >= 2:
+        differentiators.append(f"Catalog cu {', '.join(present)} — bun pentru pachete Complete the Fit.")
+    if real_kw:
+        differentiators.append("Căutări reale în Google (Search Console): " + ", ".join(f"„{k}”" for k in real_kw) + ".")
 
     return {
         "kind": "competitor_radar",
@@ -222,16 +233,13 @@ def build_competitor_radar(
         "gsc_connected": gsc_ok,
         "note_ro": (
             "Prețurile Grozavu sunt calculate exact din catalogul tău activ Shopify. "
-            "Intervalele pieței europene sunt repere orientative de poziționare pe segmente streetwear "
-            "(Mass-Market, Indie Streetwear Spania/UE, Luxury Streetwear)."
+            "Prețurile concurenților vin doar din raportul săptămânal: fiecare are link și dată, "
+            "iar la comparație intră doar cele găsite chiar pe pagina din link."
         ),
+        "market_report_as_of": (market_report or {}).get("generated_at") if isinstance(market_report, dict) else None,
         "categories": categories,
         "campaign_keywords": suggested_campaign_keywords,
-        "brand_differentiators_ro": [
-            "Designed in Spain — poziționare europeană autentică, nu dropshipping generic.",
-            "Catalog variat (hanorace, tricouri boxy, pantaloni, accesorii) gata pentru pachete Complete the Fit.",
-            "Căutări reale existente în Google Spania (ex. pantaloni scurți cu croială largă & căutări de brand) care pot fi transformate direct în reclame și clipuri scurte.",
-        ],
+        "brand_differentiators_ro": differentiators,
     }
 
 
@@ -273,7 +281,8 @@ def _match_products_for_keyword(keyword: str, products: List[Dict[str, Any]], do
         scored.append((score, p))
 
     scored.sort(key=lambda x: (-x[0], str(x[1].get("title") or "")))
-    chosen = [p for sc, p in scored if sc > 0][:3] or [p for _, p in scored[:3]]
+    # Only products that really match the keyword; never fill with unrelated products.
+    chosen = [p for sc, p in scored if sc > 0][:3]
     out: List[Dict[str, Any]] = []
     for p in chosen:
         out.append({

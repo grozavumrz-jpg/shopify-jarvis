@@ -33,6 +33,8 @@ from deliverability_checker import DeliverabilityChecker
 from store_watchdog import StoreWatchdogAgent
 from google_analytics_service import GoogleTrafficService
 from growth_studio import build_competitor_radar, generate_campaign_studio
+import experiments
+import market_intel
 import visibility_engine as vis
 import compliance_guard
 from compliance_guard import (is_quiet_hours, can_dispatch_to_customer, log_customer_dispatch,
@@ -611,13 +613,105 @@ async def get_competitor_radar(shop: Optional[str] = Query(None), lang: str = Qu
             gsc_report = combined.get("search_console")
         except Exception as e:
             print(f"[CompetitorRadar GSC Warning]: {e}")
+    market_report = None
+    try:
+        market_report = db.get_latest_market_report(shop)
+    except Exception as e:
+        print(f"[CompetitorRadar market report warning]: {e}")
     return build_competitor_radar(
         products=products or [],
         gsc_report=gsc_report,
         currency=FEED_CURRENCY,
         domain=BRAND_DOMAIN,
         lang=lang,
+        market_report=market_report,
     )
+
+
+# ── Weekly market report with sources + learning (A/B tests, best hours) ──────
+
+_MARKET_REPORT_RUNNING: Dict[str, bool] = {}
+_MARKET_REPORT_LAST_MANUAL: Dict[str, float] = {}
+MARKET_REPORT_MANUAL_COOLDOWN = 3600
+
+
+async def build_and_store_market_report(shop: str, notify: bool = True) -> Dict[str, Any]:
+    """Build the sourced market report (read-only web research), save it, send a short Telegram summary."""
+    if _MARKET_REPORT_RUNNING.get(shop):
+        return {"ok": False, "error": "already_running", "message": "Raportul se construiește deja."}
+    _MARKET_REPORT_RUNNING[shop] = True
+    try:
+        products, _ = await load_feed_products(shop)
+        gsc_report = None
+        if google_traffic.is_gsc_configured():
+            try:
+                gsc_report = (await google_traffic.get_combined_report(days=28, force_refresh=False)).get("search_console")
+            except Exception as e:
+                print(f"[MarketReport GSC Warning]: {e}")
+        report = await market_intel.build_market_report(ai, products or [], gsc_report)
+        if report.get("ok"):
+            db.save_market_report(shop, report)
+            if notify:
+                try:
+                    await mobile_notifier.notify_merchant("market_report", market_intel.telegram_summary(report),
+                                                          db.get_shop_settings(shop))
+                except Exception as e:
+                    print(f"[MarketReport notify warning]: {e}")
+        return report
+    finally:
+        _MARKET_REPORT_RUNNING.pop(shop, None)
+
+
+async def maybe_refresh_weekly_jobs(shop: str) -> None:
+    """Runs inside the autopilot loop: best sending hours (daily, GA4) and market report (weekly)."""
+    computed_at = experiments.BEST_HOURS.get("computed_at") or 0
+    if google_traffic.is_ga4_configured() and time.time() - computed_at >= 24 * 3600:
+        try:
+            hours = await google_traffic.fetch_ga4_sessions_by_hour(days=28)
+            if hours.get("connected"):
+                experiments.set_best_hours(experiments.compute_best_hours(hours))
+        except Exception as e:
+            print(f"[BestHours warning]: {e}")
+    try:
+        latest = db.get_latest_market_report(shop)
+    except Exception:
+        latest = None
+    if market_intel.report_is_stale(latest) and len(ai._get_api_key()) >= 10 and not _MARKET_REPORT_RUNNING.get(shop):
+        asyncio.create_task(build_and_store_market_report(shop))
+
+
+@app.get("/api/market/report")
+async def get_market_report(shop: Optional[str] = Query(None), auth: AuthContext = Depends(require_auth)):
+    """Latest weekly market report: competitor prices (with link, date, verified on the page), trends, GSC."""
+    shop = resolve_shop(auth, shop)
+    report = db.get_latest_market_report(shop)
+    if not report:
+        return {"ok": False, "running": bool(_MARKET_REPORT_RUNNING.get(shop)),
+                "message": "Încă nu există un raport. Se face automat o dată pe săptămână sau apasă „Fă raportul acum”."}
+    report["running"] = bool(_MARKET_REPORT_RUNNING.get(shop))
+    return report
+
+
+class ShopOnlyRequest(BaseModel):
+    shop: Optional[str] = None
+
+
+@app.post("/api/market/report/refresh")
+async def refresh_market_report(req: Optional[ShopOnlyRequest] = None, auth: AuthContext = Depends(require_auth)):
+    shop = resolve_shop(auth, req.shop if req else None)
+    last = _MARKET_REPORT_LAST_MANUAL.get(shop, 0)
+    if time.time() - last < MARKET_REPORT_MANUAL_COOLDOWN:
+        mins = int((MARKET_REPORT_MANUAL_COOLDOWN - (time.time() - last)) // 60) + 1
+        return {"ok": False, "error": "cooldown", "message": f"Poți reface raportul peste {mins} minute."}
+    _MARKET_REPORT_LAST_MANUAL[shop] = time.time()
+    return await build_and_store_market_report(shop, notify=False)
+
+
+@app.get("/api/learning/report")
+async def get_learning_report(shop: Optional[str] = Query(None), auth: AuthContext = Depends(require_auth)):
+    """What Jarvis learned from real results: subject A/B tests and best sending hours (GA4)."""
+    shop = resolve_shop(auth, shop)
+    return experiments.learning_report(shop)
 
 
 class CampaignStudioRequest(BaseModel):
@@ -973,6 +1067,12 @@ async def process_single_checkout_recovery(shop: str, client: Optional[ShopifyCl
             recovery = await ai.generate_autonomous_recovery(shop_name, c_copy, lang=lang, discount_code=discount_code)
 
         email_result, wa_result = None, None
+        ab_variant = None
+        if email_ok and stage == 1:
+            # Subject A/B test (step 1 only: its subject comes from a template, steps 2-3 from Gemini)
+            ab_variant = experiments.choose_variant(shop, "cart_stage_1", email)
+            if ab_variant == "B":
+                recovery = dict(recovery, subject=experiments.cart_stage1_subject_b(lang, shop_name))
         if email_ok:
             html_content = EmailDispatcher.build_html_email(
                 shop_name=shop_name,
@@ -1021,6 +1121,8 @@ async def process_single_checkout_recovery(shop: str, client: Optional[ShopifyCl
     # claim_drip_stage already advanced current_stage and stamped stage_<n>_sent_at
     if email_sent:
         log_customer_dispatch(shop, email, "email", message_type, sequence_key=sequence_key)
+        if ab_variant:
+            experiments.record_send(shop, "cart_stage_1", ab_variant, email, lang)
     if wa_sent:
         log_customer_dispatch(shop, phone, "whatsapp", message_type, sequence_key=sequence_key)
 
@@ -1206,6 +1308,7 @@ async def run_shop_cycle(s: dict, skip_log: Optional[List[dict]] = None) -> Dict
                     recent_customer_emails.add(em)
             if _reconcile(shop, order):
                 await _notify_conversion(shop, order)
+            experiments.attribute_order(shop, order)
     except Exception as e:
         result["errors"].append(f"Comenzi: {getattr(e, 'detail', e)}")
 
@@ -1292,6 +1395,10 @@ async def autopilot_daemon_loop():
             await run_watchdog_pass(shop=default_shop())
         except Exception as e:
             print(f"[Watchdog Pass Error]: {e}")
+        try:
+            await maybe_refresh_weekly_jobs(default_shop())
+        except Exception as e:
+            print(f"[Weekly Jobs Error]: {e}")
         await asyncio.sleep(AUTOPILOT_INTERVAL_SECONDS)
 
 
@@ -1998,6 +2105,20 @@ async def load_feed_products(shop: str) -> tuple:
         getter = getattr(client, "get_active_products", None)
         products = await getter() if getter else await client.get_products(limit=250)
         products = list(products or [])
+        # The owner's Category metafields (Color, Fabric, Target gender, Age group) are the truth
+        # for the Google feed; image/filename guesses are only a fallback when they are missing.
+        attrs_fn = getattr(client, "get_category_attributes", None)
+        if callable(attrs_fn) and products:
+            try:
+                attrs = await attrs_fn()
+                if isinstance(attrs, dict):
+                    for p in products:
+                        if isinstance(p, dict):
+                            a = attrs.get(str(p.get("id") or ""))
+                            if a:
+                                p["_category_attrs"] = a
+            except Exception as e:
+                print(f"[Feed] Category metafields unavailable, using fallbacks: {str(e)[:160]}")
         _FEED_CACHE[shop] = (time.time(), products)
         return products, None
     except Exception as e:

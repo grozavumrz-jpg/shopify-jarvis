@@ -654,6 +654,9 @@ export default function App() {
 
   // Upgrade 3: Competitor Radar & Campaign Studio State
   const [competitorRadar, setCompetitorRadar] = useState(null)
+  const [marketReport, setMarketReport] = useState(null)
+  const [refreshingMarket, setRefreshingMarket] = useState(false)
+  const [learningReport, setLearningReport] = useState(null)
   const [campaignKeyword, setCampaignKeyword] = useState('')
   const [campaignResult, setCampaignResult] = useState(null)
   const [visibility, setVisibility] = useState(null)
@@ -1096,6 +1099,54 @@ export default function App() {
     }
   }
 
+  const loadMarketReport = async () => {
+    try {
+      const res = await api(`/api/market/report?${qShop}`)
+      if (res.ok) {
+        setMarketReport(await readJson(res))
+        return true
+      }
+      return false
+    } catch (e) {
+      console.error('Market report load failed', e)
+      return false
+    }
+  }
+
+  const handleRefreshMarket = async () => {
+    if (refreshingMarket) return
+    setRefreshingMarket(true)
+    try {
+      const res = await apiPost('/api/market/report/refresh', { shop })
+      const data = await readJson(res)
+      if (res.ok && data.ok) {
+        setMarketReport(data)
+        loadCompetitorRadar()
+        showToast('✅ Raportul de piață e gata')
+      } else {
+        showToast('⚠️ ' + (data?.message || errorText(data, res)))
+      }
+    } catch (e) {
+      showToast('⚠️ ' + e.message)
+    } finally {
+      setRefreshingMarket(false)
+    }
+  }
+
+  const loadLearningReport = async () => {
+    try {
+      const res = await api(`/api/learning/report?${qShop}`)
+      if (res.ok) {
+        setLearningReport(await readJson(res))
+        return true
+      }
+      return false
+    } catch (e) {
+      console.error('Learning report load failed', e)
+      return false
+    }
+  }
+
   const handleGenerateCampaign = async (customKw = null) => {
     const kw = (typeof customKw === 'string' && customKw.trim()) ? customKw.trim() : campaignKeyword.trim()
     if (!kw || generatingCampaign) return
@@ -1184,6 +1235,8 @@ export default function App() {
         ensureLoaded('visibility', loadVisibility)
       } else if (activeRadarSubtab === 'campaign-studio') {
         ensureLoaded('competitorRadar', loadCompetitorRadar)
+        ensureLoaded('marketReport', loadMarketReport)
+        ensureLoaded('learning', loadLearningReport)
       } else if (activeRadarSubtab === 'google-merchant') {
         ensureLoaded('feed', loadFeedValidation)
         ensureLoaded('seoAudit', loadSeoAudit)
@@ -2122,10 +2175,10 @@ export default function App() {
                     >
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', marginBottom: '8px' }}>
                         <strong style={{ color: googleAnalyticsData.traffic_quality.bot_alert ? '#fbbf24' : '#34d399', fontSize: '14px' }}>
-                          🛡️ Filtru Trafic Uman Real vs Boți (Gardian 24/7)
+                          🛡️ Filtru trafic: canale identificate vs posibili boți (estimare)
                         </strong>
                         <span style={{ fontSize: '12px', color: '#e7e5e4' }}>
-                          Calificat uman: <strong>{fmtNum(googleAnalyticsData.traffic_quality.qualified_human_sessions)}</strong> sesiuni
+                          Din canale identificate: <strong>{fmtNum(googleAnalyticsData.traffic_quality.qualified_human_sessions)}</strong> sesiuni
                           {' · '}
                           Direct/Neasignat: <strong>{googleAnalyticsData.traffic_quality.direct_unassigned_pct}%</strong>
                           {googleAnalyticsData.traffic_quality.eu_priority_sessions > 0
@@ -2403,6 +2456,15 @@ export default function App() {
                       <div style={{ fontSize: '15px', fontWeight: 700, color: geoResult.brand_mentioned_count > 0 ? '#34d399' : '#f87171' }}>
                         Grozavu menționat în {geoResult.brand_mentioned_count} din {geoResult.prompts_tested} răspunsuri ({geoResult.mention_rate_pct}%)
                       </div>
+                      {geoResult.score_basis && (
+                        <div style={{ fontSize: '12px', color: '#a8a29e' }}>{geoResult.score_basis}</div>
+                      )}
+                      {geoResult.brand_knowledge?.answer_excerpt && (
+                        <div style={{ borderTop: '1px solid #44403c', paddingTop: '8px' }}>
+                          <div style={{ fontSize: '13px', fontWeight: 700, color: '#fef3c7' }}>ℹ️ Ce știe AI-ul despre Grozavu (nu intră în scor)</div>
+                          <div style={{ fontSize: '12.5px', color: '#d6d3d1', lineHeight: 1.5 }}>{geoResult.brand_knowledge.answer_excerpt}</div>
+                        </div>
+                      )}
                       {asArray(geoResult.competitors_recommended_instead).length > 0 && (
                         <div style={{ fontSize: '13px', color: '#e7e5e4' }}>
                           Recomandați în locul tău: {asArray(geoResult.competitors_recommended_instead).map((c) => `${c.brand} (${c.times}x)`).join(', ')}
@@ -2614,7 +2676,7 @@ export default function App() {
                             <th style={{ padding: '8px' }}>Categorie</th>
                             <th style={{ padding: '8px' }}>Produse Grozavu</th>
                             <th style={{ padding: '8px' }}>Preț Mediu / Interval Tău</th>
-                            <th style={{ padding: '8px' }}>Repere Indie Streetwear UE</th>
+                            <th style={{ padding: '8px' }}>Concurenți (prețuri verificate)</th>
                             <th style={{ padding: '8px' }}>Poziționare</th>
                           </tr>
                         </thead>
@@ -2628,7 +2690,11 @@ export default function App() {
                                   ? `${cat.store_avg_price} ${cat.currency} (${cat.store_min_price}–${cat.store_max_price})`
                                   : '—'}
                               </td>
-                              <td style={{ padding: '8px', color: '#d6d3d1' }}>{cat.market_reference?.indie_streetwear_eur}</td>
+                              <td style={{ padding: '8px', color: '#d6d3d1' }}>
+                                {cat.market_reference
+                                  ? `${cat.market_reference.min}–${cat.market_reference.max} EUR (median ${cat.market_reference.median}, ${cat.market_reference.verified_prices} surse)`
+                                  : '—'}
+                              </td>
                               <td style={{ padding: '8px', color: '#34d399' }}>{cat.positioning_label}</td>
                             </tr>
                           ))}
@@ -2636,6 +2702,101 @@ export default function App() {
                       </table>
                     </div>
                   )}
+                </div>
+
+                <div className="hud-card" style={{ marginTop: '14px' }}>
+                  <div className="card-title">
+                    <span>📊 Raport săptămânal de piață (cu surse)</span>
+                    <button
+                      className="calculate-btn"
+                      disabled={refreshingMarket || marketReport?.running}
+                      onClick={handleRefreshMarket}
+                    >
+                      {refreshingMarket || marketReport?.running ? '⏳ Se caută (1–3 min)...' : '🔄 Fă raportul acum'}
+                    </button>
+                  </div>
+                  <p className="card-desc">
+                    O dată pe săptămână Jarvis caută prețurile concurenților și trendurile, cu link și dată pentru fiecare.
+                    Un preț e „verificat” doar dacă Jarvis l-a găsit chiar pe pagina din link; doar prețurile verificate intră în comparația de mai sus.
+                  </p>
+                  {marketReport && marketReport.ok === false && !marketReport.generated_at && (
+                    <div className="delivery-alert" style={{ marginBottom: '12px' }}>
+                      {marketReport.message || 'Încă nu există un raport.'}
+                    </div>
+                  )}
+                  {marketReport?.generated_at && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      <div style={{ fontSize: '12.5px', color: '#a8a29e' }}>
+                        Făcut la {String(marketReport.generated_at).replace('T', ' ').replace('Z', ' UTC')}
+                        {' · '}prețuri verificate: {marketReport.prices_verified} din {marketReport.prices_found}
+                      </div>
+                      {Object.entries(marketReport.categories || {}).map(([key, cat]) => (
+                        <div key={key} style={{ borderTop: '1px solid #292524', paddingTop: '8px' }}>
+                          <div style={{ fontSize: '13.5px', fontWeight: 700, color: '#fef3c7', marginBottom: '4px' }}>{cat.label}</div>
+                          {asArray(cat.observations).length === 0 && (
+                            <div style={{ fontSize: '12.5px', color: '#a8a29e' }}>Niciun preț găsit pe paginile din căutare.</div>
+                          )}
+                          {asArray(cat.observations).map((o, i) => (
+                            <div key={i} style={{ fontSize: '12.5px', color: '#e7e5e4', lineHeight: 1.6 }}>
+                              {o.verified ? '✅' : '⚪'} {o.brand} — {o.product}: <strong>{o.price} {o.currency}</strong>{' '}
+                              <a href={o.url} target="_blank" rel="noopener noreferrer" style={{ color: '#fbbf24' }}>link</a>
+                              {!o.verified && (
+                                <span style={{ color: '#a8a29e' }}> (neverificat{o.currency !== 'EUR' ? `, ${o.currency}` : ''})</span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                      {asArray(marketReport.trends).length > 0 && (
+                        <div style={{ borderTop: '1px solid #292524', paddingTop: '8px' }}>
+                          <div style={{ fontSize: '13.5px', fontWeight: 700, color: '#fef3c7', marginBottom: '4px' }}>Trenduri (cu sursă)</div>
+                          {asArray(marketReport.trends).map((t, i) => (
+                            <div key={i} style={{ fontSize: '12.5px', color: '#e7e5e4', lineHeight: 1.6 }}>
+                              • <strong>{t.trend}</strong> — {t.description}{' '}
+                              <a href={t.url} target="_blank" rel="noopener noreferrer" style={{ color: '#fbbf24' }}>sursă</a>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {marketReport.search_console?.connected && asArray(marketReport.search_console.top_queries).length > 0 && (
+                        <div style={{ borderTop: '1px solid #292524', paddingTop: '8px' }}>
+                          <div style={{ fontSize: '13.5px', fontWeight: 700, color: '#fef3c7', marginBottom: '4px' }}>
+                            Ce caută oamenii care ajung la tine (Search Console, 28 de zile)
+                          </div>
+                          {asArray(marketReport.search_console.top_queries).map((q, i) => (
+                            <div key={i} style={{ fontSize: '12.5px', color: '#e7e5e4', lineHeight: 1.6 }}>
+                              • „{q.query}” — {q.clicks} click-uri, {q.impressions} afișări, poziția {q.position}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className="hud-card" style={{ marginTop: '14px' }}>
+                  <div className="card-title">
+                    <span>🧠 Ce învață Jarvis din rezultate</span>
+                  </div>
+                  <p className="card-desc">
+                    Teste A/B la subiectul emailurilor, măsurate doar pe vânzări reale (fără pixeli de urmărire), și ora de trimitere învățată din GA4.
+                  </p>
+                  {asArray(learningReport?.tests).map((t) => (
+                    <div key={t.kind} style={{ borderTop: '1px solid #292524', padding: '8px 0' }}>
+                      <div style={{ fontSize: '13.5px', fontWeight: 700, color: '#fef3c7' }}>{t.label}</div>
+                      <div style={{ fontSize: '12.5px', color: '#e7e5e4' }}>
+                        {['A', 'B'].map((v) => {
+                          const st = t.variants?.[v] || {}
+                          return `${v}: ${st.sends || 0} emailuri, ${st.conversions || 0} vânzări${st.rate_pct != null ? ` (${st.rate_pct}%)` : ''}`
+                        }).join(' · ')}
+                      </div>
+                      <div style={{ fontSize: '12.5px', color: t.winner ? '#34d399' : '#a8a29e' }}>{t.status_ro}</div>
+                    </div>
+                  ))}
+                  <div style={{ fontSize: '12.5px', color: '#d6d3d1', borderTop: '1px solid #292524', paddingTop: '8px' }}>
+                    🕒 {learningReport?.best_hours?.note_ro || 'Orele bune de trimitere se calculează din GA4 o dată pe zi.'}
+                    {learningReport?.best_hours?.source ? ` (${learningReport.best_hours.source})` : ''}
+                  </div>
                 </div>
               </div>
             )}

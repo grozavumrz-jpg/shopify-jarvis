@@ -17,9 +17,9 @@ from typing import Any, Callable, Dict, List, Optional
 import httpx
 
 try:
-    from google_merchant_feed import build_feed_items, build_google_merchant_xml, validate_google_merchant_feed
+    from google_merchant_feed import build_feed_items, build_google_merchant_xml, validate_google_merchant_feed, _colour_from_category
 except ImportError:
-    from backend.google_merchant_feed import build_feed_items, build_google_merchant_xml, validate_google_merchant_feed
+    from backend.google_merchant_feed import build_feed_items, build_google_merchant_xml, validate_google_merchant_feed, _colour_from_category
 
 try:
     from seo_optimizer import contains_forbidden, _strip_html
@@ -349,6 +349,8 @@ class StoreWatchdogAgent:
                             if len(parts) >= 2 and parts[0] == "shopify":
                                 missing_pids.add(parts[1])
                     fixed_this_pass = 0
+                    # A photo that already failed once is not decoded again every pass.
+                    tried = self.__dict__.setdefault("_color_tries", {})
                     for p in loaded_products:
                         if fixed_this_pass >= 15:
                             break
@@ -359,11 +361,17 @@ class StoreWatchdogAgent:
                         main_img = imgs[0]["src"] if imgs else ((p.get("image") or {}).get("src") if isinstance(p.get("image"), dict) else "")
                         if not pid or not main_img:
                             continue
+                        if _colour_from_category(p):
+                            continue  # the owner's Category metafield "Color" is the truth; no photo guessing
+                        if tried.get(pid) == main_img:
+                            continue
                         cached_rec = visual_records.get(pid)
                         image_changed = bool(cached_rec and cached_rec.get("image_url") != main_img)
                         if pid not in missing_pids and not image_changed:
                             continue
                         detected = await detect_color_from_image_url(main_img)
+                        if not detected:
+                            tried[pid] = main_img
                         if detected:
                             visual_map[pid] = detected
                             fixed_this_pass += 1

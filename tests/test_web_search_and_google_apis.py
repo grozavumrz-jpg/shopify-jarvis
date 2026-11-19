@@ -183,7 +183,8 @@ class TestGeminiWebSearchGrounding(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Surse web live", res["reply"])
         self.assertIn("https://example.com/streetwear-report", res["reply"])
         self.assertIn("GOOGLE TRAFFIC & SEARCH DATA", captured_prompts[0])
-        self.assertIn("LIVE WEB SEARCH (Google Search Grounding ACTIVE)", captured_prompts[0])
+        self.assertIn("WEB SEARCH REQUESTED (Google Search grounding)", captured_prompts[0])
+        self.assertIn("could not verify it online", captured_prompts[0])
 
 
 class TestGoogleSearchConsoleAndGA4(unittest.IsolatedAsyncioTestCase):

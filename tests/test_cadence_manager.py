@@ -335,7 +335,8 @@ class TestProcessCheckoutRecoveryStage1Enforcement(unittest.IsolatedAsyncioTestC
         self.assertNotIn("SPECIAL25", result["subject"])
         self.assertNotIn("25%", result["subject"])
         self.assertNotIn("SPECIAL25", result["message"])
-        self.assertIn("ai nevoie de ajutor", result["subject"])
+        # A/B subject test: variant A ("ai nevoie de ajutor") or B ("te așteaptă"), never a discount
+        self.assertTrue("ai nevoie de ajutor" in result["subject"] or "te așteaptă" in result["subject"], result["subject"])
         self.assertNotIn("rezervat", result["message"].lower())  # Shopify does not reserve stock
         mock_ai.generate_autonomous_recovery.assert_not_called()
         mock_db.claim_drip_stage.assert_called_once_with("c_stg1_test", 0, 1)

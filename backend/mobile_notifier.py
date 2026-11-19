@@ -136,6 +136,15 @@ class MobileNotifier:
                 f"🔎 <b>Detalii:</b> {summary}",
             ])
 
+        elif event_type == "market_report":
+            as_of = html.escape(str(data.get("as_of") or ""))
+            lines = [f"📊 <b>Raportul săptămânal de piață ({as_of})</b>\n",
+                     f"✅ Prețuri verificate pe pagina sursă: {int(data.get('prices_verified') or 0)} din {int(data.get('prices_found') or 0)}"]
+            for line in (data.get("summary_lines") or [])[:10]:
+                lines.append("• " + html.escape(self._truncate(str(line), 200)))
+            lines.append("\nLinkurile și datele sunt în Jarvis → Radar.")
+            return self._truncate("\n".join(lines), 3800)
+
         # Generic fallback
         return f"🔔 <b>Eveniment Jarvis: {html.escape(str(event_type))}</b>\n👤 Client: {c_name}"
 
@@ -234,6 +243,17 @@ class MobileNotifier:
                     {"name": "Detalii", "value": summary, "inline": False},
                 ],
                 "footer": {"text": "Grozavu Gardian 24/7 Watchdog Agent"},
+            }
+
+        elif event_type == "market_report":
+            body = "\n".join("• " + str(x) for x in (data.get("summary_lines") or [])[:10]) or "—"
+            return {
+                "title": f"📊 Raportul săptămânal de piață ({data.get('as_of') or ''})",
+                "description": self._truncate(body, self.DISCORD_DESCRIPTION_LIMIT),
+                "color": self.COLOR_AMBER,
+                "timestamp": now_iso,
+                "fields": [{"name": "Prețuri verificate", "value": f"{int(data.get('prices_verified') or 0)} din {int(data.get('prices_found') or 0)}", "inline": True}],
+                "footer": {"text": "Jarvis — linkurile sunt în Radar"},
             }
 
         # Fallback embed
