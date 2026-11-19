@@ -365,17 +365,48 @@ class AIAdvisor:
                 if res.status_code in (401, 403):
                     self.last_gemini_error = f"Gemini rejected API key ({res.status_code})"
                     raise GeminiUnavailable(f"Gemini rejected the API key ({res.status_code})")
+                reason = self._gemini_error_reason(res)
                 if res.status_code in (429, 500, 503) and attempt == 0:
-                    last_error = f"{model} ({res.status_code})"
+                    last_error = f"{model} ({res.status_code}{': ' + reason if reason else ''})"
                     await _real_sleep(1.0)
                     continue
-                last_error = f"{model} ({res.status_code})"
+                last_error = f"{model} ({res.status_code}{': ' + reason if reason else ''})"
                 break
         if last_error and (not model_errors or model_errors[-1] != last_error):
             model_errors.append(last_error)
         summary = "; ".join(model_errors) or "unknown"
         self.last_gemini_error = summary
         raise GeminiUnavailable(f"Gemini unavailable ({summary})")
+
+    @staticmethod
+    def _gemini_error_reason(res: Any) -> str:
+        """Short, key-free reason from a Gemini error body, so the logs say WHY a call failed
+        (e.g. which quota ran out and when to retry) instead of just the status code."""
+        try:
+            err = (res.json() or {}).get("error") or {}
+        except Exception:
+            return ""
+        if not isinstance(err, dict):
+            return ""
+        parts: List[str] = []
+        for d in err.get("details") or []:
+            if not isinstance(d, dict):
+                continue
+            for v in d.get("violations") or []:
+                if isinstance(v, dict) and v.get("quotaId"):
+                    q = str(v.get("quotaId"))
+                    if v.get("quotaValue"):
+                        q += f" limit {v.get('quotaValue')}"
+                    if q not in parts:
+                        parts.append(q)
+            if d.get("retryDelay"):
+                parts.append(f"retry in {d.get('retryDelay')}")
+        if not parts:
+            msg = re.sub(r"https?://\S+", "", str(err.get("message") or ""))
+            msg = re.sub(r"\s+", " ", msg).strip()
+            if msg:
+                parts.append(msg[:140])
+        return ", ".join(parts[:4])[:220]
 
     @staticmethod
     def _extract_gemini_text(data: Any) -> str:

@@ -463,3 +463,39 @@ class TestMarketIntel(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GeminiErrorReasonTests(unittest.TestCase):
+    def _res(self, body):
+        class R:
+            def json(self_inner):
+                return body
+        return R()
+
+    def test_quota_violation_and_retry_delay(self):
+        from backend.ai_advisor import AIAdvisor
+        body = {"error": {"code": 429, "message": "You exceeded your current quota. https://ai.google.dev/x",
+                          "details": [
+                              {"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                               "violations": [{"quotaMetric": "generativelanguage.googleapis.com/generate_content_free_tier_requests",
+                                               "quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier",
+                                               "quotaValue": "20"}]},
+                              {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "37s"}]}}
+        reason = AIAdvisor._gemini_error_reason(self._res(body))
+        self.assertIn("PerDay", reason)
+        self.assertIn("limit 20", reason)
+        self.assertIn("retry in 37s", reason)
+
+    def test_plain_message_without_urls(self):
+        from backend.ai_advisor import AIAdvisor
+        body = {"error": {"message": "Model not found https://example.com/x   for v1beta"}}
+        reason = AIAdvisor._gemini_error_reason(self._res(body))
+        self.assertNotIn("http", reason)
+        self.assertIn("Model not found", reason)
+
+    def test_non_json_body(self):
+        from backend.ai_advisor import AIAdvisor
+        class Bad:
+            def json(self):
+                raise ValueError("no json")
+        self.assertEqual(AIAdvisor._gemini_error_reason(Bad()), "")
