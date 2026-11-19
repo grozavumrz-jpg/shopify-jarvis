@@ -632,6 +632,7 @@ async def get_competitor_radar(shop: Optional[str] = Query(None), lang: str = Qu
 
 _MARKET_REPORT_RUNNING: Dict[str, bool] = {}
 _MARKET_REPORT_LAST_MANUAL: Dict[str, float] = {}
+_MARKET_REPORT_LAST_ATTEMPT: Dict[str, Dict[str, Any]] = {}
 MARKET_REPORT_MANUAL_COOLDOWN = 3600
 
 
@@ -648,7 +649,17 @@ async def build_and_store_market_report(shop: str, notify: bool = True) -> Dict[
                 gsc_report = (await google_traffic.get_combined_report(days=28, force_refresh=False)).get("search_console")
             except Exception as e:
                 print(f"[MarketReport GSC Warning]: {e}")
-        report = await market_intel.build_market_report(ai, products or [], gsc_report)
+        try:
+            report = await market_intel.build_market_report(ai, products or [], gsc_report)
+        except Exception as e:  # never leave a silent failure behind
+            report = {"ok": False, "message": f"Raportul nu s-a putut face: {str(e)[:300]}", "errors": [str(e)[:300]]}
+        _MARKET_REPORT_LAST_ATTEMPT[shop] = {
+            "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "ok": bool(report.get("ok")), "message": report.get("message"),
+            "errors": (report.get("errors") or [])[:6],
+        }
+        if report.get("errors"):
+            print(f"[MarketReport] {shop}: " + " | ".join(map(str, report["errors"]))[:600])
         if report.get("ok"):
             db.save_market_report(shop, report)
             if notify:
@@ -685,10 +696,16 @@ async def get_market_report(shop: Optional[str] = Query(None), auth: AuthContext
     """Latest weekly market report: competitor prices (with link, date, verified on the page), trends, GSC."""
     shop = resolve_shop(auth, shop)
     report = db.get_latest_market_report(shop)
+    last = _MARKET_REPORT_LAST_ATTEMPT.get(shop)
     if not report:
-        return {"ok": False, "running": bool(_MARKET_REPORT_RUNNING.get(shop)),
-                "message": "Încă nu există un raport. Se face automat o dată pe săptămână sau apasă „Fă raportul acum”."}
+        msg = "Încă nu există un raport. Se face automat o dată pe săptămână sau apasă „Fă raportul acum”."
+        if _MARKET_REPORT_RUNNING.get(shop):
+            msg = "Raportul se construiește acum (1–3 minute). Revino puțin mai târziu."
+        elif last and not last.get("ok") and last.get("message"):
+            msg = f"{last['message']} (încercare la {last['at']})"
+        return {"ok": False, "running": bool(_MARKET_REPORT_RUNNING.get(shop)), "message": msg, "last_attempt": last}
     report["running"] = bool(_MARKET_REPORT_RUNNING.get(shop))
+    report["last_attempt"] = last
     return report
 
 
@@ -699,12 +716,18 @@ class ShopOnlyRequest(BaseModel):
 @app.post("/api/market/report/refresh")
 async def refresh_market_report(req: Optional[ShopOnlyRequest] = None, auth: AuthContext = Depends(require_auth)):
     shop = resolve_shop(auth, req.shop if req else None)
+    if _MARKET_REPORT_RUNNING.get(shop):
+        return {"ok": False, "error": "already_running", "running": True,
+                "message": "Raportul se construiește deja (1–3 minute). Revino puțin mai târziu."}
     last = _MARKET_REPORT_LAST_MANUAL.get(shop, 0)
     if time.time() - last < MARKET_REPORT_MANUAL_COOLDOWN:
         mins = int((MARKET_REPORT_MANUAL_COOLDOWN - (time.time() - last)) // 60) + 1
         return {"ok": False, "error": "cooldown", "message": f"Poți reface raportul peste {mins} minute."}
     _MARKET_REPORT_LAST_MANUAL[shop] = time.time()
-    return await build_and_store_market_report(shop, notify=False)
+    report = await build_and_store_market_report(shop, notify=False)
+    if not report.get("ok"):
+        _MARKET_REPORT_LAST_MANUAL.pop(shop, None)  # a failed attempt does not lock the button for an hour
+    return report
 
 
 @app.get("/api/learning/report")

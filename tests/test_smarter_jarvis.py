@@ -367,6 +367,30 @@ class TestMarketIntel(unittest.IsolatedAsyncioTestCase):
         res = await market_intel.build_market_report(NoKey(), [], None)
         self.assertFalse(res["ok"])
 
+    async def test_failed_research_explains_why(self):
+        class SlowAI:
+            def _get_api_key(self):
+                return "AIzaTestKey1234567890"
+
+            async def _call_gemini(self, prompt, **kw):
+                assert kw.get("timeout") == market_intel.RESEARCH_TIMEOUT
+                raise RuntimeError("Gemini unavailable (ReadTimeout)")
+        res = await market_intel.build_market_report(SlowAI(), [_product(12)], None)
+        self.assertFalse(res["ok"])
+        self.assertIn("ReadTimeout", res["message"])
+
+    def test_refresh_while_running_does_not_lock_the_button(self):
+        shop = "grozavushop.myshopify.com"
+        client = TestClient(main.app, headers=AUTH_HEADERS)
+        main._MARKET_REPORT_LAST_MANUAL.pop(shop, None)
+        main._MARKET_REPORT_RUNNING[shop] = True
+        try:
+            r = client.post("/api/market/report/refresh", json={"shop": shop}).json()
+        finally:
+            main._MARKET_REPORT_RUNNING.pop(shop, None)
+        self.assertEqual(r["error"], "already_running")
+        self.assertNotIn(shop, main._MARKET_REPORT_LAST_MANUAL)
+
     async def test_private_hosts_are_never_fetched(self):
         self.assertFalse(await market_intel._is_public_host("localhost"))
         self.assertFalse(await market_intel._is_public_host("127.0.0.1"))

@@ -32,6 +32,7 @@ except ImportError:  # pragma: no cover - package import path
 REPORT_MAX_AGE_DAYS = 7
 MAX_PAGE_BYTES = 1_500_000
 FETCH_TIMEOUT = 8.0
+RESEARCH_TIMEOUT = 75.0   # background job: Gemini + Google Search may be slow
 USER_AGENT = "Mozilla/5.0 (compatible; GrozavuJarvis/1.0; +https://maisongrozavu.com)"
 
 CATEGORY_SEARCH = {
@@ -188,7 +189,7 @@ async def collect_competitor_prices(ai_advisor: Any, key: str, label: str,
     )
     g: Dict[str, Any] = {}
     text = await ai_advisor._call_gemini(prompt, max_tokens=900, temperature=0.2,
-                                         use_web_search=True, grounding_out=g)
+                                         use_web_search=True, grounding_out=g, timeout=RESEARCH_TIMEOUT)
     sources = g.get("sources") or []
     domains = _source_domains(sources)
     found = parse_price_lines(text)
@@ -248,7 +249,7 @@ async def collect_trends(ai_advisor: Any, now: Optional[datetime] = None) -> Dic
     )
     g: Dict[str, Any] = {}
     text = await ai_advisor._call_gemini(prompt, max_tokens=900, temperature=0.3,
-                                         use_web_search=True, grounding_out=g)
+                                         use_web_search=True, grounding_out=g, timeout=RESEARCH_TIMEOUT)
     domains = _source_domains(g.get("sources") or [])
     trends = [t for t in parse_trend_lines(text) if _cited(t["url"], domains)]
     for t in trends:
@@ -312,8 +313,11 @@ async def build_market_report(ai_advisor: Any, products: Optional[List[Dict[str,
 
     verified = sum(1 for c in categories.values() for o in c["observations"] if o.get("verified"))
     found = sum(len(c["observations"]) for c in categories.values())
+    ok = bool(categories or trends.get("trends"))
     return {
-        "ok": bool(categories or trends.get("trends")),
+        "ok": ok,
+        "message": None if ok else ("Raportul nu s-a putut face: " + ("; ".join(errors)[:400] or
+                                    "căutarea nu a întors niciun rezultat cu sursă")),
         "generated_at": _now_iso(),
         "engine": "Gemini + Google Search; Jarvis deschide fiecare link și verifică prețul pe pagină",
         "categories": categories,

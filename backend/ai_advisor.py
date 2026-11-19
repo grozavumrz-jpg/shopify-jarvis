@@ -295,7 +295,8 @@ class AIAdvisor:
 
     async def _call_gemini(self, prompt: str, json_mode: bool = False, max_tokens: int = 1200,
                            temperature: float = 0.7, use_web_search: bool = False,
-                           grounding_out: Optional[Dict[str, Any]] = None) -> str:
+                           grounding_out: Optional[Dict[str, Any]] = None,
+                           timeout: Optional[float] = None) -> str:
         """
         Call Gemini generateContent via REST. The API key goes in the `x-goog-api-key` header
         (never in the URL). Tries models from get_gemini_models() in order.
@@ -310,7 +311,7 @@ class AIAdvisor:
         headers = {"x-goog-api-key": key, "Content-Type": "application/json"}
         last_error = ""
         enable_search = bool(use_web_search and not json_mode)
-        req_timeout = 30.0 if enable_search else GEMINI_TIMEOUT
+        req_timeout = float(timeout) if timeout else (30.0 if enable_search else GEMINI_TIMEOUT)
         for model in get_gemini_models():
             gen_cfg: Dict[str, Any] = {"temperature": temperature, "maxOutputTokens": max_tokens}
             if json_mode:
