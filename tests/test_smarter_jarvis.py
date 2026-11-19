@@ -493,6 +493,17 @@ class GeminiErrorReasonTests(unittest.TestCase):
         self.assertNotIn("http", reason)
         self.assertIn("Model not found", reason)
 
+    def test_free_tier_message_text(self):
+        from backend.ai_advisor import AIAdvisor
+        body = {"error": {"code": 429, "message": (
+            "You exceeded your current quota, please check your plan and billing details. For more information "
+            "on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits.\n"
+            "* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, "
+            "limit: 0, model: gemini-3.5-flash-lite\nPlease retry in 41.2s.")}}
+        reason = AIAdvisor._gemini_error_reason(self._res(body))
+        self.assertTrue(reason.startswith("generate_content_free_tier_requests limit 0"), reason)
+        self.assertIn("retry in 41.2s", reason)
+
     def test_non_json_body(self):
         from backend.ai_advisor import AIAdvisor
         class Bad:

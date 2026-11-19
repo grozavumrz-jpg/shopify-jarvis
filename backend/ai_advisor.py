@@ -401,8 +401,20 @@ class AIAdvisor:
                         parts.append(q)
             if d.get("retryDelay"):
                 parts.append(f"retry in {d.get('retryDelay')}")
+        raw_msg = str(err.get("message") or "")
         if not parts:
-            msg = re.sub(r"https?://\S+", "", str(err.get("message") or ""))
+            # Free-tier 429 bodies often carry the useful bit only inside the message text:
+            # "* Quota exceeded for metric: .../generate_content_free_tier_requests, limit: 20, model: x"
+            for m in re.finditer(r"Quota exceeded for metric:\s*([^,\n]+),\s*limit:\s*(\d+)", raw_msg):
+                q = f"{m.group(1).strip().rsplit('/', 1)[-1]} limit {m.group(2)}"
+                if q not in parts:
+                    parts.append(q)
+        if parts and not any(p.startswith("retry in") for p in parts):
+            m = re.search(r"retry in ([\d.]+\s*m?s)", raw_msg, re.IGNORECASE)
+            if m:
+                parts.append(f"retry in {m.group(1)}")
+        if not parts:
+            msg = re.sub(r"https?://\S+", "", raw_msg)
             msg = re.sub(r"\s+", " ", msg).strip()
             if msg:
                 parts.append(msg[:140])
